@@ -118,9 +118,12 @@ fi
 MODEL_PARALLEL_ARGS=(
     --tensor-model-parallel-size $TP_SIZE
     --context-parallel-size $CP_SIZE
-    # --pipeline-model-parallel-size $PP_SIZE # Not explicitly set in llama script options, assume 1 if not multi-node PP
-    --sequence-parallel  # Always enable sequence parallelism with TP_SIZE=2
 )
+
+# Enable sequence parallelism only if TP > 1 (Megatron-Core requirement)
+if [ $TP_SIZE -gt 1 ]; then
+    MODEL_PARALLEL_ARGS+=(--sequence-parallel)
+fi
 
 # Distributed Data Parallel (DDP) arguments
 # From original script's ddp_args

@@ -4,12 +4,6 @@
 export CUDA_DEVICE_MAX_CONNECTIONS=${CUDA_DEVICE_MAX_CONNECTIONS:-1}
 export NVTE_FLASH_ATTN=1
 export PYTHONPATH=$PYTHONPATH:.
-#export LOG_LEVEL=${LOG_LEVEL:-INFO}
-#export NCCL_IB_TIMEOUT=${NCCL_IB_TIMEOUT:-19}
-#export NVTE_FWD_LAYERNORM_SM_MARGIN=${NVTE_FWD_LAYERNORM_SM_MARGIN:-16}
-#export NVTE_BWD_LAYERNORM_SM_MARGIN=${NVTE_BWD_LAYERNORM_SM_MARGIN:-16}
-#export NCCL_P2P_NET_CHUNKSIZE=${NCCL_P2P_NET_CHUNKSIZE:-2097152}
-#export NCCL_AVOID_RECORD_STREAMS=${NCCL_AVOID_RECORD_STREAMS:-1}
 
 CHECKPOINT_PATH=${1:-"checkpoints/llama3_8b_fp8"}
 TENSORBOARD_LOGS_PATH=${2:-"tensorboard_logs/llama3_8b_fp8"}
@@ -28,22 +22,22 @@ MASTER_PORT=${MASTER_PORT:-6000}
 NODE_RANK=${NODE_RANK:-0}
 WORLD_SIZE=$(($GPUS_PER_NODE*$NUM_NODES))
 
-# Path to the pretrain_gpt.py script, assuming this script is run from the root of the Megatron-LM repository
+# Path to the pretrain_gpt.py script
 PRETRAIN_SCRIPT_PATH="pretrain_gpt.py"
 
-# Fixed model and training parameters (Restored to 8B with "Boss Config" Optimizations)
+# Fixed model and training parameters (Restored to 8B - Pure BF16 Mode)
 TP_SIZE=1     
 CP_SIZE=1     
 PP_SIZE=1     
 MICRO_BATCH_SIZE=1
 GLOBAL_BATCH_SIZE=128
 NUM_LAYERS=32
-DTYPE="fp8"
-SEQ_LENGTH=2048
-MAX_POSITION_EMBEDDINGS=2048
+DTYPE="bf16" # Switched from FP8 to BF16 for memory stability
+SEQ_LENGTH=512 # Extreme memory savings
+MAX_POSITION_EMBEDDINGS=512
 
-# Data cache path (useful for both mock and real data)
-DATA_CACHE_PATH="${PWD}/benchmark_cache_llama3_8b_fp8"
+# Data cache path
+DATA_CACHE_PATH="${PWD}/benchmark_cache_llama3_8b_bf16"
 mkdir -p "$DATA_CACHE_PATH"
 
 DISTRIBUTED_ARGS=(
@@ -89,8 +83,6 @@ TRAINING_ARGS=(
     --lr-warmup-samples 10000
     --lr 0.00015
     --min-lr 0.00001
-    --decoupled-lr 5.0e-4      # Specific to decoupled AdamW, ensure optimizer is compatible
-    --decoupled-min-lr 4.5e-5  # Specific to decoupled AdamW
     --lr-decay-style cosine
     --clip-grad 1.0
     --weight-decay 0.1
@@ -103,23 +95,7 @@ TRAINING_ARGS=(
     --manual-gc 
     --empty-unused-memory-level 1 
     --exit-duration-in-mins 235 
-    --use-precision-aware-optimizer
-    --main-params-dtype fp16
-    --exp-avg-dtype fp8
-    --exp-avg-sq-dtype fp8
-    --main-grads-dtype bf16
 )
-
-# Conditional arguments based on DTYPE (FP8)
-DTYPE_ARGS=()
-if [[ "$DTYPE" == "fp8" ]]; then
-    DTYPE_ARGS+=(
-        "--fp8-format hybrid"
-        "--fp8-amax-history-len 1024"
-        "--fp8-amax-compute-algo max"
-        "--fp8-param-gather"
-    )
-fi
 
 # Model parallelism arguments
 MODEL_PARALLEL_ARGS=(
@@ -127,50 +103,30 @@ MODEL_PARALLEL_ARGS=(
     --context-parallel-size $CP_SIZE
 )
 
-# Enable sequence parallelism only if TP > 1 (Megatron-Core requirement)
+# Enable sequence parallelism only if TP > 1
 if [ $TP_SIZE -gt 1 ]; then
     MODEL_PARALLEL_ARGS+=(--sequence-parallel)
 fi
 
-# Distributed Data Parallel (DDP) arguments
-# From original script's ddp_args
+# Distributed Data Parallel (DDP) arguments - NO DISTRIBUTED OPTIMIZER for memory saving
 DDP_ARGS=(
-    --use-distributed-optimizer
-    --overlap-grad-reduce
-    --overlap-param-gather
+    # --use-distributed-optimizer 
 )
 TRAINING_ARGS+=("${DDP_ARGS[@]}")
 
 
 # Data arguments (conditional for mock vs real data)
-DATA_ARGS_LIST=()
-if [[ "$TOKENIZER_ARG" == "MOCK" ]] || [[ "$DATA_ARG" == "MOCK" ]] || [[ -z "$TOKENIZER_ARG" ]]; then
-    DATA_ARGS_LIST+=(
-        "--mock-data"
-        "--tokenizer-type NullTokenizer"
-        "--vocab-size 128256" 
-        "--data-cache-path ${DATA_CACHE_PATH}"
-        "--tiktoken-pattern v2" 
-        "--split '99,1,0'"
-        "--no-create-attention-mask-in-dataloader"
-        "--no-mmap-bin-files"
-        "--num-workers 1"
-    )
-else
-    # Settings for real data
-    DATA_ARGS_LIST+=(
-        "--data-path $DATA_ARG"
-        "--tokenizer-type HuggingFaceTokenizer" 
-        "--tokenizer-model $TOKENIZER_ARG"
-        "--data-cache-path ${DATA_CACHE_PATH}"
-        "--split '99,1,0'"
-        "--no-create-attention-mask-in-dataloader"
-        "--no-mmap-bin-files"
-        "--num-workers 1"
-        # Note: --vocab-size might be inferred by HuggingFaceTokenizer or might need to be explicit.
-        "--vocab-size 128256"
-    )
-fi
+DATA_ARGS_LIST=(
+    "--mock-data"
+    "--tokenizer-type NullTokenizer"
+    "--vocab-size 128256" 
+    "--data-cache-path ${DATA_CACHE_PATH}"
+    "--tiktoken-pattern v2" 
+    "--split '99,1,0'"
+    "--no-create-attention-mask-in-dataloader"
+    "--no-mmap-bin-files"
+    "--num-workers 1"
+)
 
 EVAL_AND_LOGGING_ARGS=(
     --log-interval 1
@@ -188,19 +144,11 @@ EVAL_AND_LOGGING_ARGS=(
     --tensorboard-dir "$TENSORBOARD_LOGS_PATH"
 )
 
-# Ensure pretrain_gpt.py is found
-if [ ! -f "$PRETRAIN_SCRIPT_PATH" ]; then
-    echo "Error: pretrain_gpt.py not found at $PRETRAIN_SCRIPT_PATH"
-    echo "Please ensure you are running this script from the root of the Megatron-LM repository, and pretrain_gpt.py is present."
-    exit 1
-fi
-
 # Run the training command
 torchrun ${DISTRIBUTED_ARGS[@]} \
     "$PRETRAIN_SCRIPT_PATH" \
     ${MODEL_ARGS[@]} \
     ${TRAINING_ARGS[@]} \
-    ${DTYPE_ARGS[@]} \
     ${MODEL_PARALLEL_ARGS[@]} \
     ${DATA_ARGS_LIST[@]} \
     ${EVAL_AND_LOGGING_ARGS[@]}

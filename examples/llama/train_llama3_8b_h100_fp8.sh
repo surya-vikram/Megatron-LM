@@ -2,6 +2,8 @@
 
 # Environment variables for performance tuning
 export CUDA_DEVICE_MAX_CONNECTIONS=${CUDA_DEVICE_MAX_CONNECTIONS:-1}
+export NVTE_FLASH_ATTN=1
+export PYTHONPATH=$PYTHONPATH:.
 #export LOG_LEVEL=${LOG_LEVEL:-INFO}
 #export NCCL_IB_TIMEOUT=${NCCL_IB_TIMEOUT:-19}
 #export NVTE_FWD_LAYERNORM_SM_MARGIN=${NVTE_FWD_LAYERNORM_SM_MARGIN:-16}
@@ -19,7 +21,7 @@ mkdir -p "$(dirname "$CHECKPOINT_PATH")"
 mkdir -p "$(dirname "$TENSORBOARD_LOGS_PATH")"
 
 # Distributed training setup
-GPUS_PER_NODE=8
+GPUS_PER_NODE=${GPUS_PER_NODE:-8}
 NUM_NODES=1
 MASTER_ADDR=${MASTER_ADDR:-localhost}
 MASTER_PORT=${MASTER_PORT:-6000}

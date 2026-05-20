@@ -23,5 +23,5 @@ with open(\"$JSONL_FILE\", \"w\") as f:
 fi
 
 # 2. Preprocess into Megatron Indexed Binary format
-source /home/jovyan/Megatron-Bridge-Surya/.venv/bin/activate
+source /home/jovyan/Megatron-Bridge/.venv/bin/activate
 python /root/Megatron-LM/tools/preprocess_data.py     --input $JSONL_FILE     --output-prefix "$DATA_DIR/gemma_medical_data"     --tokenizer-type HuggingFaceTokenizer     --tokenizer-model /home/jovyan/models/gemma-3-1b-pt-hf     --append-eod     --json-keys text     --workers 1

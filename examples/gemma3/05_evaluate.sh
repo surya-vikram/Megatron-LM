@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 # Install evaluate and jiwer for WER
-source /home/jovyan/Megatron-Bridge-Surya/.venv/bin/activate
+source /home/jovyan/Megatron-Bridge/.venv/bin/activate
 pip install evaluate jiwer
 
 python -c "

@@ -104,6 +104,7 @@ TRAINING_ARGS=(
     --empty-unused-memory-level 1 
     --exit-duration-in-mins 235 
     --use-precision-aware-optimizer
+    --main-params-dtype fp16
     --exp-avg-dtype bf16
     --exp-avg-sq-dtype bf16
     --main-grads-dtype bf16
@@ -116,7 +117,7 @@ if [[ "$DTYPE" == "fp8" ]]; then
         "--fp8-format hybrid"
         "--fp8-amax-history-len 1024"
         "--fp8-amax-compute-algo max"
-        # "--fp8-param-gather" # Requires distributed optimizer or FSDP
+        "--fp8-param-gather"
     )
 fi
 
@@ -134,9 +135,9 @@ fi
 # Distributed Data Parallel (DDP) arguments
 # From original script's ddp_args
 DDP_ARGS=(
-    # --use-distributed-optimizer # Disabled for 1-GPU memory savings
-    # --overlap-grad-reduce
-    # --overlap-param-gather
+    --use-distributed-optimizer
+    --overlap-grad-reduce
+    --overlap-param-gather
 )
 TRAINING_ARGS+=("${DDP_ARGS[@]}")
 

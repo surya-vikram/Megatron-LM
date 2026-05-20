@@ -31,16 +31,16 @@ WORLD_SIZE=$(($GPUS_PER_NODE*$NUM_NODES))
 # Path to the pretrain_gpt.py script, assuming this script is run from the root of the Megatron-LM repository
 PRETRAIN_SCRIPT_PATH="pretrain_gpt.py"
 
-# Fixed model and training parameters
+# Fixed model and training parameters (Scaled down to 1B for 1-GPU Benchmark)
 TP_SIZE=1     
 CP_SIZE=1     
 PP_SIZE=1     
 MICRO_BATCH_SIZE=1
 GLOBAL_BATCH_SIZE=128
-NUM_LAYERS=32  
+NUM_LAYERS=16
 DTYPE="fp8"
-SEQ_LENGTH=1024
-MAX_POSITION_EMBEDDINGS=1024
+SEQ_LENGTH=2048
+MAX_POSITION_EMBEDDINGS=2048
 
 # Data cache path (useful for both mock and real data)
 DATA_CACHE_PATH="${PWD}/benchmark_cache_llama3_8b_fp8"
@@ -57,9 +57,9 @@ DISTRIBUTED_ARGS=(
 MODEL_ARGS=(
     --use-mcore-models
     --num-layers $NUM_LAYERS
-    --hidden-size 4096
-    --ffn-hidden-size 14336
-    --num-attention-heads 32
+    --hidden-size 2048
+    --ffn-hidden-size 8192
+    --num-attention-heads 16
     --group-query-attention
     --num-query-groups 8
     --kv-channels 128

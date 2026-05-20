@@ -15,7 +15,11 @@ HF_SOURCE_DIR="$BASE_DIR/models/gemma-3-4b-pt-hf"
 MCORE_TARGET_DIR="$BASE_DIR/models/gemma-3-4b-pt-mcore"
 HF_ROUNDTRIP_DIR="$BASE_DIR/models/gemma-3-4b-pt-roundtrip-hf"
 
+# Calculate MEGATRON_LM_DIR BEFORE changing directories
+MEGATRON_LM_DIR=$(cd $(dirname $0) && pwd)
+
 echo "=== Gemma-3 4B Automation Script ==="
+echo "Megatron-LM Directory: $MEGATRON_LM_DIR"
 
 # 1. Setup Megatron-Bridge
 if [ ! -d "$BRIDGE_DIR" ]; then
@@ -26,9 +30,6 @@ fi
 cd "$BRIDGE_DIR"
 # Create a symlink to this Megatron-LM repo to ensure the Bridge uses our optimized code
 rm -rf 3rdparty/Megatron-LM
-# Use absolute path to the current Megatron-LM repo
-# Assuming this script is located in Megatron-LM/setup_and_convert_gemma3.sh
-MEGATRON_LM_DIR=$(cd $(dirname $0) && pwd)
 echo "Setting up symlink: 3rdparty/Megatron-LM -> $MEGATRON_LM_DIR"
 ln -s "$MEGATRON_LM_DIR" 3rdparty/Megatron-LM
 

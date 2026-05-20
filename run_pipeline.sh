@@ -5,18 +5,11 @@ set -e
 
 echo "--- Starting End-to-End Pipeline ---"
 
-# 1. Clean Environment and Clone Repository
-cd /root
-rm -rf Megatron-LM
-git clone https://github.com/surya-vikram/Megatron-LM.git Megatron-LM
-cd Megatron-LM
-git checkout gemma3-1b
-
-# 2. Base Dependency Setup
+# 1. Base Dependency Setup (Assume already in repo)
 bash sanity_check.sh
 bash install_bridge.sh
 
-# 3. Gemma-3 1B Modular Pipeline
+# 2. Gemma-3 1B Modular Pipeline
 cd examples/gemma3/
 
 # Run modular pipeline steps sequentially

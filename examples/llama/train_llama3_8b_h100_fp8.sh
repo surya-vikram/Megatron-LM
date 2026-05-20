@@ -31,13 +31,13 @@ WORLD_SIZE=$(($GPUS_PER_NODE*$NUM_NODES))
 # Path to the pretrain_gpt.py script, assuming this script is run from the root of the Megatron-LM repository
 PRETRAIN_SCRIPT_PATH="pretrain_gpt.py"
 
-# Fixed model and training parameters (Scaled down to 1B for 1-GPU Benchmark)
+# Fixed model and training parameters (Restored to 8B with "Boss Config" Optimizations)
 TP_SIZE=1     
 CP_SIZE=1     
 PP_SIZE=1     
 MICRO_BATCH_SIZE=1
 GLOBAL_BATCH_SIZE=128
-NUM_LAYERS=16
+NUM_LAYERS=32
 DTYPE="fp8"
 SEQ_LENGTH=2048
 MAX_POSITION_EMBEDDINGS=2048
@@ -57,9 +57,9 @@ DISTRIBUTED_ARGS=(
 MODEL_ARGS=(
     --use-mcore-models
     --num-layers $NUM_LAYERS
-    --hidden-size 2048
-    --ffn-hidden-size 8192
-    --num-attention-heads 16
+    --hidden-size 4096
+    --ffn-hidden-size 14336
+    --num-attention-heads 32
     --group-query-attention
     --num-query-groups 8
     --kv-channels 128
@@ -105,8 +105,8 @@ TRAINING_ARGS=(
     --exit-duration-in-mins 235 
     --use-precision-aware-optimizer
     --main-params-dtype fp16
-    --exp-avg-dtype bf16
-    --exp-avg-sq-dtype bf16
+    --exp-avg-dtype fp8
+    --exp-avg-sq-dtype fp8
     --main-grads-dtype bf16
 )
 

@@ -1,6 +1,6 @@
 #!/bin/bash
 set -e
-source /home/jovyan/Megatron-Bridge/.venv/bin/activate
+export PYTHONPATH=/root/Megatron-LM:$PYTHONPATH
 python -c "
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer

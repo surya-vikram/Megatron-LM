@@ -1,4 +1,5 @@
 #!/bin/bash
+export PYTHONPATH=/root/Megatron-LM:$PYTHONPATH
 set -e
 export DATA_PATH="/home/jovyan/data/corpus/corpus_data_text_document"
 export MCORE_CHECKPOINT="/home/jovyan/models/gemma-3-1b-pt-mcore"

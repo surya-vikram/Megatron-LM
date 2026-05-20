@@ -1,5 +1,6 @@
 #!/bin/bash
 set -e
+export PYTHONPATH=/root/Megatron-LM:$PYTHONPATH
 
 # Data Directory Setup
 DATA_DIR="/home/jovyan/data/corpus"
@@ -23,7 +24,6 @@ with open(\"$JSONL_FILE\", \"w\") as f:
 fi
 
 # 2. Preprocess into Megatron Indexed Binary format
-source /home/jovyan/Megatron-Bridge/.venv/bin/activate
 python /root/Megatron-LM/tools/preprocess_data.py \
     --input $JSONL_FILE \
     --output-prefix "$DATA_DIR/corpus_data" \
@@ -32,5 +32,3 @@ python /root/Megatron-LM/tools/preprocess_data.py \
     --append-eod \
     --json-keys text \
     --workers 1
-
-deactivate

@@ -25,19 +25,19 @@ WORLD_SIZE=$(($GPUS_PER_NODE*$NUM_NODES))
 # Path to the pretrain_gpt.py script
 PRETRAIN_SCRIPT_PATH="pretrain_gpt.py"
 
-# Fixed model and training parameters (Restored to 8B - Pure BF16 Mode)
+# Fixed model and training parameters (Restored to 8B - Lion Memory-Saver Mode)
 TP_SIZE=1     
 CP_SIZE=1     
 PP_SIZE=1     
 MICRO_BATCH_SIZE=1
 GLOBAL_BATCH_SIZE=128
 NUM_LAYERS=32
-DTYPE="bf16" # Switched from FP8 to BF16 for memory stability
-SEQ_LENGTH=512 # Extreme memory savings
-MAX_POSITION_EMBEDDINGS=512
+DTYPE="bf16"
+SEQ_LENGTH=1024
+MAX_POSITION_EMBEDDINGS=1024
 
 # Data cache path
-DATA_CACHE_PATH="${PWD}/benchmark_cache_llama3_8b_bf16"
+DATA_CACHE_PATH="${PWD}/benchmark_cache_llama3_8b_lion"
 mkdir -p "$DATA_CACHE_PATH"
 
 DISTRIBUTED_ARGS=(
@@ -86,8 +86,6 @@ TRAINING_ARGS=(
     --lr-decay-style cosine
     --clip-grad 1.0
     --weight-decay 0.1
-    --adam-beta1 0.9
-    --adam-beta2 0.95
     --bf16
     --grad-reduce-in-bf16
     --cross-entropy-loss-fusion
@@ -95,6 +93,7 @@ TRAINING_ARGS=(
     --manual-gc 
     --empty-unused-memory-level 1 
     --exit-duration-in-mins 235 
+    --optimizer lion # Use Lion to save 32GB VRAM (removes 1 momentum state)
 )
 
 # Model parallelism arguments
@@ -108,14 +107,14 @@ if [ $TP_SIZE -gt 1 ]; then
     MODEL_PARALLEL_ARGS+=(--sequence-parallel)
 fi
 
-# Distributed Data Parallel (DDP) arguments - NO DISTRIBUTED OPTIMIZER for memory saving
+# Distributed Data Parallel (DDP) arguments - NO DISTRIBUTED OPTIMIZER for simplest 1-GPU run
 DDP_ARGS=(
     # --use-distributed-optimizer 
 )
 TRAINING_ARGS+=("${DDP_ARGS[@]}")
 
 
-# Data arguments (conditional for mock vs real data)
+# Data arguments
 DATA_ARGS_LIST=(
     "--mock-data"
     "--tokenizer-type NullTokenizer"

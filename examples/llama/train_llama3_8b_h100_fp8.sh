@@ -116,7 +116,7 @@ if [[ "$DTYPE" == "fp8" ]]; then
         "--fp8-format hybrid"
         "--fp8-amax-history-len 1024"
         "--fp8-amax-compute-algo max"
-        "--fp8-param-gather"
+        # "--fp8-param-gather" # Requires distributed optimizer or FSDP
     )
 fi
 

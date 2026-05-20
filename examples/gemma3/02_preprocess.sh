@@ -1,19 +1,27 @@
 #!/bin/bash
 set -e
 
-# Ensure data directory exists
-mkdir -p /home/jovyan/data
+# Data Directory Setup
+DATA_DIR="/home/jovyan/data/medical_corpus"
+JSONL_FILE="$DATA_DIR/medical_train.jsonl"
+RAW_FILE="$DATA_DIR/raw_data.txt"
 
-# If medical data is not present, create a sample for the pipeline to work
-if [ ! -f "/home/jovyan/data/medical_data.jsonl" ]; then
-    echo "Creating sample medical data..."
-    cat <<INTERNAL_EOF > /home/jovyan/data/medical_sample.txt
-Patient presents with acute onset of shortness of breath and chest pain.
-The patient has a history of hypertension and hyperlipidemia.
-Physical examination reveals tachypnea and tachycardia.
-INTERNAL_EOF
-    python3 -c "import json; [print(json.dumps({\"text\": line.strip()})) for line in open(\"/home/jovyan/data/medical_sample.txt\", \"r\") if line.strip()]" > /home/jovyan/data/medical_data.jsonl
+mkdir -p $DATA_DIR
+
+# 1. Fetch data if not already exists
+if [ ! -f "$JSONL_FILE" ]; then
+    echo "Fetching sample data from internet..."
+    curl -L -o $RAW_FILE https://www.gutenberg.org/files/11/11-0.txt
+    python3 -c "
+import json
+with open(\"$RAW_FILE\", \"r\") as f:
+    text = f.read(50000)
+data = {\"text\": text.strip()}
+with open(\"$JSONL_FILE\", \"w\") as f:
+    f.write(json.dumps(data) + \"\n\")
+"
 fi
 
+# 2. Preprocess into Megatron Indexed Binary format
 source /home/jovyan/Megatron-Bridge-Surya/.venv/bin/activate
-python /root/Megatron-LM/tools/preprocess_data.py     --input /home/jovyan/data/medical_data.jsonl     --output-prefix /home/jovyan/data/gemma_medical_data     --tokenizer-type HuggingFaceTokenizer     --tokenizer-model /home/jovyan/models/gemma-3-1b-pt-hf     --append-eod     --workers 1
+python /root/Megatron-LM/tools/preprocess_data.py     --input $JSONL_FILE     --output-prefix "$DATA_DIR/gemma_medical_data"     --tokenizer-type HuggingFaceTokenizer     --tokenizer-model /home/jovyan/models/gemma-3-1b-pt-hf     --append-eod     --json-keys text     --workers 1

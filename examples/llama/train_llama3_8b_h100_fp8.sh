@@ -39,8 +39,8 @@ MICRO_BATCH_SIZE=1
 GLOBAL_BATCH_SIZE=128
 NUM_LAYERS=32  
 DTYPE="fp8"
-SEQ_LENGTH=8192
-MAX_POSITION_EMBEDDINGS=8192
+SEQ_LENGTH=2048
+MAX_POSITION_EMBEDDINGS=2048
 
 # Data cache path (useful for both mock and real data)
 DATA_CACHE_PATH="${PWD}/benchmark_cache_llama3_8b_fp8"
@@ -77,6 +77,8 @@ MODEL_ARGS=(
     --apply-layernorm-1p 
     --untie-embeddings-and-output-weights
     --disable-bias-linear 
+    --recompute-activations
+    --recompute-granularity full
 )
 
 TRAINING_ARGS=(
@@ -101,6 +103,10 @@ TRAINING_ARGS=(
     --manual-gc 
     --empty-unused-memory-level 1 
     --exit-duration-in-mins 235 
+    --use-precision-aware-optimizer
+    --exp-avg-dtype bf16
+    --exp-avg-sq-dtype bf16
+    --main-grads-dtype bf16
 )
 
 # Conditional arguments based on DTYPE (FP8)
@@ -128,9 +134,9 @@ fi
 # Distributed Data Parallel (DDP) arguments
 # From original script's ddp_args
 DDP_ARGS=(
-    --use-distributed-optimizer
-    --overlap-grad-reduce
-    --overlap-param-gather
+    # --use-distributed-optimizer # Disabled for 1-GPU memory savings
+    # --overlap-grad-reduce
+    # --overlap-param-gather
 )
 TRAINING_ARGS+=("${DDP_ARGS[@]}")
 

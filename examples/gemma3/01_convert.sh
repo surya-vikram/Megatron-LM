@@ -1,6 +1,5 @@
 #!/bin/bash
 set -e
-source /root/Megatron-LM/install_bridge.sh
 source /home/jovyan/Megatron-Bridge/.venv/bin/activate
 export HF_MODEL_PATH="/home/jovyan/models/gemma-3-1b-pt-hf"
 export ROUNDTRIP_PATH="/home/jovyan/models/gemma-3-1b-roundtrip-test"

@@ -9,7 +9,7 @@ cd Megatron-Bridge
 git checkout main
 git pull origin main
 if [ ! -d ".venv" ]; then
-    python3 -m venv .venv
+    python3 -m venv --system-site-packages .venv
     source .venv/bin/activate
     pip install -e .
 fi

@@ -1,6 +1,6 @@
 #!/bin/bash
 set -e
-source /home/jovyan/Megatron-Bridge-Surya/.venv/bin/activate
+source /home/jovyan/Megatron-Bridge/.venv/bin/activate
 python -c "
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer

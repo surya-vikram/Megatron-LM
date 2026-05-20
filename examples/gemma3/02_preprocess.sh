@@ -2,8 +2,8 @@
 set -e
 
 # Data Directory Setup
-DATA_DIR="/home/jovyan/data/medical_corpus"
-JSONL_FILE="$DATA_DIR/medical_train.jsonl"
+DATA_DIR="/home/jovyan/data/corpus"
+JSONL_FILE="$DATA_DIR/train.jsonl"
 RAW_FILE="$DATA_DIR/raw_data.txt"
 
 mkdir -p $DATA_DIR
@@ -24,4 +24,13 @@ fi
 
 # 2. Preprocess into Megatron Indexed Binary format
 source /home/jovyan/Megatron-Bridge/.venv/bin/activate
-python /root/Megatron-LM/tools/preprocess_data.py     --input $JSONL_FILE     --output-prefix "$DATA_DIR/gemma_medical_data"     --tokenizer-type HuggingFaceTokenizer     --tokenizer-model /home/jovyan/models/gemma-3-1b-pt-hf     --append-eod     --json-keys text     --workers 1
+python /root/Megatron-LM/tools/preprocess_data.py \
+    --input $JSONL_FILE \
+    --output-prefix "$DATA_DIR/corpus_data" \
+    --tokenizer-type HuggingFaceTokenizer \
+    --tokenizer-model /home/jovyan/models/gemma-3-1b-pt-hf \
+    --append-eod \
+    --json-keys text \
+    --workers 1
+
+deactivate

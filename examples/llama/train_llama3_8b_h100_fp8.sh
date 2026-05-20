@@ -73,7 +73,7 @@ MODEL_ARGS=(
     --swiglu
     --normalization RMSNorm
     --init-method-std 0.0134
-    --attention-backend fused
+    --attention-backend flash
     --apply-layernorm-1p 
     --untie-embeddings-and-output-weights
     --disable-bias-linear 
@@ -82,9 +82,9 @@ MODEL_ARGS=(
 TRAINING_ARGS=(
     --micro-batch-size $MICRO_BATCH_SIZE
     --global-batch-size $GLOBAL_BATCH_SIZE
-    --train-samples 1953125000
-    --lr-decay-samples 1949218748
-    --lr-warmup-samples 3906252
+    --train-samples 100000
+    --lr-decay-samples 90000
+    --lr-warmup-samples 10000
     --lr 0.00015
     --min-lr 0.00001
     --decoupled-lr 5.0e-4      # Specific to decoupled AdamW, ensure optimizer is compatible

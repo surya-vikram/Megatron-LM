@@ -79,8 +79,10 @@ export MASTER_ADDR=localhost
 export MASTER_PORT=12356
 
 # We compare the ORIGINAL HF against the STITCHED HF
+# We point --megatron-path to the MCORE dir to satisfy script requirements
 python "$BRIDGE_DIR/examples/conversion/compare_text_generation.py" \
     --hf-model-id "$HF_SOURCE_DIR" \
+    --megatron-path "$MCORE_TARGET_DIR" \
     --hf-save-path "$HF_ROUNDTRIP_DIR" \
     --prompt "The capital of France is" \
     --max-new-tokens 20 \

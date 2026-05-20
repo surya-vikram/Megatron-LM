@@ -38,14 +38,18 @@ echo "Step 3: Installing Megatron-Core dependencies..."
 export UV_BREAK_SYSTEM_PACKAGES=1
 uv pip install --system -e .[training,dev]
 
-# 4. Install FlashAttention-3 from Custom Wheel
-echo "Step 4: Installing FlashAttention-3 from HuggingFace artifact..."
+# 4. Pin FlashInfer to a matching python/cubin pair
+echo "Step 4: Pinning FlashInfer to a matching build..."
+pip install "flashinfer-python==0.6.8.post1" "flashinfer-cubin==0.6.8.post1" --no-deps
+
+# 5. Install FlashAttention-3 from Custom Wheel
+echo "Step 5: Installing FlashAttention-3 from HuggingFace artifact..."
 # Using the custom wheel built on H200 (CUDA 13.1, Python 3.12)
 WHEEL_URL="https://huggingface.co/datasets/surya-vikram/hopper-wheels/resolve/main/flash_attn_3-3.0.0-cp39-abi3-linux_x86_64.whl"
 pip install "$WHEEL_URL" --no-deps
 
-# 5. Patch TransformerEngine
-echo "Step 5: Applying TransformerEngine Backend Patch..."
+# 6. Patch TransformerEngine
+echo "Step 6: Applying TransformerEngine Backend Patch..."
 TE_PATH=$(python3 -c "import transformer_engine; import os; print(os.path.dirname(transformer_engine.__file__))" 2>/dev/null || echo "")
 
 if [ -n "$TE_PATH" ]; then
@@ -62,8 +66,8 @@ else
     echo "WARNING: transformer_engine not found. Skipping patch."
 fi
 
-# 6. Verification
-echo "Step 6: Verifying Setup..."
+# 7. Verification
+echo "Step 7: Verifying Setup..."
 python3 - <<'EOF'
 try:
     import torch

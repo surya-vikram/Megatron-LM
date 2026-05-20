@@ -1,14 +1,18 @@
 #!/bin/bash
-set -e
-BASE_DIR="/home/jovyan"
-cd $BASE_DIR
-if [ ! -d "Megatron-Bridge" ]; then
-    git clone https://github.com/surya-vikram/Megatron-Bridge.git Megatron-Bridge
-fi
-cd Megatron-Bridge
-git checkout main
-git pull origin main
+set -euo pipefail
 
-# Install globally to leverage the container's optimized PyTorch
-pip install -e .
+BASE_DIR="/home/jovyan"
+BRIDGE_DIR="${BASE_DIR}/Megatron-Bridge"
+
+cd "${BASE_DIR}"
+if [ ! -d "${BRIDGE_DIR}" ]; then
+    git clone https://github.com/surya-vikram/Megatron-Bridge.git "${BRIDGE_DIR}"
+fi
+
+cd "${BRIDGE_DIR}"
+git checkout main
+git pull --ff-only origin main
+
+python3 -m pip install "nvidia-resiliency-ext==0.6.0"
+python3 -m pip install -e . --no-deps
 echo "Bridge dependencies installed globally."

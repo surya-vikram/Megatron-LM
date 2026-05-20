@@ -42,15 +42,33 @@ def build_shard_map(index_path: Path) -> dict[str, list[str]]:
     return dict(shard_map)
 
 
-def remap_text_key(key: str) -> str:
+def remap_key_for_conditional_gen(key: str) -> str:
+    """
+    Remaps keys to match the expectation of Gemma3ForConditionalGeneration.
+    Based on the 'MISSING' keys report in the logs.
+    """
+    # 1. Handle Text Backbone
+    if key.startswith("model."):
+        # e.g. model.layers.0... -> model.language_model.model.layers.0...
+        return "model.language_model." + key
+    
     if key.startswith("language_model.model."):
-        return key
-    if key.startswith("model.layers."):
-        return key.replace("model.layers.", "language_model.model.layers.", 1)
-    if key == "model.embed_tokens.weight":
-        return "language_model.model.embed_tokens.weight"
-    if key == "model.norm.weight":
-        return "language_model.model.norm.weight"
+        # e.g. language_model.model.layers.0... -> model.language_model.model.layers.0...
+        return "model." + key
+
+    # 2. Handle Vision Tower & Projector from original HF
+    # The original keys in safetensors were like: vision_tower.vision_model.encoder...
+    # The expected keys are like: model.vision_tower.encoder...
+    
+    if key.startswith("vision_tower.vision_model."):
+        return key.replace("vision_tower.vision_model.", "model.vision_tower.", 1)
+    
+    if key.startswith("vision_tower."):
+        return "model." + key
+        
+    if key.startswith("multi_modal_projector."):
+        return "model." + key
+
     return key
 
 
@@ -75,32 +93,54 @@ def merge_full_checkpoint() -> None:
     base_index = json.loads(base_index_path.read_text())
 
     print("Loading exported text weights...")
-    remapped_text_tensors: dict[str, torch.Tensor] = {}
+    raw_text_tensors: dict[str, torch.Tensor] = {}
     raw_shards = sorted(raw_export_path.glob("model-*.safetensors"))
     for shard_path in raw_shards:
-        shard_tensors = load_file(shard_path)
-        for key, value in shard_tensors.items():
-            remapped_text_tensors[remap_text_key(key)] = value
+        raw_text_tensors.update(load_file(shard_path))
 
-    if not remapped_text_tensors:
+    if not raw_text_tensors:
         raise RuntimeError(f"No text tensors were exported into {raw_export_path}")
 
     print("Writing full merged safetensor shards...")
     base_shard_map = build_shard_map(base_index_path)
+    
+    # We will build a new index because keys are remapped
+    new_weight_map = {}
+
     for shard_name, shard_keys in base_shard_map.items():
         base_shard_path = hf_source_path / shard_name
-        merged_shard = load_file(base_shard_path)
-        updated_tensors: dict[str, torch.Tensor] = {}
-        for key in shard_keys:
-            updated_tensors[key] = remapped_text_tensors.get(key, merged_shard[key])
-        save_file(updated_tensors, str(hf_export_path / shard_name))
+        original_shard = load_file(base_shard_path)
+        
+        updated_shard: dict[str, torch.Tensor] = {}
+        
+        # We must iterate over what the NEW model expects
+        for original_key in shard_keys:
+            new_key = remap_key_for_conditional_gen(original_key)
+            
+            # If it's a text key, try to find it in the exported Megatron tensors
+            # (Note: raw_text_tensors keys might need remapping too)
+            # Megatron-Bridge export_ckpt with Gemma3ForCausalLM gives keys starting with 'model.'
+            if original_key.startswith("language_model.model."):
+                mcore_key = original_key.replace("language_model.model.", "model.", 1)
+                if mcore_key in raw_text_tensors:
+                    updated_shard[new_key] = raw_text_tensors[mcore_key]
+                else:
+                    updated_shard[new_key] = original_shard[original_key]
+            else:
+                # It's vision or projector, take from original
+                updated_shard[new_key] = original_shard[original_key]
+            
+            new_weight_map[new_key] = shard_name
+            
+        save_file(updated_shard, str(hf_export_path / shard_name))
 
     updated_index = base_index
+    updated_index["weight_map"] = new_weight_map
     updated_index["metadata"] = {
         **updated_index.get("metadata", {}),
         "source_base_checkpoint": str(hf_source_path),
         "source_text_export": str(raw_export_path),
-        "merge_strategy": "base_vision_plus_roundtrip_text",
+        "merge_strategy": "base_vision_plus_roundtrip_text_remapped",
     }
     (hf_export_path / "model.safetensors.index.json").write_text(
         json.dumps(updated_index, indent=2) + "\n"
@@ -108,8 +148,6 @@ def merge_full_checkpoint() -> None:
 
     config_path = hf_export_path / "config.json"
     config = json.loads(config_path.read_text())
-    # Note: Keep the original architecture (ConditionalGeneration) for the merged model
-    # config["architectures"] = ["Gemma3ForCausalLM"] 
     config["torch_dtype"] = "bfloat16"
     config_path.write_text(json.dumps(config, indent=2) + "\n")
 

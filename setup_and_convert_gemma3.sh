@@ -8,11 +8,11 @@ set -e
 # Configuration
 BRIDGE_REPO="https://github.com/surya-vikram/Megatron-Bridge.git"
 BRIDGE_BRANCH="gemma-patch"
-BRIDGE_DIR="/root/Megatron-Bridge-Surya"
+BRIDGE_DIR="$HOME/Megatron-Bridge-Surya"
 MODEL_ID="google/gemma-3-4b-pt"
-HF_SOURCE_DIR="/root/models/gemma-3-4b-pt-hf"
-MCORE_TARGET_DIR="/root/models/gemma-3-4b-pt-mcore"
-HF_ROUNDTRIP_DIR="/root/models/gemma-3-4b-pt-roundtrip-hf"
+HF_SOURCE_DIR="$HOME/models/gemma-3-4b-pt-hf"
+MCORE_TARGET_DIR="$HOME/models/gemma-3-4b-pt-mcore"
+HF_ROUNDTRIP_DIR="$HOME/models/gemma-3-4b-pt-roundtrip-hf"
 
 echo "=== Gemma-3 4B Automation Script ==="
 
@@ -20,33 +20,36 @@ echo "=== Gemma-3 4B Automation Script ==="
 if [ ! -d "$BRIDGE_DIR" ]; then
     echo "--- Installing Megatron-Bridge ($BRIDGE_BRANCH) ---"
     git clone -b "$BRIDGE_BRANCH" "$BRIDGE_REPO" "$BRIDGE_DIR"
-    
-    cd "$BRIDGE_DIR"
-    # Create a symlink to this Megatron-LM repo to ensure the Bridge uses our optimized code
-    rm -rf 3rdparty/Megatron-LM
-    ln -s "$(pwd -P)/.." 3rdparty/Megatron-LM
-    
-    # Create safe venv
-    uv venv --system-site-packages .venv
-    source .venv/bin/activate
-    export UV_BREAK_SYSTEM_PACKAGES=1
-    uv pip install -e .
-    cd -
-else
-    echo "Check: Megatron-Bridge already installed. [OK]"
 fi
+
+cd "$BRIDGE_DIR"
+# Create a symlink to this Megatron-LM repo to ensure the Bridge uses our optimized code
+rm -rf 3rdparty/Megatron-LM
+# Use absolute path to the current Megatron-LM repo
+MEGATRON_LM_DIR=$(cd $(dirname $0)/.. && pwd)
+ln -s "$MEGATRON_LM_DIR" 3rdparty/Megatron-LM
+
+# Create safe venv
+export UV_HTTP_TIMEOUT=300
+if [ ! -d ".venv" ]; then
+    uv venv --system-site-packages .venv
+fi
+source .venv/bin/activate
+export UV_BREAK_SYSTEM_PACKAGES=1
+uv pip install -e .
+cd -
 
 # 2. Download Model
 if [ ! -d "$HF_SOURCE_DIR" ]; then
     echo "--- Downloading $MODEL_ID ---"
-    mkdir -p "/root/models"
+    mkdir -p "$HOME/models"
     # Assuming user is already logged in via sanity_check or previous steps
     hf download "$MODEL_ID" --local-dir "$HF_SOURCE_DIR"
 else
     echo "Check: HF Source model present. [OK]"
-    # Ensure architectures is correct if previously patched or redownloaded
-    python3 -c "import json; path = '$HF_SOURCE_DIR/config.json'; c = json.load(open(path)); c['architectures'] = ['Gemma3ForCausalLM']; json.dump(c, open(path, 'w'), indent=2)"
 fi
+# Ensure architectures is correct if previously patched or redownloaded
+python3 -c "import json; path = '$HF_SOURCE_DIR/config.json'; c = json.load(open(path)); c['architectures'] = ['Gemma3ForCausalLM']; json.dump(c, open(path, 'w'), indent=2)"
 
 # 3. Conversion & Verification Loop
 echo "--- Running Bidirectional Conversion & Parity Check ---"

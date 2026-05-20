@@ -26,7 +26,11 @@ echo "Check: CUDA Runtime is $CUDA_VER."
 echo "Step 2: Installing uv (Fast Package Manager)..."
 curl -LsSf https://astral.sh/uv/install.sh | sh
 export PATH=$HOME/.local/bin:$PATH
-# For Jovyan/Container specific paths
+# Ensure /root/.local/bin is in path if running as root
+if [ "$(id -u)" -eq 0 ]; then
+    export PATH=/root/.local/bin:$PATH
+fi
+# For Jovyan specific paths (backward compatibility)
 export PATH=/home/jovyan/.local/bin:$PATH
 
 # 3. Install Megatron-Core

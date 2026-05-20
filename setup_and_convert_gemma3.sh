@@ -1,11 +1,11 @@
 #!/bin/bash
 # setup_and_convert_gemma3.sh
 # Automates Megatron-Bridge setup, Gemma-3 4B download, and bidirectional verification.
-# Run this after sanity_check.sh.
+# This script uses specialized stitching logic for Gemma-3 multimodal models.
 
 set -e
 
-# Configuration - Using $HOME but ensuring we have a sane default
+# Configuration - Robustly handle HOME
 BASE_DIR="${HOME:-/root}"
 BRIDGE_REPO="https://github.com/surya-vikram/Megatron-Bridge.git"
 BRIDGE_BRANCH="gemma-patch"
@@ -15,11 +15,12 @@ HF_SOURCE_DIR="$BASE_DIR/models/gemma-3-4b-pt-hf"
 MCORE_TARGET_DIR="$BASE_DIR/models/gemma-3-4b-pt-mcore"
 HF_ROUNDTRIP_DIR="$BASE_DIR/models/gemma-3-4b-pt-roundtrip-hf"
 
-# Calculate MEGATRON_LM_DIR BEFORE changing directories
-MEGATRON_LM_DIR=$(cd $(dirname $0) && pwd)
+# Find where THIS Megatron-LM repo is located
+MEGATRON_LM_DIR=$(cd "$(dirname "$0")" && pwd)
 
-echo "=== Gemma-3 4B Automation Script ==="
-echo "Megatron-LM Directory: $MEGATRON_LM_DIR"
+echo "=== Gemma-3 4B Automation Script (Stitching Version) ==="
+echo "Base Directory: $BASE_DIR"
+echo "Megatron-LM:    $MEGATRON_LM_DIR"
 
 # 1. Setup Megatron-Bridge
 if [ ! -d "$BRIDGE_DIR" ]; then
@@ -28,10 +29,11 @@ if [ ! -d "$BRIDGE_DIR" ]; then
 fi
 
 cd "$BRIDGE_DIR"
-# Create a symlink to this Megatron-LM repo to ensure the Bridge uses our optimized code
+# Ensure the symlink is correct and absolute
 rm -rf 3rdparty/Megatron-LM
-echo "Setting up symlink: 3rdparty/Megatron-LM -> $MEGATRON_LM_DIR"
+mkdir -p 3rdparty
 ln -s "$MEGATRON_LM_DIR" 3rdparty/Megatron-LM
+echo "Symlink created: 3rdparty/Megatron-LM -> $MEGATRON_LM_DIR"
 
 # Create safe venv
 export UV_HTTP_TIMEOUT=300
@@ -40,8 +42,11 @@ if [ ! -d ".venv" ]; then
 fi
 source .venv/bin/activate
 export UV_BREAK_SYSTEM_PACKAGES=1
-# Clean up any cached build artifacts that might be causing path issues
-rm -rf build/
+
+# Clean previous build state to avoid metadata name mismatches
+rm -rf build/ src/*.egg-info 3rdparty/Megatron-LM/build 3rdparty/Megatron-LM/src/*.egg-info
+
+echo "--- Installing Bridge & Core ---"
 uv pip install -e .
 cd -
 
@@ -49,29 +54,33 @@ cd -
 if [ ! -d "$HF_SOURCE_DIR" ]; then
     echo "--- Downloading $MODEL_ID ---"
     mkdir -p "$BASE_DIR/models"
-    # Assuming user is already logged in via sanity_check or previous steps
     hf download "$MODEL_ID" --local-dir "$HF_SOURCE_DIR"
 else
     echo "Check: HF Source model present. [OK]"
 fi
-# Ensure architectures is correct if previously patched or redownloaded
-python3 -c "import json; path = '$HF_SOURCE_DIR/config.json'; c = json.load(open(path)); c['architectures'] = ['Gemma3ForCausalLM']; json.dump(c, open(path, 'w'), indent=2)"
 
-# 3. Conversion & Verification Loop
-echo "--- Running Bidirectional Conversion & Parity Check ---"
+# 3. Conversion Pipeline
+echo "--- Step A: Converting HF -> Megatron (Text Backbone Only) ---"
+python convert_gemma3.py
+
+echo "--- Step B: Converting Megatron -> HF (Stitching Vision Tower) ---"
+python export_gemma3.py
+
+# 4. Verification Loop
+echo "--- Step C: Running Parity Check on Stitched Model ---"
 if [ -d "$BRIDGE_DIR/.venv" ]; then
     source "$BRIDGE_DIR/.venv/bin/activate"
 fi
 
-# We must set these for the Bridge's distributed initialization logic
+# Required for distributed init
 export RANK=0
 export WORLD_SIZE=1
 export MASTER_ADDR=localhost
 export MASTER_PORT=12356
 
+# We compare the ORIGINAL HF against the STITCHED HF
 python "$BRIDGE_DIR/examples/conversion/compare_text_generation.py" \
     --hf-model-id "$HF_SOURCE_DIR" \
-    --megatron-path "$MCORE_TARGET_DIR" \
     --hf-save-path "$HF_ROUNDTRIP_DIR" \
     --prompt "The capital of France is" \
     --max-new-tokens 20 \
@@ -82,4 +91,5 @@ echo ""
 echo "=================================================="
 echo "SUCCESS: Gemma-3 4B is converted and verified!"
 echo "Megatron Checkpoint: $MCORE_TARGET_DIR"
+echo "Stitched HF Model:   $HF_ROUNDTRIP_DIR"
 echo "=================================================="

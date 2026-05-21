@@ -72,7 +72,7 @@ MODEL_ARGS=(
     --transformer-impl transformer_engine
     --attention-backend flash
     --attention-softmax-in-fp32
-    --window-size $WINDOW_SIZE $WINDOW_SIZE
+    --window-size "$WINDOW_SIZE,$WINDOW_SIZE"
 )
 
 TRAINING_ARGS=(

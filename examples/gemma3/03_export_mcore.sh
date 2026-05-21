@@ -4,9 +4,14 @@ set -euo pipefail
 # Export Megatron Gemma3 checkpoint to HuggingFace format using Megatron-Bridge.
 # Usage: ./03_export_mcore.sh <megatron_checkpoint_path> <hf_save_path> <hf_config_reference>
 
-MCORE_CHECKPOINT="${1:-./megatron_checkpoints/gemma-3-4b-mcore_trained}"
-HF_SAVE_PATH="${2:-./huggingface_models/gemma-3-4b-exported}"
-HF_CONFIG="${3:-google/gemma-3-4b-pt}"
+MCORE_CHECKPOINT="${1:-NO_VALUE_PROVIDED}"
+HF_SAVE_PATH="${2:-./huggingface_models/gemma3-exported}"
+HF_CONFIG="${3:-google/gemma-3-1b-pt}"
+
+if [ "$MCORE_CHECKPOINT" = "NO_VALUE_PROVIDED" ]; then
+    echo "Error: Megatron checkpoint path is required."
+    exit 1
+fi
 
 echo "Exporting Megatron checkpoint to HF format..."
 echo "Megatron Path: ${MCORE_CHECKPOINT}"

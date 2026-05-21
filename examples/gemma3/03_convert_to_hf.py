@@ -33,14 +33,19 @@ if __name__ == "__main__":
     
     print(f"Converting Megatron checkpoint {args.megatron_model} to HF format...")
     
-    # Load via AutoBridge
-    bridge = AutoBridge.from_megatron_checkpoint(
-        args.megatron_model,
-        hf_config_path=args.hf_config,
+    # Use the bridge to handle export
+    bridge = AutoBridge.from_auto_config(
+        args.megatron_model, 
+        args.hf_config, 
         trust_remote_code=True
     )
     
     # Export to HF
-    bridge.save_hf_pretrained(args.save_path)
+    bridge.export_ckpt(
+        megatron_path=args.megatron_model,
+        hf_path=args.save_path,
+        show_progress=True,
+        strict=True
+    )
     
     print(f"Saved HuggingFace model to {args.save_path}")

@@ -28,6 +28,7 @@ from megatron.training import (
 from megatron.training.arguments import parse_and_validate_args
 from megatron.training.argument_utils import pretrain_cfg_container_from_args
 from megatron.core.enums import ModelType
+from megatron.core.utils import init_method_normal, scaled_init_method_normal
 from model_provider import model_provider
 
 try:
@@ -88,6 +89,10 @@ def gemma3_model_builder(args, pre_process, post_process, vp_stage=None, config=
 
     provider.bf16 = args.bf16
     provider.fp16 = args.fp16
+
+    # Initialization methods are required by MCore even if loading pretrained weights
+    provider.init_method = init_method_normal(args.init_method_std)
+    provider.scaled_init_method = scaled_init_method_normal(args.init_method_std, args.num_layers)
     
     # Initialize the model using the provider
     model = provider.provide(pre_process=pre_process, post_process=post_process, vp_stage=vp_stage)

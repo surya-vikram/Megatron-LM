@@ -20,15 +20,46 @@ DISTRIBUTED_ARGS=(
     --node_rank 0
 )
 
-# Gemma3 4B Config (Example)
+# Default to 1B config if not specified as second argument
+MODEL_SIZE="${2:-1B}"
+
+if [ "$MODEL_SIZE" = "1B" ]; then
+    # Gemma3 1B Config
+    NUM_LAYERS=26
+    HIDDEN_SIZE=1152
+    NUM_ATTN_HEADS=4
+    NUM_QUERY_GROUPS=1
+    FFN_HIDDEN_SIZE=6912
+    WINDOW_SIZE=512
+    VOCAB_SIZE=262144
+elif [ "$MODEL_SIZE" = "4B" ]; then
+    # Gemma3 4B Config
+    NUM_LAYERS=34
+    HIDDEN_SIZE=2560
+    NUM_ATTN_HEADS=8
+    NUM_QUERY_GROUPS=4
+    FFN_HIDDEN_SIZE=10240
+    WINDOW_SIZE=1024
+    VOCAB_SIZE=262208
+else
+    echo "Unknown model size: $MODEL_SIZE. Defaulting to 1B."
+    NUM_LAYERS=26
+    HIDDEN_SIZE=1152
+    NUM_ATTN_HEADS=4
+    NUM_QUERY_GROUPS=1
+    FFN_HIDDEN_SIZE=6912
+    WINDOW_SIZE=512
+    VOCAB_SIZE=262144
+fi
+
 MODEL_ARGS=(
-    --num-layers 34
-    --hidden-size 2560
-    --num-attention-heads 8
-    --num-query-groups 4
+    --num-layers $NUM_LAYERS
+    --hidden-size $HIDDEN_SIZE
+    --num-attention-heads $NUM_ATTN_HEADS
+    --num-query-groups $NUM_QUERY_GROUPS
     --group-query-attention
     --kv-channels 256
-    --ffn-hidden-size 10240
+    --ffn-hidden-size $FFN_HIDDEN_SIZE
     --seq-length 1024
     --max-position-embeddings 4096
     --position-embedding-type rope
@@ -41,32 +72,33 @@ MODEL_ARGS=(
     --transformer-impl transformer_engine
     --attention-backend flash
     --attention-softmax-in-fp32
+    --window-size $WINDOW_SIZE
 )
 
 TRAINING_ARGS=(
     --micro-batch-size 1
     --global-batch-size 1
-    --train-iters 50
-    --lr 1e-4
+    --train-iters 5
+    --lr 1e-7
     --lr-decay-style constant
-    --min-lr 1e-4
+    --min-lr 1e-7
     --weight-decay 0.0
     --clip-grad 1.0
     --bf16
 )
 
-if [ "$DATA_PATH" = "MOCK" ]; then
+if [ "$DATA_PATH" = "MOCK" ] || [ "$DATA_PATH" = "1B" ] || [ "$DATA_PATH" = "4B" ]; then
     DATA_ARGS=(
         --mock-data
         --tokenizer-type NullTokenizer
-        --vocab-size 262208
+        --vocab-size $VOCAB_SIZE
         --split 100,0,0
     )
 else
     DATA_ARGS=(
         --data-path "$DATA_PATH"
         --tokenizer-type NullTokenizer
-        --vocab-size 262208
+        --vocab-size $VOCAB_SIZE
         --split 100,0,0
     )
 fi

@@ -82,8 +82,14 @@ Compare the state dictionaries of the original HF model and the exported HF mode
 Calculate the difference between the original and trained weights.
 - **Update Confirmation:** Verify that `max(abs(trained - original))` is greater than 0 (confirming an update occurred).
 - **Sanity Bound:** Verify that the difference is small (consistent with 1 step at a low LR), ensuring no catastrophic divergence or NaN issues.
+## Future Work (TODO)
+- **VLM Support (4B, 12B, 27B):** Currently, the training integration targets the pure text-based Gemma3-1B model. For 4B and larger models, which are Vision-Language Models (VLMs), the training scripts need to be adapted to:
+    - Handle vision tower parameters during conversion and training.
+    - Implement a multimodal data loader compatible with Megatron-LM.
+    - Alternatively, implement a "text-only" mode that strips vision components from VLM checkpoints for pure LLM training.
 
 ## Verification Script Template
+...
 A script like `verify_roundtrip_logic.py` can be used for steps 4 and 5:
 ```python
 import torch

@@ -1,82 +1,158 @@
-# Gemma3-1B SFT End-to-End Runbook
+# Gemma3-1B SFT Production Runbook
 
-This guide provides the definitive steps to execute the Supervised Fine-Tuning (SFT) pipeline for Gemma3-1B from scratch on a remote GPU node.
+This runbook targets the current single-GPU remote workflow for Gemma3-1B SFT in `/root/Megatron-LM`.
 
-## 📋 Prerequisites
+## Preconditions
 
-Before starting, ensure you have the following:
-1. **SSH Access**: Credentials for the target GPU node.
-2. **GitHub Token**: A Personal Access Token (PAT) with repository read access (if the repo is private) to pull the `gemma3-1b` branch.
-3. **HuggingFace Token**: A token with access to the `google/gemma-3-1b-pt` repository.
+- GPU node with enough memory for long-context packed SFT. The current target node is `1x H200 143GB`.
+- HuggingFace token with access to `google/gemma-3-1b-pt` and `google/gemma-3-1b-it`.
+- Megatron-Bridge installed at `/home/jovyan/Megatron-Bridge`.
+- `HF_TOKEN` exported or passed to the pipeline script.
 
----
+## Workflow Summary
 
-## 🚀 Step 1: Repository Setup
+The SFT workflow is no longer a single smoke script. It is staged:
 
-SSH into the node and navigate to the root directory. Clone the repository and switch to the active SFT branch:
+1. Prepare a data bundle with:
+   - `train.jsonl`
+   - `smoke_train.jsonl`
+   - `heldout.jsonl`
+   - `overfit_single.jsonl`
+   - `overfit_pack.jsonl`
+   - `reasoning_eval.json`
+2. Import the base HF checkpoint to Megatron.
+3. Run context-length preflight with packed SFT and `micro-batch-size=1`.
+4. Pass the 1-sample overfit gate.
+5. Pass the smoke gate on a small subset.
+6. Launch the real-corpus run.
+7. Export the trained checkpoint to HF.
+8. Run the stronger evaluation harness.
 
-```bash
-cd /root
-# If prompted, use your GitHub Token as the password
-git clone -b gemma3-1b https://github.com/surya-vikram/Megatron-LM.git
-cd Megatron-LM
-```
+## Packed-SFT Constraints
 
----
+- `micro-batch-size` must stay `1`.
+- Context tuning is done with `seq-length`, not by increasing micro-batch size.
+- Default context ladder:
+  - upward: `16384 -> 24576 -> 32768`
+  - backoff: `12288 -> 8192`
 
-## 🛠️ Step 2: Environment Initialization
+## Prepare Data
 
-Run the automated sanity check script. This will:
-- Install `uv` (Fast Package Manager).
-- Install Megatron-Core and dependencies.
-- Install FlashAttention-3 (FA3) and patch the TransformerEngine backend.
-- Verify GPU health.
-
-```bash
-bash sanity_check.sh
-```
-
----
-
-## 🌉 Step 3: Megatron-Bridge Installation
-
-Install the Megatron-Bridge to enable conversion between HuggingFace and Megatron formats:
-
-```bash
-mkdir -p /home/jovyan
-git clone https://github.com/surya-vikram/Megatron-Bridge.git /home/jovyan/Megatron-Bridge
-cd /home/jovyan/Megatron-Bridge
-git checkout main
-pip install -e . --no-deps
-```
-
----
-
-## 🎯 Step 4: Execute SFT Pipeline
-
-Run the master orchestration script. This script automates the entire flow:
-1. **Import**: Converts HF model to Megatron-Core.
-2. **Prepare**: Fetches Capybara dataset, injects "Gold" samples, and filters for 16k sequence length.
-3. **Train**: Runs the optimized SFT loop with precision masking.
-4. **Export**: Converts fine-tuned weights back to HuggingFace.
-5. **Verify**: Validates memorization and chat template alignment.
+For the default Capybara smoke bundle:
 
 ```bash
 cd /root/Megatron-LM
-./examples/gemma3/run_1b_sft_pipeline.sh <YOUR_HF_TOKEN>
+python3 examples/gemma3/prepare_sft_data.py \
+  --output-dir /home/jovyan/models/gemma3_sft_runs/smoke_bundle \
+  --tokenizer-model google/gemma-3-1b-it \
+  --max-seq-length 32768 \
+  --shuffle
 ```
 
----
+For a real corpus, provide your own `train.jsonl` plus matching held-out and overfit files, or use `prepare_sft_data.py --source jsonl --input-path ...` to bundle an existing JSONL.
 
-## 📊 Monitoring & Verification
+## Stage Commands
 
-- **GPU Utilization**: Run `nvidia-smi` in a separate terminal. Expect **95%+ utilization** due to our optimized dataloader configuration (`--num-workers 8` and hoisted token lookups).
-- **Masking Logic**: The training uses the custom `gemma3` prompt format in `SFTTokenizer` which correctly masks the 3-token assistant header and shuts off loss exactly at `<end_of_turn>`.
-- **Success Criteria**: The pipeline is successful if `verify_sft_results.py` (Step 5) reports a high memorization score and correct chat template alignment.
+The orchestration entrypoint is:
 
----
+```bash
+./examples/gemma3/run_1b_sft_pipeline.sh --stage <stage> [options]
+```
 
-## 🛠️ Troubleshooting
+Useful stages:
 
-- **Out of Memory**: Ensure you are on an H100/H200 node. The pipeline is configured for a 16k sequence length.
-- **Tokenization Bottleneck**: If GPU utilization is low/sawtooth, check CPU load; the `--num-workers 8` flag should be sufficient for most H100 hosts.
+- `prepare`
+- `preflight`
+- `overfit`
+- `smoke`
+- `launch`
+- `export`
+- `evaluate`
+- `full`
+
+### Full smoke-bundle example
+
+```bash
+cd /root/Megatron-LM
+HF_TOKEN=<your_hf_token> ./examples/gemma3/run_1b_sft_pipeline.sh \
+  --stage full \
+  --run-name gemma3_sft_smoke \
+  --data-bundle-dir /home/jovyan/models/gemma3_sft_runs/smoke_bundle
+```
+
+### Real-corpus launch example
+
+```bash
+cd /root/Megatron-LM
+HF_TOKEN=<your_hf_token> ./examples/gemma3/run_1b_sft_pipeline.sh \
+  --stage full \
+  --run-name gemma3_sft_real \
+  --train-data-path /path/to/train.jsonl \
+  --heldout-path /path/to/heldout.jsonl \
+  --overfit-single-path /path/to/overfit_single.jsonl \
+  --overfit-pack-path /path/to/overfit_pack.jsonl \
+  --reasoning-eval-path /path/to/reasoning_eval.json
+```
+
+## Direct Training Entry Point
+
+`examples/gemma3/04_sft_mcore.sh` is now the packed-SFT launcher. It writes `run_config.json` beside the checkpoint and supports parameterized runs:
+
+```bash
+./examples/gemma3/04_sft_mcore.sh \
+  --checkpoint-path /home/jovyan/models/gemma3-1b-mcore-sft-base \
+  --data-path /path/to/train.jsonl \
+  --save-path /home/jovyan/models/gemma3_sft_runs/manual_full \
+  --mode full \
+  --seq-length 24576 \
+  --global-batch-size 8 \
+  --train-iters 100 \
+  --lr 3e-6
+```
+
+## Export and Evaluation
+
+Export uses the Gemma bridge path:
+
+```bash
+./examples/gemma3/03_export_mcore.sh \
+  /home/jovyan/models/gemma3_sft_runs/manual_full \
+  /home/jovyan/models/gemma3_sft_runs/manual_full_hf \
+  google/gemma-3-1b-it
+```
+
+Stronger evaluation uses:
+
+```bash
+python3 examples/gemma3/verify_sft_results.py \
+  --verification-mode full \
+  --model-path /home/jovyan/models/gemma3_sft_runs/manual_full_hf \
+  --data-bundle-dir /home/jovyan/models/gemma3_sft_runs/smoke_bundle \
+  --run-config /home/jovyan/models/gemma3_sft_runs/manual_full/run_config.json
+```
+
+The verifier now checks:
+
+- masking correctness on multiple samples
+- packing invariants consistent with packed SFT
+- 1-sample overfit loss collapse and greedy answer-prefix match
+- tiny-pack overfit loss improvement
+- held-out loss and response-quality deltas
+- reasoning preservation against the base model
+
+## Success Criteria
+
+A run is ready to count as production-launchable only if:
+
+- context preflight chooses a stable sequence length
+- overfit gate passes
+- smoke gate passes
+- the real run reaches the initial launch window cleanly
+- checkpoint export succeeds
+- the stronger evaluation report passes
+
+## Operational Notes
+
+- The old `verify_sft_results.py` keyword-only smoke test is gone; its role is replaced by the stronger evaluator.
+- If context preflight fails at `16384`, the launcher automatically backs off down the ladder.
+- If higher context lengths are stable, the pipeline keeps climbing toward `32768`.

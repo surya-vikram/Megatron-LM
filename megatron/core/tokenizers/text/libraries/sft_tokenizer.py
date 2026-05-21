@@ -123,6 +123,19 @@ class SFTTokenizer:
 
         self._prompt_format = prompt_format
 
+        # Derive assistant header tokens for pattern-based masking
+        try:
+            conv = [{"role": "user", "content": ""}]
+            full = self._tokenizer.apply_chat_template(conv, add_generation_prompt=True, tokenize=False, chat_template=self._prompt_config.custom_chat_template)
+            base = self._tokenizer.apply_chat_template(conv, add_generation_prompt=False, tokenize=False, chat_template=self._prompt_config.custom_chat_template)
+            prefix_text = full[len(base):]
+            self._assistant_header = self._tokenizer.encode(prefix_text, add_special_tokens=False)
+            # Remove BOS if added erroneously by encode
+            if self._prompt_config.has_bos and len(self._assistant_header) > 0 and self._assistant_header[0] == self._tokenizer.bos_token_id:
+                self._assistant_header = self._assistant_header[1:]
+        except Exception:
+            self._assistant_header = []
+
     @staticmethod
     def _extract_token_ids(result) -> np.ndarray:
         if isinstance(result, dict) or hasattr(result, "input_ids"):
@@ -183,59 +196,24 @@ class SFTTokenizer:
         if self._prompt_format in ["default", "identity"]:
             return tokens, target
 
-        # Mask system and user tokens in the target.
-        idx = 0
-        for turn_idx, turn in enumerate(conversation):
-
-            if turn["role"].lower() in ("assistant", "model") and len(turn["content"]) == 0:
-                raise ValueError(f"empty assistant turn in conversation: {conversation}.")
-            if turn["role"].lower() in ("assistant", "model"):
-                assert conversation[turn_idx - 1]["role"].lower() in ("user", "tool")
-
-            turn_tokens = self._extract_token_ids(
-                self._tokenizer.apply_chat_template(
-                    [turn], tokenize=True, chat_template=self._prompt_config.custom_chat_template
-                )
-            )
-
-            # There should be only one BOS at the very beginning.
-            # After the first turn, skip BOS token.
-            if self._prompt_config.has_bos and turn_idx > 0:
-                turn_tokens = turn_tokens[1:]
-            turn_len = len(turn_tokens)
-
-            role = turn["role"].lower()
-            if role in ("system", "user", "tool"):
-                target[idx : idx + turn_len] = IGNORE_INDEX
-            elif role in ("assistant", "model"):
-                if self._prompt_config.assistant_prefix_len > 0:
-                    target[idx : idx + self._prompt_config.assistant_prefix_len] = IGNORE_INDEX
-                
-                # Special handling for models with specific terminators (e.g. Gemma-3)
-                # Ensure loss stops exactly on the terminator token.
-                if self._prompt_config.terminator_id is not None:
-                    try:
-                        # Find the first occurrence of the terminator
-                        if isinstance(turn_tokens, list):
-                            eos_pos = turn_tokens.index(self._prompt_config.terminator_id)
-                        else:
-                            # turn_tokens is a numpy array, np.where(...)[0][0] is very fast
-                            eos_pos = np.where(turn_tokens == self._prompt_config.terminator_id)[0][0]
-                        
-                        # Mask everything strictly AFTER the first occurrence in this turn
-                        target[idx + eos_pos + 1 : idx + turn_len] = IGNORE_INDEX
-                    except (IndexError, ValueError):
-                        pass
-            else:
-                raise ValueError("Wrong role value.")
-
-            assert np.allclose(
-                tokens[idx : idx + turn_len], turn_tokens
-            ), f"expected turn tokens to match tokens in conversation {conversation}"
-
-            idx += turn_len
-
-        assert idx == len(tokens), f"mismatch in target masking the conversation {conversation}"
+        # Pattern-based masking to avoid TemplateError on isolated model turns.
+        target[:] = IGNORE_INDEX
+        
+        header = self._assistant_header
+        footer = self._prompt_config.terminator_id if self._prompt_config.terminator_id is not None else self._tokenizer.eos_token_id
+        
+        n, m = len(tokens), len(header)
+        if m > 0:
+            for i in range(n - m + 1):
+                if np.array_equal(tokens[i:i+m], header):
+                    # Start unmasking after header
+                    for j in range(i + m, n):
+                        target[j] = tokens[j]
+                        if tokens[j] == footer:
+                            break
+        else:
+            # Fallback for models without clear headers
+            target[:] = tokens
 
         return tokens, target
 

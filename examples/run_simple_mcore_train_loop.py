@@ -219,7 +219,7 @@ def load_distributed_checkpoint(
 
 
 if __name__ == "__main__":
-    initialize_distributed(tensor_model_parallel_size=2, pipeline_model_parallel_size=1)
+    initialize_distributed(tensor_model_parallel_size=1, pipeline_model_parallel_size=1)
     model_parallel_cuda_manual_seed(123)
 
     gpt_model: GPTModel = model_provider()

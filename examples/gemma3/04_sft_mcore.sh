@@ -72,6 +72,7 @@ DATA_ARGS=(
     --tokenizer-type SFTTokenizer
     --sft-tokenizer-prompt-format gemma3
     --tokenizer-model google/gemma-3-1b-it
+    --no-create-attention-mask-in-dataloader 
     --vocab-size $VOCAB_SIZE
     --split 100,0,0
 )

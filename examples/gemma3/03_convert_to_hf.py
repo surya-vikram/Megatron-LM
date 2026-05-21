@@ -4,6 +4,7 @@
 
 import os
 import argparse
+import torch
 from megatron.bridge import AutoBridge
 from megatron.bridge.training.model_load_save import temporary_distributed_context, load_megatron_model
 
@@ -41,19 +42,26 @@ if __name__ == "__main__":
     )
     
     # Export to HF
-    # Since our training script is Megatron-LM based, the checkpoint is a Megatron-LM checkpoint.
-    # We need to specify model_type="gpt" to satisfy the loader.
     with temporary_distributed_context(backend="gloo"):
-        # Load the Megatron model directly with model_type="gpt"
-        # Using use_cpu_init=True since we are in gloo context
+        # Load the Megatron model
         megatron_model = load_megatron_model(
             args.megatron_model,
             model_type="gpt",
             use_cpu_init=True
         )
         
+        # Patch the model config with Bridge-expected attributes
+        # Gemma3 usually shares embeddings and output weights
+        model_instance = megatron_model[0]
+        while hasattr(model_instance, "module"):
+            model_instance = model_instance.module
+        
+        if not hasattr(model_instance.config, "share_embeddings_and_output_weights"):
+            # Gemma3 shares embeddings
+            model_instance.config.share_embeddings_and_output_weights = True
+            print("Patched share_embeddings_and_output_weights = True")
+        
         # Save in HuggingFace format
-        # Use bridge's save_hf_pretrained which handles the mapping
         bridge.save_hf_pretrained(
             megatron_model,
             args.save_path,

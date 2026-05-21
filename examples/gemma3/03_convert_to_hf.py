@@ -45,10 +45,11 @@ if __name__ == "__main__":
     # We need to specify model_type="gpt" to satisfy the loader.
     with temporary_distributed_context(backend="gloo"):
         # Load the Megatron model directly with model_type="gpt"
+        # Using use_cpu_init=True since we are in gloo context
         megatron_model = load_megatron_model(
             args.megatron_model,
             model_type="gpt",
-            wrap_with_ddp=False
+            use_cpu_init=True
         )
         
         # Save in HuggingFace format

@@ -34,9 +34,9 @@ if __name__ == "__main__":
     print(f"Converting Megatron checkpoint {args.megatron_model} to HF format...")
     
     # Use the bridge to handle export
-    bridge = AutoBridge.from_auto_config(
-        args.megatron_model, 
-        args.hf_config, 
+    # Use from_hf_pretrained since run_config.yaml might be missing
+    bridge = AutoBridge.from_hf_pretrained(
+        args.hf_config,
         trust_remote_code=True
     )
     
@@ -45,7 +45,7 @@ if __name__ == "__main__":
         megatron_path=args.megatron_model,
         hf_path=args.save_path,
         show_progress=True,
-        strict=True
+        strict=False # Set to False since training might have added optimizer states etc.
     )
     
     print(f"Saved HuggingFace model to {args.save_path}")

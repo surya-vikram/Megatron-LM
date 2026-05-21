@@ -41,6 +41,8 @@ class PromptConfig:
     # Wether to force a specific system message.
     force_system_message: bool = False
     system_default: dict = None
+    # Terminator token ID to stop loss calculation (e.g. <end_of_turn> for Gemma-3)
+    terminator_id: int = None
 
 
 class SFTTokenizer:
@@ -90,6 +92,19 @@ class SFTTokenizer:
                 custom_chat_template=identity_template,
                 has_bos=False,
                 has_system_role=True,
+            )
+        elif prompt_format == "gemma3":
+            self._prompt_config = PromptConfig(
+                assistant_prefix_len=3,
+                pad_token_id=(
+                    tokenizer.pad_token_id
+                    if tokenizer.pad_token_id is not None
+                    else tokenizer.eos_token_id
+                ),
+                custom_chat_template=tokenizer.chat_template,
+                has_bos=tokenizer.bos_token_id is not None,
+                has_system_role=False,
+                terminator_id=tokenizer.convert_tokens_to_ids("<end_of_turn>"),
             )
         elif prompt_format == "default":
             self._prompt_config = PromptConfig(
@@ -172,9 +187,9 @@ class SFTTokenizer:
         idx = 0
         for turn_idx, turn in enumerate(conversation):
 
-            if turn["role"].lower() == "assistant" and len(turn["content"]) == 0:
+            if turn["role"].lower() in ("assistant", "model") and len(turn["content"]) == 0:
                 raise ValueError(f"empty assistant turn in conversation: {conversation}.")
-            if turn["role"].lower() == "assistant":
+            if turn["role"].lower() in ("assistant", "model"):
                 assert conversation[turn_idx - 1]["role"].lower() in ("user", "tool")
 
             turn_tokens = self._extract_token_ids(
@@ -192,9 +207,25 @@ class SFTTokenizer:
             role = turn["role"].lower()
             if role in ("system", "user", "tool"):
                 target[idx : idx + turn_len] = IGNORE_INDEX
-            elif role == "assistant":
+            elif role in ("assistant", "model"):
                 if self._prompt_config.assistant_prefix_len > 0:
                     target[idx : idx + self._prompt_config.assistant_prefix_len] = IGNORE_INDEX
+                
+                # Special handling for models with specific terminators (e.g. Gemma-3)
+                # Ensure loss stops exactly on the terminator token.
+                if self._prompt_config.terminator_id is not None:
+                    try:
+                        # Find the first occurrence of the terminator
+                        if isinstance(turn_tokens, list):
+                            eos_pos = turn_tokens.index(self._prompt_config.terminator_id)
+                        else:
+                            # turn_tokens is a numpy array, np.where(...)[0][0] is very fast
+                            eos_pos = np.where(turn_tokens == self._prompt_config.terminator_id)[0][0]
+                        
+                        # Mask everything strictly AFTER the first occurrence in this turn
+                        target[idx + eos_pos + 1 : idx + turn_len] = IGNORE_INDEX
+                    except (IndexError, ValueError):
+                        pass
             else:
                 raise ValueError("Wrong role value.")
 

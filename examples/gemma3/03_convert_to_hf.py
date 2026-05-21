@@ -5,6 +5,7 @@
 import os
 import argparse
 from megatron.bridge import AutoBridge
+from megatron.bridge.training.model_load_save import temporary_distributed_context, load_megatron_model
 
 def _parse_args():
     parser = argparse.ArgumentParser(description="Convert Megatron Gemma3 to HF format")
@@ -33,19 +34,29 @@ if __name__ == "__main__":
     
     print(f"Converting Megatron checkpoint {args.megatron_model} to HF format...")
     
-    # Use the bridge to handle export
-    # Use from_hf_pretrained since run_config.yaml might be missing
+    # Create the bridge from HF config
     bridge = AutoBridge.from_hf_pretrained(
         args.hf_config,
         trust_remote_code=True
     )
     
     # Export to HF
-    bridge.export_ckpt(
-        megatron_path=args.megatron_model,
-        hf_path=args.save_path,
-        show_progress=True,
-        strict=False # Set to False since training might have added optimizer states etc.
-    )
+    # Since our training script is Megatron-LM based, the checkpoint is a Megatron-LM checkpoint.
+    # We need to specify model_type="gpt" to satisfy the loader.
+    with temporary_distributed_context(backend="gloo"):
+        # Load the Megatron model directly with model_type="gpt"
+        megatron_model = load_megatron_model(
+            args.megatron_model,
+            model_type="gpt",
+            wrap_with_ddp=False
+        )
+        
+        # Save in HuggingFace format
+        # Use bridge's save_hf_pretrained which handles the mapping
+        bridge.save_hf_pretrained(
+            megatron_model,
+            args.save_path,
+            strict=False
+        )
     
     print(f"Saved HuggingFace model to {args.save_path}")

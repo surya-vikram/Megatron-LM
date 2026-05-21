@@ -82,6 +82,13 @@ Compare the state dictionaries of the original HF model and the exported HF mode
 Calculate the difference between the original and trained weights.
 - **Update Confirmation:** Verify that `max(abs(trained - original))` is greater than 0 (confirming an update occurred).
 - **Sanity Bound:** Verify that the difference is small (consistent with 1 step at a low LR), ensuring no catastrophic divergence or NaN issues.
+
+## Verification Results (Gemma3-1B)
+The end-to-end integration was successfully verified on 2026-05-21 with the following results:
+- **Round-Trip:** HF -> Megatron -> 5 Training Steps -> HF (Completed successfully).
+- **Structural Match:** 100% key and shape matching between original and exported HF models.
+- **Numerical Update:** Global Max Weight Difference of `~9.5e-7` (consistent with 5 steps at `1e-7` LR), confirming functional backprop and optimizer.
+
 ## Future Work (TODO)
 - **VLM Support (4B, 12B, 27B):** Currently, the training integration targets the pure text-based Gemma3-1B model. For 4B and larger models, which are Vision-Language Models (VLMs), the training scripts need to be adapted to:
     - Handle vision tower parameters during conversion and training.

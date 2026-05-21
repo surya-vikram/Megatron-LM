@@ -13,12 +13,24 @@ if [ "$MCORE_CHECKPOINT" = "NO_VALUE_PROVIDED" ]; then
     exit 1
 fi
 
+# Path Auto-Detection Logic
+if [ -f "${MCORE_CHECKPOINT}/latest_checkpointed_iteration.txt" ]; then
+    ITERATION=$(cat "${MCORE_CHECKPOINT}/latest_checkpointed_iteration.txt")
+    # Format to 7 digits with leading zeros (e.g., 5 -> iter_0000005)
+    ITER_DIR=$(printf "iter_%07d" $ITERATION)
+    MCORE_CHECKPOINT="${MCORE_CHECKPOINT}/${ITER_DIR}"
+    echo "Auto-detected latest iteration: ${ITER_DIR}"
+fi
+
+# Set PYTHONPATH to include Bridge if not already set
+export PYTHONPATH="${PYTHONPATH:-}:${PWD}:/home/jovyan/Megatron-Bridge/src"
+
 echo "Exporting Megatron checkpoint to HF format..."
 echo "Megatron Path: ${MCORE_CHECKPOINT}"
 echo "HF Save Path: ${HF_SAVE_PATH}"
 echo "HF Config Ref: ${HF_CONFIG}"
 
-python examples/gemma3/03_convert_to_hf.py \
+python3 examples/gemma3/03_convert_to_hf.py \
     --megatron-model "${MCORE_CHECKPOINT}" \
     --save-path "${HF_SAVE_PATH}" \
     --hf-config "${HF_CONFIG}"

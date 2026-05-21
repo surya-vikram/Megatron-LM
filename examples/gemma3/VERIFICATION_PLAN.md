@@ -51,7 +51,15 @@ Follow these steps to set up the remote GPU environment:
 - Access to a GPU-enabled environment with `transformer_engine` and `Megatron-Bridge` installed.
 - A base HuggingFace Gemma3 checkpoint (e.g., `google/gemma-3-4b-pt`).
 
-## Steps
+## Automated Pipeline
+
+To verify the integration in one step, use the automated script:
+
+```bash
+./examples/gemma3/run_1b_pipeline.sh <YOUR_HF_TOKEN>
+```
+
+## Manual Steps
 
 ### 1. Import (HF -> Megatron)
 Convert the base HF checkpoint to Megatron Core format.

@@ -31,8 +31,9 @@ fi
 
 if [ ! -d "$REF_SOURCE_DIR" ]; then
     echo "--- Downloading metadata only from $REF_MODEL_ID ---"
-    # Only download the tiny metadata files to save ~24GB of space
-    hf download "$REF_MODEL_ID" --local-dir "$REF_SOURCE_DIR" --include "*.json" "*.model" "*.jinja"
+    # Download essential metadata files specifically to avoid the warning and missing files
+    mkdir -p "$REF_SOURCE_DIR"
+    hf download "$REF_MODEL_ID" config.json tokenizer.json tokenizer_config.json tokenizer.model generation_config.json special_tokens_map.json --local-dir "$REF_SOURCE_DIR"
 fi
 
 # 3. Extraction

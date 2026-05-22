@@ -1,0 +1,67 @@
+[
+  {
+    "id": 2,
+    "text": "<bos>",
+    "loss_active": false
+  },
+  {
+    "id": 105,
+    "text": "<start_of_turn>",
+    "loss_active": false
+  },
+  {
+    "id": 2364,
+    "text": "user",
+    "loss_active": false
+  },
+  {
+    "id": 107,
+    "text": "\n",
+    "loss_active": false
+  },
+  {
+    "id": 2202,
+    "text": "hi",
+    "loss_active": false
+  },
+  {
+    "id": 106,
+    "text": "<end_of_turn>",
+    "loss_active": false
+  },
+  {
+    "id": 107,
+    "text": "\n",
+    "loss_active": false
+  },
+  {
+    "id": 105,
+    "text": "<start_of_turn>",
+    "loss_active": false
+  },
+  {
+    "id": 4368,
+    "text": "model",
+    "loss_active": false
+  },
+  {
+    "id": 107,
+    "text": "\n",
+    "loss_active": false
+  },
+  {
+    "id": 23391,
+    "text": "hello",
+    "loss_active": true
+  },
+  {
+    "id": 106,
+    "text": "<end_of_turn>",
+    "loss_active": true
+  },
+  {
+    "id": 107,
+    "text": "\n",
+    "loss_active": false
+  }
+]

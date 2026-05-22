@@ -27,14 +27,14 @@ LR=2e-5
 WARMUP_ITERS=1000
 GBS=32
 MBS=1
-SEQ_LEN=8192
+SEQ_LEN=16384
 WANDB_PROJECT=""
 WANDB_EXP_NAME=""
 TOKENIZER_TYPE="HuggingFaceTokenizer"
 TOKENIZER_MODEL=""
 ATTENTION_BACKEND="flash"
 RECOMPUTE_GRANULARITY="selective"
-FUSED_LINEAR_CROSS_ENTROPY=false
+FUSED_LINEAR_CROSS_ENTROPY=true
 LOG_THROUGHPUT=true
 # Simply run the script with the --fused-linear-cross-entropy flag without passing the tuning overrides (--linear-ce-impl and --linear-ce-filter-eps):
 # LINEAR_CE_IMPL=""

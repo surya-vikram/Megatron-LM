@@ -101,17 +101,19 @@ if __name__ == "__main__":
     
     print("Stitching weights...")
     vlm_state_dict = vlm_model.state_dict()
+    
+    print(f"DEBUG: Standalone keys (sample): {list(hf_text_state_dict.keys())[:10]}")
+    print(f"DEBUG: VLM keys (sample): {list(vlm_state_dict.keys())[:20]}")
+    
     updated_count = 0
     missing_keys = []
     
     for name, weight in hf_text_state_dict.items():
-        # Correct mapping:
-        # Standalone 'model.embed_tokens.weight' -> VLM 'language_model.model.embed_tokens.weight'
-        # Standalone 'lm_head.weight'           -> VLM 'language_model.lm_head.weight'
+        # Final Correct Mapping:
+        # Standalone 'model.embed_tokens.weight' -> VLM 'model.language_model.embed_tokens.weight'
+        # Standalone 'lm_head.weight'           -> VLM 'lm_head.weight'
         if name.startswith("model."):
-            vlm_name = name.replace("model.", "language_model.model.")
-        elif name.startswith("lm_head."):
-            vlm_name = name.replace("lm_head.", "language_model.lm_head.")
+            vlm_name = name.replace("model.", "model.language_model.")
         else:
             vlm_name = name
             

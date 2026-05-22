@@ -1115,7 +1115,7 @@ class TransformerConfig(ModelParallelConfig):
     linear_ce_ignore_index: int = -100
     """Ignore index passed through to CCE."""
 
-    linear_ce_filter_eps: Optional[Union[float, str]] = "auto"
+    linear_ce_filter_eps: str = "auto"
     """Threshold for skipping gradient calculations on inactive vocabulary blocks."""
 
     linear_ce_accum_e_fp32: bool = False

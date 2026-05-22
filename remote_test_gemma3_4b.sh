@@ -7,9 +7,9 @@ set -e
 # Configuration
 HF_TOKEN="${HF_TOKEN:-YOUR_HF_TOKEN_HERE}"
 MODEL_ID="google/gemma-3-4b-it"
-HF_SOURCE_DIR="/root/models/gemma-3-4b-it"
-MCORE_TARGET_DIR="/root/models/gemma-3-4b-it-mcore"
-STANDALONE_HF_DIR="/root/models/gemma-3-4b-standalone-text"
+HF_SOURCE_DIR="/home/jovyan/models/gemma-3-4b-it"
+MCORE_TARGET_DIR="/home/jovyan/models/gemma-3-4b-it-mcore"
+STANDALONE_HF_DIR="/home/jovyan/models/gemma-3-4b-standalone-text"
 
 echo "=== Gemma 3 4B Text Extraction Remote Test ==="
 

@@ -8,10 +8,10 @@ set -e
 HF_TOKEN="${HF_TOKEN:-YOUR_HF_TOKEN_HERE}"
 MODEL_ID="google/gemma-3-12b-pt"
 REF_MODEL_ID="google/gemma-3-12b-it"
-HF_SOURCE_DIR="/root/models/gemma-3-12b-pt"
-REF_SOURCE_DIR="/root/models/gemma-3-12b-it"
-MCORE_TARGET_DIR="/root/models/gemma-3-12b-pt-mcore"
-STANDALONE_HF_DIR="/root/models/gemma-3-12b-standalone-text"
+HF_SOURCE_DIR="/home/jovyan/models/gemma-3-12b-pt"
+REF_SOURCE_DIR="/home/jovyan/models/gemma-3-12b-it-metadata"
+MCORE_TARGET_DIR="/home/jovyan/models/gemma-3-12b-pt-mcore"
+STANDALONE_HF_DIR="/home/jovyan/models/gemma-3-12b-standalone-text"
 
 echo "=== Gemma 3 12B Text Extraction Remote Test ==="
 
@@ -25,13 +25,14 @@ hf auth login --token $HF_TOKEN
 
 if [ ! -d "$HF_SOURCE_DIR" ]; then
     echo "--- Downloading weights from $MODEL_ID ---"
-    mkdir -p "/root/models"
+    mkdir -p "/home/jovyan/models"
     hf download "$MODEL_ID" --local-dir "$HF_SOURCE_DIR"
 fi
 
 if [ ! -d "$REF_SOURCE_DIR" ]; then
-    echo "--- Downloading metadata from $REF_MODEL_ID ---"
-    hf download "$REF_MODEL_ID" --local-dir "$REF_SOURCE_DIR"
+    echo "--- Downloading metadata only from $REF_MODEL_ID ---"
+    # Only download the tiny metadata files to save ~24GB of space
+    hf download "$REF_MODEL_ID" --local-dir "$REF_SOURCE_DIR" --include "*.json" "*.model" "*.jinja"
 fi
 
 # 3. Extraction

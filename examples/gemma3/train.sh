@@ -28,6 +28,8 @@ MBS=2
 SEQ_LEN=4096
 WANDB_PROJECT=""
 WANDB_EXP_NAME=""
+TOKENIZER_TYPE="HuggingFaceTokenizer"
+TOKENIZER_MODEL=""
 
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -45,6 +47,8 @@ while [[ $# -gt 0 ]]; do
     --seq-len) SEQ_LEN="$2"; shift 2 ;;
     --wandb-project) WANDB_PROJECT="$2"; shift 2 ;;
     --wandb-exp-name) WANDB_EXP_NAME="$2"; shift 2 ;;
+    --tokenizer-type) TOKENIZER_TYPE="$2"; shift 2 ;;
+    --tokenizer-model) TOKENIZER_MODEL="$2"; shift 2 ;;
     *) echo "Unknown parameter: $1"; exit 1 ;;
   esac
 done
@@ -60,6 +64,11 @@ if [[ -z "$SAVE_PATH" ]]; then
   echo "INFO: No --save-path specified. Using default: $SAVE_PATH"
 fi
 mkdir -p "$SAVE_PATH"
+
+if [[ -z "$TOKENIZER_MODEL" ]]; then
+  TOKENIZER_MODEL="/home/jovyan/models/gemma-3-${MODEL_SIZE}-pt"
+  echo "INFO: No --tokenizer-model specified. Using default: $TOKENIZER_MODEL"
+fi
 
 # ============================================================================
 # Architecture Configuration (from Megatron-Bridge Gemma3ModelProvider)
@@ -107,7 +116,7 @@ MODEL_ARGS="
     --kv-channels $KV_CH
     --seq-length $SEQ_LEN
     --max-position-embeddings $SEQ_LEN
-    --sliding-window-size $WINDOW
+    --window-size $WINDOW
     --position-embedding-type rope
     --no-position-embedding
     --qk-layernorm
@@ -120,6 +129,8 @@ MODEL_ARGS="
     --attention-backend flash
     --attention-dropout 0.0
     --hidden-dropout 0.0
+    --tokenizer-type $TOKENIZER_TYPE
+    --tokenizer-model $TOKENIZER_MODEL
 "
 
 # ============================================================================

@@ -8,9 +8,10 @@ set -o pipefail
 echo "--- Gemma 3 Production Training Engine ---"
 
 # ============================================================================
-# CRITICAL: Force in-order kernel launch for Megatron-LM stability
+# CRITICAL: Force in-order kernel launch & dynamic memory allocation
 # ============================================================================
 export CUDA_DEVICE_MAX_CONNECTIONS=1
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 # ============================================================================
 # Argument Parsing
@@ -34,7 +35,7 @@ TOKENIZER_MODEL=""
 ATTENTION_BACKEND="flash"
 RECOMPUTE_GRANULARITY="selective"
 FUSED_LINEAR_CROSS_ENTROPY=false
-LOG_THROUGHPUT=false
+LOG_THROUGHPUT=true
 # Simply run the script with the --fused-linear-cross-entropy flag without passing the tuning overrides (--linear-ce-impl and --linear-ce-filter-eps):
 # LINEAR_CE_IMPL=""
 # LINEAR_CE_FILTER_EPS=""
@@ -161,6 +162,13 @@ OPTIM_ARGS="
     --adam-beta1 0.9
     --adam-beta2 0.95
     --init-method-std 0.01
+    --use-distributed-optimizer
+    --use-precision-aware-optimizer
+    --main-params-dtype fp16
+    --main-grads-dtype bf16
+    --grad-reduce-in-bf16
+    --exp-avg-dtype fp16
+    --exp-avg-sq-dtype fp16
 "
 
 # ============================================================================
@@ -179,6 +187,10 @@ TRAIN_ARGS="
     --no-gradient-accumulation-fusion
     $RECOMPUTE_ARGS
     --num-workers 4
+    --manual-gc
+    --manual-gc-interval 5
+    --overlap-grad-reduce
+    --overlap-param-gather
 "
 
 # ============================================================================

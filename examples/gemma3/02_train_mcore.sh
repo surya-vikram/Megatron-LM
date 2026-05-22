@@ -36,8 +36,8 @@ if [ "$MODEL_SIZE" = "1B" ]; then
 elif [ "$MODEL_SIZE" = "4B" ]; then
     # Gemma3 4B Config
     NUM_LAYERS=34
-    HIDDEN_SIZE=3072
-    NUM_ATTN_HEADS=12
+    HIDDEN_SIZE=2560
+    NUM_ATTN_HEADS=8
     NUM_QUERY_GROUPS=4
     FFN_HIDDEN_SIZE=10240
     WINDOW_SIZE=1024

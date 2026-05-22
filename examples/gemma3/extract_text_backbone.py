@@ -79,6 +79,13 @@ if __name__ == "__main__":
     text_model = causal_model
     text_model.config = text_config # Ensure config is correctly attached
     
+    # Explicitly clear VLM model from memory before initializing Megatron model
+    del vlm_model
+    import gc
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
     # Wrap for bridge
     pretrained = PreTrainedCausalLM(HF_MODEL, trust_remote_code=True)
     pretrained.config = text_config
@@ -87,14 +94,20 @@ if __name__ == "__main__":
     print(f"Converting to Megatron format (TP={args.tp_size}, PP={args.pp_size})...")
     
     bridge = AutoBridge(pretrained)
-    provider = bridge.to_megatron_provider()
+    # Use load_weights=False to avoid attaching the large HF model to the provider via partial hooks.
+    # This prevents OOM during deepcopy of the config in each transformer layer.
+    provider = bridge.to_megatron_provider(load_weights=False)
     
     provider.tensor_model_parallel_size = args.tp_size
     provider.pipeline_model_parallel_size = args.pp_size
     provider.finalize()
     
-    # Instantiate the distributed Megatron model and load weights
+    # Instantiate the distributed Megatron model (empty weights)
     model = provider.provide_distributed_model(wrap_with_ddp=False)
+    
+    print("Manually loading weights from HF model to Megatron model...")
+    # bridge._model_bridge is the Gemma3Bridge instance
+    bridge._model_bridge.load_weights_hf_to_megatron(pretrained, model)
     
     bridge.save_megatron_model(
         model,

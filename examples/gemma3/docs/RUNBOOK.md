@@ -17,7 +17,26 @@ bash examples/gemma3/import.sh \
     --mcore-path /path/to/gemma-3-12b-pt-mcore
 ```
 
-## 3. Train: CPT or SFT
+## 3. Preprocess: Prepare Training Data
+Convert raw text to binary for CPT, or validate JSONL for SFT.
+
+### For CPT (Raw Text to Binary)
+```bash
+bash examples/gemma3/preprocess.sh \
+    --mode cpt \
+    --input /path/to/my_data.txt \
+    --output-prefix /path/to/my_data_bin \
+    --hf-tokenizer /path/to/gemma-3-pt
+```
+
+### For SFT (Validate Instruction Data)
+```bash
+bash examples/gemma3/preprocess.sh \
+    --mode sft \
+    --input /path/to/my_instructions.jsonl
+```
+
+## 4. Train: CPT or SFT
 Launch unified training with Precision-Aware Adam and dynamic model detection.
 ### Continual Pre-training (CPT)
 ```bash
@@ -26,7 +45,7 @@ bash examples/gemma3/train.sh \
     --model-size 12b \
     --hf-model /path/to/gemma-3-12b-pt \
     --mcore-path /path/to/gemma-3-12b-pt-mcore \
-    --data-path /path/to/my_data_text_document \
+    --data-path /path/to/my_data_bin_text_document \
     --save-path /path/to/checkpoints
 ```
 
@@ -41,7 +60,7 @@ bash examples/gemma3/train.sh \
     --save-path /path/to/checkpoints
 ```
 
-## 4. Export: Megatron -> HF
+## 5. Export: Megatron -> HF
 Convert the trained weights back to the HuggingFace format.
 ### Standalone Text Model
 ```bash

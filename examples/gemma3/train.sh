@@ -180,7 +180,7 @@ LOG_ARGS="
 # Data Args
 # ============================================================================
 if [[ -n "$VALID_DATA_PATH" ]]; then
-    DATA_ARGS="--data-path 1.0 $DATA_PATH --valid-data-path $VALID_DATA_PATH"
+    DATA_ARGS="--train-data-path 1.0 $DATA_PATH --valid-data-path 1.0 $VALID_DATA_PATH"
 else
     DATA_ARGS="--data-path 1.0 $DATA_PATH"
 fi

@@ -11,11 +11,12 @@ MLM_DIR="$REPOS_DIR/Megatron-LM"
 BRIDGE_DIR="$REPOS_DIR/Megatron-Bridge-Surya"
 
 # 1. Base Container Setup (FlashAttn, TE, etc)
-cd "$MLM_DIR"
-bash setup_hopper_container.sh
+echo "--- Running Base Container Optimizations --- "
+bash "$MLM_DIR/examples/gemma3/utils/setup_hopper_container.sh"
 
 # 2. Megatron-Bridge Installation
-bash install_bridge.sh
+echo "--- Installing Megatron-Bridge Dependency --- "
+bash "$MLM_DIR/examples/gemma3/utils/install_bridge.sh"
 
 # 3. Persistence Symlinks
 echo "--- Configuring Persistent Symlinks --- "

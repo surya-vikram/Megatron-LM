@@ -51,13 +51,7 @@ if __name__ == "__main__":
             if hasattr(full_config, attr) and not hasattr(text_config, attr):
                 setattr(text_config, attr, getattr(full_config, attr))
 
-    # Load only the language model weights
-    # We use Gemma3ForCausalLM.from_pretrained with the multimodal path. 
-    # This will load weights into a structure that starts at 'language_model' in the multimodal model
-    # but Gemma3ForCausalLM expected them at the root or 'model'.
-    # Actually, Gemma3ForConditionalGeneration has self.language_model = Gemma3ForCausalLM(...)
-    # So we can just load the full model and take the language_model attribute.
-    
+    # Load full multimodal model
     print("Loading full multimodal model (weights only)...")
     vlm_model = Gemma3ForConditionalGeneration.from_pretrained(
         HF_MODEL,
@@ -66,8 +60,24 @@ if __name__ == "__main__":
         trust_remote_code=True
     )
     
-    text_model = vlm_model.language_model
-    text_model.config = text_config # Use the flattened text config
+    # Create a standalone CausalLM model with the text config
+    causal_model = Gemma3ForCausalLM(text_config)
+    
+    print("Mapping multimodal weights to text-only model...")
+    # Map model.language_model -> model
+    # and lm_head -> lm_head
+    if hasattr(vlm_model, "model") and hasattr(vlm_model.model, "language_model"):
+        causal_model.model.load_state_dict(vlm_model.model.language_model.state_dict())
+    elif hasattr(vlm_model, "language_model"):
+        causal_model.model.load_state_dict(vlm_model.language_model.state_dict())
+    else:
+        raise AttributeError("Could not find language model component in VLM. Checked .model.language_model and .language_model")
+        
+    if hasattr(vlm_model, "lm_head"):
+        causal_model.lm_head.load_state_dict(vlm_model.lm_head.state_dict())
+    
+    text_model = causal_model
+    text_model.config = text_config # Ensure config is correctly attached
     
     # Wrap for bridge
     pretrained = PreTrainedCausalLM(HF_MODEL, trust_remote_code=True)

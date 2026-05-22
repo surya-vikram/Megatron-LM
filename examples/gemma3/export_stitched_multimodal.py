@@ -65,20 +65,24 @@ if __name__ == "__main__":
     
     print("Stitching weights...")
     # Map HF text names to VLM language_model names
-    # Gemma3ForConditionalGeneration has language_model (Gemma3ForCausalLM)
-    # The language_model itself has 'model' (Gemma3Model)
-    # So 'model.layers.0...' becomes 'language_model.model.layers.0...'
-    # If the text bridge already produces 'model.layers.0...', we just prefix it.
+    # Gemma3ForConditionalGeneration has model.language_model (Gemma3TextModel)
+    # The language_model itself has 'embed_tokens', 'layers', etc.
+    # Standalone Gemma3ForCausalLM has 'model.embed_tokens', 'model.layers', etc.
     
     vlm_state_dict = vlm_model.state_dict()
     updated_count = 0
     for name, weight in hf_text_state_dict.items():
-        vlm_name = f"language_model.{name}"
+        # standalone: model.layers.0.self_attn.q_proj.weight
+        # vlm: model.language_model.layers.0.self_attn.q_proj.weight
+        if name.startswith("model."):
+            vlm_name = name.replace("model.", "model.language_model.")
+        else:
+            vlm_name = name # e.g. lm_head.weight
+            
         if vlm_name in vlm_state_dict:
             vlm_state_dict[vlm_name].copy_(weight)
             updated_count += 1
         else:
-            # Fallback for different naming conventions
             print(f"Warning: Could not find {vlm_name} in multimodal model. Skipping.")
 
     print(f"Updated {updated_count} parameters.")

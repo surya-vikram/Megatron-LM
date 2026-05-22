@@ -32,24 +32,37 @@ if [ "$MODEL_SIZE" = "1B" ]; then
     FFN_HIDDEN_SIZE=6912
     WINDOW_SIZE=512
     VOCAB_SIZE=262144
+    KV_CHANNELS=256
 elif [ "$MODEL_SIZE" = "4B" ]; then
     # Gemma3 4B Config
     NUM_LAYERS=34
-    HIDDEN_SIZE=2560
-    NUM_ATTN_HEADS=8
+    HIDDEN_SIZE=3072
+    NUM_ATTN_HEADS=12
     NUM_QUERY_GROUPS=4
     FFN_HIDDEN_SIZE=10240
     WINDOW_SIZE=1024
     VOCAB_SIZE=262208
+    KV_CHANNELS=256
+elif [ "$MODEL_SIZE" = "12B" ]; then
+    # Gemma3 12B Config
+    NUM_LAYERS=40
+    HIDDEN_SIZE=4096
+    NUM_ATTN_HEADS=32
+    NUM_QUERY_GROUPS=8
+    FFN_HIDDEN_SIZE=15360
+    WINDOW_SIZE=1024
+    VOCAB_SIZE=262208
+    KV_CHANNELS=128
 else
     echo "Unknown model size: $MODEL_SIZE. Defaulting to 1B."
-    NUM_LAYERS=26
-    HIDDEN_SIZE=1152
-    NUM_ATTN_HEADS=4
+    NUM_LAYERS=16
+    HIDDEN_SIZE=2048
+    NUM_ATTN_HEADS=8
     NUM_QUERY_GROUPS=1
-    FFN_HIDDEN_SIZE=6912
+    FFN_HIDDEN_SIZE=8192
     WINDOW_SIZE=512
     VOCAB_SIZE=262144
+    KV_CHANNELS=256
 fi
 
 MODEL_ARGS=(
@@ -58,7 +71,7 @@ MODEL_ARGS=(
     --num-attention-heads $NUM_ATTN_HEADS
     --num-query-groups $NUM_QUERY_GROUPS
     --group-query-attention
-    --kv-channels 256
+    --kv-channels $KV_CHANNELS
     --ffn-hidden-size $FFN_HIDDEN_SIZE
     --seq-length 1024
     --max-position-embeddings 4096

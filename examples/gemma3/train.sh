@@ -35,8 +35,9 @@ ATTENTION_BACKEND="flash"
 RECOMPUTE_GRANULARITY="selective"
 FUSED_LINEAR_CROSS_ENTROPY=false
 LOG_THROUGHPUT=false
-LINEAR_CE_IMPL=""
-LINEAR_CE_FILTER_EPS=""
+# Simply run the script with the --fused-linear-cross-entropy flag without passing the tuning overrides (--linear-ce-impl and --linear-ce-filter-eps):
+# LINEAR_CE_IMPL=""
+# LINEAR_CE_FILTER_EPS=""
 
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -60,8 +61,8 @@ while [[ $# -gt 0 ]]; do
     --recompute-granularity) RECOMPUTE_GRANULARITY="$2"; shift 2 ;;
     --fused-linear-cross-entropy) FUSED_LINEAR_CROSS_ENTROPY=true; shift 1 ;;
     --log-throughput) LOG_THROUGHPUT=true; shift 1 ;;
-    --linear-ce-impl) LINEAR_CE_IMPL="$2"; shift 2 ;;
-    --linear-ce-filter-eps) LINEAR_CE_FILTER_EPS="$2"; shift 2 ;;
+    # --linear-ce-impl) LINEAR_CE_IMPL="$2"; shift 2 ;;
+    # --linear-ce-filter-eps) LINEAR_CE_FILTER_EPS="$2"; shift 2 ;;
     *) echo "Unknown parameter: $1"; exit 1 ;;
   esac
 done
@@ -233,12 +234,12 @@ fi
 if [ "$LOG_THROUGHPUT" = true ]; then
     EXTRA_ARGS="$EXTRA_ARGS --log-throughput"
 fi
-if [[ -n "$LINEAR_CE_IMPL" ]]; then
-    EXTRA_ARGS="$EXTRA_ARGS --linear-ce-impl $LINEAR_CE_IMPL"
-fi
-if [[ -n "$LINEAR_CE_FILTER_EPS" ]]; then
-    EXTRA_ARGS="$EXTRA_ARGS --linear-ce-filter-eps $LINEAR_CE_FILTER_EPS"
-fi
+# if [[ -n "$LINEAR_CE_IMPL" ]]; then
+#     EXTRA_ARGS="$EXTRA_ARGS --linear-ce-impl $LINEAR_CE_IMPL"
+# fi
+# if [[ -n "$LINEAR_CE_FILTER_EPS" ]]; then
+#     EXTRA_ARGS="$EXTRA_ARGS --linear-ce-filter-eps $LINEAR_CE_FILTER_EPS"
+# fi
 
 # ============================================================================
 # Launch

@@ -96,6 +96,10 @@ def gemma3_model_builder(args, pre_process, post_process, vp_stage=None, config=
 
     provider.bf16 = args.bf16
     provider.fp16 = args.fp16
+    # Forward CCE flag: without this the provider never enables fused linear cross
+    # entropy and the model materialises the full (seq*batch x vocab) logit tensor,
+    # causing an OOM on large vocab / batch sizes.
+    provider.use_linear_cross_entropy = getattr(args, 'use_linear_cross_entropy', False)
     provider.finalize()
     return provider.provide(pre_process=pre_process, post_process=post_process, vp_stage=vp_stage)
 

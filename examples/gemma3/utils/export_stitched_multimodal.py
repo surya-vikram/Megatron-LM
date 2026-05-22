@@ -55,7 +55,7 @@ if __name__ == "__main__":
             setattr(text_config, attr, getattr(full_config, attr))
     text_config.architectures = ["Gemma3ForCausalLM"]
     
-    bridge = AutoBridge.from_hf_config(text_config)
+    bridge = AutoBridge.from_hf_config(text_config); bridge.hf_model_id = args.vlm_hf_path
     
     print(f"Extracting HF text weights from Megatron checkpoint {args.megatron_path}...")
     with temporary_distributed_context(backend="gloo"):

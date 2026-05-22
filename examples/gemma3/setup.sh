@@ -34,9 +34,10 @@ echo "--- Installing Megatron-Bridge --- "
 bash "$MLM_DIR/examples/gemma3/utils/install_bridge.sh"
 
 # 5. Production Extra Dependencies
-echo "--- Installing Data Ingestion & Monitoring Tools --- "
+echo "--- Installing Data Ingestion, Monitoring & CCE Tools --- "
 source "$ROOT_DIR/venv/bin/activate"
 pip install datasets tqdm wandb --quiet
+pip install "cut-cross-entropy @ git+https://github.com/apple/ml-cross-entropy.git" --quiet
 
 # 6. Persistence Symlinks
 echo "--- Configuring Persistent Symlinks --- "

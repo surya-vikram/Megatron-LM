@@ -101,10 +101,6 @@ if __name__ == "__main__":
     
     print("Stitching weights...")
     vlm_state_dict = vlm_model.state_dict()
-    
-    print(f"DEBUG: Standalone keys (sample): {list(hf_text_state_dict.keys())[:10]}")
-    print(f"DEBUG: VLM keys (sample): {list(vlm_state_dict.keys())[:20]}")
-    
     updated_count = 0
     missing_keys = []
     

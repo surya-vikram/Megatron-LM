@@ -26,14 +26,14 @@ ITERS=20000
 LR=2e-5
 WARMUP_ITERS=1000
 GBS=32
-MBS=2
+MBS=4
 SEQ_LEN=4096
 WANDB_PROJECT=""
 WANDB_EXP_NAME=""
 TOKENIZER_TYPE="HuggingFaceTokenizer"
 TOKENIZER_MODEL=""
 ATTENTION_BACKEND="flash"
-RECOMPUTE_GRANULARITY="selective"
+RECOMPUTE_GRANULARITY="none"
 FUSED_LINEAR_CROSS_ENTROPY=false
 LOG_THROUGHPUT=true
 # Simply run the script with the --fused-linear-cross-entropy flag without passing the tuning overrides (--linear-ce-impl and --linear-ce-filter-eps):
@@ -184,7 +184,6 @@ TRAIN_ARGS="
     --micro-batch-size $MBS
     --global-batch-size $GBS
     --train-iters $ITERS
-    --no-gradient-accumulation-fusion
     $RECOMPUTE_ARGS
     --num-workers 4
     --manual-gc

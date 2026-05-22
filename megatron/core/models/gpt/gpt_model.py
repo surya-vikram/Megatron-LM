@@ -767,6 +767,11 @@ class GPTModel(LanguageModule):
                 shift=shift,
                 ignore_index=self.config.linear_ce_ignore_index,
                 temperature=cce_temperature,
+                filter_eps=self.config.linear_ce_filter_eps,
+                accum_e_fp32=self.config.linear_ce_accum_e_fp32,
+                accum_c_fp32=self.config.linear_ce_accum_c_fp32,
+                filter_e_grad=self.config.linear_ce_filter_e_grad,
+                filter_c_grad=self.config.linear_ce_filter_c_grad,
             )
 
         logits, _ = self.output_layer(

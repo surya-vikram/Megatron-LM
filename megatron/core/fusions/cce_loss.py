@@ -5,7 +5,7 @@ Thin wrapper that adapts Megatron-LM's tensor-parallel vocab sharding to
 apple/ml-cross-entropy's `linear_cross_entropy` API.
 """
 
-from typing import Optional
+from typing import Optional, Union
 
 import torch
 
@@ -43,6 +43,11 @@ def cce_per_token_loss(
     ignore_index: int = -100,
     return_lse: bool = False,
     temperature: float = 1.0,
+    filter_eps: Optional[Union[float, str]] = "auto",
+    accum_e_fp32: bool = False,
+    accum_c_fp32: bool = False,
+    filter_e_grad: bool = True,
+    filter_c_grad: bool = True,
 ) -> torch.Tensor:
     embeddings = embeddings.transpose(0, 1).contiguous()
     if embeddings.size(0) != labels.size(0) or embeddings.size(1) != labels.size(1):
@@ -68,4 +73,9 @@ def cce_per_token_loss(
         vocab_parallel_options=_maybe_build_vp_opts(vocab_size),
         return_lse=return_lse,
         softcap=temperature,
+        filter_eps=filter_eps,
+        accum_e_fp32=accum_e_fp32,
+        accum_c_fp32=accum_c_fp32,
+        filter_e_grad=filter_e_grad,
+        filter_c_grad=filter_c_grad,
     )

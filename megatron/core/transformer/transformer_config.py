@@ -1115,6 +1115,21 @@ class TransformerConfig(ModelParallelConfig):
     linear_ce_ignore_index: int = -100
     """Ignore index passed through to CCE."""
 
+    linear_ce_filter_eps: Optional[Union[float, str]] = "auto"
+    """Threshold for skipping gradient calculations on inactive vocabulary blocks."""
+
+    linear_ce_accum_e_fp32: bool = False
+    """Force fp32 gradient accumulation for embeddings."""
+
+    linear_ce_accum_c_fp32: bool = False
+    """Force fp32 gradient accumulation for classifier."""
+
+    linear_ce_filter_e_grad: bool = True
+    """Whether to filter embedding gradients."""
+
+    linear_ce_filter_c_grad: bool = True
+    """Whether to filter classifier gradients."""
+
 
     #####################################
     # Fine-grained Activation Offloading

@@ -33,16 +33,8 @@ def verify():
     
     with torch.no_grad():
         # Multimodal model output (text only)
-        # In this version, it's model.language_model or just calling the model with appropriate inputs
-        # To be safe, we check both.
-        if hasattr(vlm_model, "model") and hasattr(vlm_model.model, "language_model"):
-            vlm_text_model = vlm_model.model.language_model
-        elif hasattr(vlm_model, "language_model"):
-            vlm_text_model = vlm_model.language_model
-        else:
-             raise AttributeError("Could not find language model component in VLM.")
-
-        vlm_outputs = vlm_text_model(**inputs)
+        # We call the full vlm_model to ensure lm_head is applied and we get logits
+        vlm_outputs = vlm_model(**inputs)
         vlm_logits = vlm_outputs.logits
         
         # Standalone text model output
@@ -51,7 +43,7 @@ def verify():
         
         # Generation for visual parity
         print(f"\n--- Generating text with prompt: '{args.prompt}' ---")
-        vlm_gen = vlm_text_model.generate(**inputs, max_new_tokens=20, do_sample=False)
+        vlm_gen = vlm_model.generate(**inputs, max_new_tokens=20, do_sample=False)
         text_gen = text_model.generate(**inputs, max_new_tokens=20, do_sample=False)
         
         vlm_text = tokenizer.decode(vlm_gen[0], skip_special_tokens=True)

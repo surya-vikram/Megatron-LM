@@ -107,5 +107,26 @@ if __name__ == "__main__":
             src = os.path.join(ref_dir, filename)
             dst = os.path.join(args.hf_save_path, filename)
             shutil.copy2(src, dst)
+
+    # 4. Tokenizer Tweak (Chat Template Injection)
+    config_path = os.path.join(args.hf_save_path, "tokenizer_config.json")
+    if os.path.exists(config_path):
+        print("Finalizing tokenizer_config.json...")
+        with open(config_path, "r") as f:
+            t_config = json.load(f)
+        
+        # Consistent with 1B pipeline: ensure BOS is handled correctly for Megatron
+        t_config["add_bos_token"] = False
+        
+        # Ensure chat_template is embedded if available in a standalone file
+        if "chat_template" not in t_config:
+            jinja_path = os.path.join(args.hf_save_path, "chat_template.jinja")
+            if os.path.exists(jinja_path):
+                print("  Embedding chat_template from .jinja file...")
+                with open(jinja_path, "r") as f:
+                    t_config["chat_template"] = f.read()
+            
+        with open(config_path, "w") as f:
+            json.dump(t_config, f, indent=2)
             
     print(f"Successfully exported standalone text model to {args.hf_save_path}")

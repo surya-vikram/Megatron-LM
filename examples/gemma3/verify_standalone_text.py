@@ -33,13 +33,41 @@ def verify():
     
     with torch.no_grad():
         # Multimodal model output (text only)
-        # We access language_model directly to be sure, or just call vlm_model
-        vlm_logits = vlm_model.language_model(**inputs).logits
+        vlm_outputs = vlm_model.language_model(**inputs)
+        vlm_logits = vlm_outputs.logits
         
         # Standalone text model output
-        text_logits = text_model(**inputs).logits
+        text_outputs = text_model(**inputs)
+        text_logits = text_outputs.logits
+        
+        # Generation for visual parity
+        print(f"\n--- Generating text with prompt: '{args.prompt}' ---")
+        vlm_gen = vlm_model.language_model.generate(**inputs, max_new_tokens=20, do_sample=False)
+        text_gen = text_model.generate(**inputs, max_new_tokens=20, do_sample=False)
+        
+        vlm_text = tokenizer.decode(vlm_gen[0], skip_special_tokens=True)
+        text_text = tokenizer.decode(text_gen[0], skip_special_tokens=True)
+        
+        print(f"\nOriginal (Multimodal) Output:\n{vlm_text}")
+        print(f"\nExtracted (Standalone) Output:\n{text_text}")
+
+    # Top-K Comparison for the last token
+    print(f"\nTop-5 Logit Comparison (Last Token):")
+    vlm_topk = torch.topk(vlm_logits[0, -1, :], 5)
+    text_topk = torch.topk(text_logits[0, -1, :], 5)
     
-    # Compare
+    print(f"{'Rank':<5} | {'Original (Token ID)':<25} | {'Extracted (Token ID)':<25}")
+    print("-" * 60)
+    for i in range(5):
+        v_id = vlm_topk.indices[i].item()
+        v_val = vlm_topk.values[i].item()
+        t_id = text_topk.indices[i].item()
+        t_val = text_topk.values[i].item()
+        v_str = f"{tokenizer.decode([v_id])} ({v_val:.4f})"
+        t_str = f"{tokenizer.decode([t_id])} ({t_val:.4f})"
+        print(f"{i+1:<5} | {v_str:<25} | {t_str:<25}")
+
+    # Compare numerically
     diff = torch.abs(vlm_logits - text_logits)
     max_diff = diff.max().item()
     mean_diff = diff.mean().item()

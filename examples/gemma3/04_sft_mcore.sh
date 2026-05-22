@@ -219,13 +219,25 @@ DISTRIBUTED_ARGS=(
     --node_rank 0
 )
 
-NUM_LAYERS=26
-HIDDEN_SIZE=1152
-NUM_ATTN_HEADS=4
-NUM_QUERY_GROUPS=1
-FFN_HIDDEN_SIZE=6912
-WINDOW_SIZE=512
-VOCAB_SIZE=262144
+# Dynamic Architecture Inference
+if [[ -d "$TOKENIZER_MODEL" && -f "$TOKENIZER_MODEL/config.json" ]]; then
+    echo "Inferring architecture from $TOKENIZER_MODEL/config.json ..."
+    read -r NUM_LAYERS HIDDEN_SIZE NUM_ATTN_HEADS NUM_QUERY_GROUPS FFN_HIDDEN_SIZE WINDOW_SIZE VOCAB_SIZE < <(python3 -c "
+import json
+from pathlib import Path
+config = json.loads(Path('$TOKENIZER_MODEL/config.json').read_text())
+print(f\"{config.get('num_hidden_layers', 26)} {config.get('hidden_size', 1152)} {config.get('num_attention_heads', 8)} {config.get('num_key_value_heads', 1)} {config.get('intermediate_size', 6912)} {config.get('sliding_window', 512)} {config.get('vocab_size', 262144)}\")
+")
+else
+    echo "Warning: $TOKENIZER_MODEL/config.json not found. Falling back to 1B defaults."
+    NUM_LAYERS=26
+    HIDDEN_SIZE=1152
+    NUM_ATTN_HEADS=4
+    NUM_QUERY_GROUPS=1
+    FFN_HIDDEN_SIZE=6912
+    WINDOW_SIZE=512
+    VOCAB_SIZE=262144
+fi
 
 MODEL_ARGS=(
     --num-layers "$NUM_LAYERS"

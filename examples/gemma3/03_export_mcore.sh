@@ -30,9 +30,9 @@ echo "Megatron Path: ${MCORE_CHECKPOINT}"
 echo "HF Save Path: ${HF_SAVE_PATH}"
 echo "HF Config Ref: ${HF_CONFIG}"
 
-python3 examples/gemma3/03_convert_to_hf.py \
-    --megatron-model "${MCORE_CHECKPOINT}" \
-    --save-path "${HF_SAVE_PATH}" \
-    --hf-config "${HF_CONFIG}"
+python3 examples/gemma3/export_standalone_text.py \
+    --megatron-path "${MCORE_CHECKPOINT}" \
+    --hf-save-path "${HF_SAVE_PATH}" \
+    --hf-tokenizer-path "${HF_CONFIG}"
 
 echo "Export complete."

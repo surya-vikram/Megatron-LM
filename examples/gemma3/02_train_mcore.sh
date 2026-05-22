@@ -20,41 +20,20 @@ DISTRIBUTED_ARGS=(
     --node_rank 0
 )
 
-# Default to 1B config if not specified as second argument
-MODEL_SIZE="${2:-1B}"
+# Default to 1B config if not specified
+HF_MODEL_PATH="${3:-google/gemma-3-1b-pt}"
 
-if [ "$MODEL_SIZE" = "1B" ]; then
-    # Gemma3 1B Config
-    NUM_LAYERS=26
-    HIDDEN_SIZE=1152
-    NUM_ATTN_HEADS=4
-    NUM_QUERY_GROUPS=1
-    FFN_HIDDEN_SIZE=6912
-    WINDOW_SIZE=512
-    VOCAB_SIZE=262144
-    KV_CHANNELS=256
-elif [ "$MODEL_SIZE" = "4B" ]; then
-    # Gemma3 4B Config
-    NUM_LAYERS=34
-    HIDDEN_SIZE=2560
-    NUM_ATTN_HEADS=8
-    NUM_QUERY_GROUPS=4
-    FFN_HIDDEN_SIZE=10240
-    WINDOW_SIZE=1024
-    VOCAB_SIZE=262208
-    KV_CHANNELS=256
-elif [ "$MODEL_SIZE" = "12B" ]; then
-    # Gemma3 12B Config
-    NUM_LAYERS=48
-    HIDDEN_SIZE=3840
-    NUM_ATTN_HEADS=16
-    NUM_QUERY_GROUPS=8
-    FFN_HIDDEN_SIZE=15360
-    WINDOW_SIZE=1024
-    VOCAB_SIZE=262208
-    KV_CHANNELS=256
+# Dynamic Architecture Inference
+if [[ -d "$HF_MODEL_PATH" && -f "$HF_MODEL_PATH/config.json" ]]; then
+    echo "Inferring architecture from $HF_MODEL_PATH/config.json ..."
+    read -r NUM_LAYERS HIDDEN_SIZE NUM_ATTN_HEADS NUM_QUERY_GROUPS FFN_HIDDEN_SIZE WINDOW_SIZE VOCAB_SIZE < <(python3 -c "
+import json
+from pathlib import Path
+config = json.loads(Path('$HF_MODEL_PATH/config.json').read_text())
+print(f\"{config.get('num_hidden_layers', 26)} {config.get('hidden_size', 1152)} {config.get('num_attention_heads', 8)} {config.get('num_key_value_heads', 1)} {config.get('intermediate_size', 6912)} {config.get('sliding_window', 512)} {config.get('vocab_size', 262144)}\")
+")
 else
-    echo "Unknown model size: $MODEL_SIZE. Defaulting to 1B."
+    echo "Warning: $HF_MODEL_PATH/config.json not found. Falling back to 1B defaults."
     NUM_LAYERS=26
     HIDDEN_SIZE=1152
     NUM_ATTN_HEADS=4
@@ -62,8 +41,8 @@ else
     FFN_HIDDEN_SIZE=6912
     WINDOW_SIZE=512
     VOCAB_SIZE=262144
-    KV_CHANNELS=256
 fi
+KV_CHANNELS=256
 
 MODEL_ARGS=(
     --num-layers $NUM_LAYERS

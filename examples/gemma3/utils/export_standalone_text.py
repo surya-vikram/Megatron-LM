@@ -61,7 +61,7 @@ if __name__ == "__main__":
     config.architectures = ["Gemma3ForCausalLM"]
     
     # Create the bridge from config
-    bridge = AutoBridge.from_hf_config(config)
+    bridge = AutoBridge.from_hf_config(config); bridge.hf_model_id = args.hf_tokenizer_path
     
     # 2. Export weights to HF
     print(f"Loading Megatron model from {args.megatron_path}...")

@@ -71,7 +71,5 @@ bash examples/gemma3/train.sh \
     --mcore-path /home/jovyan/models/gemma-3-4b-pt-mcore \
     --data-path /home/jovyan/data/pubmed_train_text_document \
     --valid-data-path /home/jovyan/data/pubmed_val_text_document \
-    --wandb-project gemma3-medical-cpt \
-    --iters 100000 \
-    --lr 5e-7
+    --wandb-project gemma3-medical-cpt
 ```

@@ -102,7 +102,8 @@ if __name__ == "__main__":
     # 3. Sync metadata
     print("Syncing metadata from reference...")
     for filename in os.listdir(ref_dir):
-        if filename.endswith((".json", ".model", ".jinja")) and filename != "config.json":
+        # DO NOT sync config.json or model.safetensors.index.json as they are generated correctly during export
+        if filename.endswith((".json", ".model", ".jinja")) and filename not in ["config.json", "model.safetensors.index.json"]:
             src = os.path.join(ref_dir, filename)
             dst = os.path.join(args.hf_save_path, filename)
             shutil.copy2(src, dst)

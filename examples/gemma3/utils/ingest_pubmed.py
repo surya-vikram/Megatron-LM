@@ -31,7 +31,7 @@ def ingest(max_samples, output_prefix, val_ratio):
     
     try:
         # Explicitly using the '2024' config name found in pubmed.py
-        ds = load_dataset("ncbi/pubmed", "2024", streaming=True, split="train", trust_remote_code=True)
+        ds = load_dataset("/home/jovyan/repos/Megatron-LM/examples/gemma3/utils/pubmed.py", "2024", streaming=True, split="train", trust_remote_code=True)
     except Exception as e:
         print(f"Error loading dataset: {e}")
         sys.exit(1)

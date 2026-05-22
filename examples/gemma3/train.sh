@@ -109,12 +109,15 @@ MODEL_ARGS="
     --max-position-embeddings $SEQ_LEN
     --sliding-window-size $WINDOW
     --position-embedding-type rope
+    --no-position-embedding
+    --qk-layernorm
     --normalization RMSNorm
     --disable-bias-linear
     --no-masked-softmax-fusion
     --make-vocab-size-divisible-by 1
     --bf16
     --use-flash-attn
+    --attention-backend flash
     --attention-dropout 0.0
     --hidden-dropout 0.0
 "

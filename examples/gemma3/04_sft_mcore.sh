@@ -225,8 +225,9 @@ if [[ -d "$TOKENIZER_MODEL" && -f "$TOKENIZER_MODEL/config.json" ]]; then
     read -r NUM_LAYERS HIDDEN_SIZE NUM_ATTN_HEADS NUM_QUERY_GROUPS FFN_HIDDEN_SIZE WINDOW_SIZE VOCAB_SIZE < <(python3 -c "
 import json
 from pathlib import Path
-config = json.loads(Path('$TOKENIZER_MODEL/config.json').read_text())
-print(f\"{config.get('num_hidden_layers', 26)} {config.get('hidden_size', 1152)} {config.get('num_attention_heads', 8)} {config.get('num_key_value_heads', 1)} {config.get('intermediate_size', 6912)} {config.get('sliding_window', 512)} {config.get('vocab_size', 262144)}\")
+config_raw = json.loads(Path('/config.json').read_text())
+config = config_raw.get("text_config", config_raw)
+print(f"{config.get('num_hidden_layers', 26)} {config.get('hidden_size', 1152)} {config.get('num_attention_heads', 8)} {config.get('num_key_value_heads', 1)} {config.get('intermediate_size', 6912)} {config.get('sliding_window', 512)} {config_raw.get('vocab_size', 262144)}")
 ")
 else
     echo "Warning: $TOKENIZER_MODEL/config.json not found. Falling back to 1B defaults."

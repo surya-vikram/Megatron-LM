@@ -1,177 +1,110 @@
 #!/bin/bash
 set -euo pipefail
 
-# train.sh: Modular CPT/SFT Training Interface for Gemma 3
-# Optimized for Single-GPU 1B, 4B, 12B runs.
+# train.sh: Modular Training Engine for Gemma 3 (1B/4B/12B)
+# Supports Continual Pre-training (CPT) and Instruction Tuning (SFT).
 
-# Performance & Stability Tuning
-export CUDA_DEVICE_MAX_CONNECTIONS=1
-export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
-export NVTE_ALLOW_NONDETERMINISTIC_ALGO=1
+echo "--- Gemma 3 Training Engine Launching ---"
 
-usage() {
-    echo "Usage: ./train.sh --mode <cpt|sft> --model-size <1b|4b|12b> --hf-model <path> --mcore-path <path> --data-path <path> --save-path <path> [options]"
-    echo "Options:"
-    echo "  --iters <int>          Number of iterations (default: 20)"
-    echo "  --seq-len <int>        Sequence length (default: 2048)"
-    echo "  --lr <float>           Learning rate (default: 5e-6)"
-    echo "  --master-port <int>    Distributed port (default: 6000)"
-    exit 1
-}
-
-MODE=""
-MODEL_SIZE=""
-HF_MODEL=""
-MCORE_PATH=""
-DATA_PATH=""
-SAVE_PATH=""
-ITERS=20
-SEQ_LEN=2048
-LR="5e-6"
-MASTER_PORT=6000
+# --- Argument Parsing ---
+MODE="cpt"            # cpt or sft
+MODEL_SIZE="4b"       # 1b, 4b, 12b
+MCORE_PATH=""         # Path to converted MCore weights
+DATA_PATH=""          # Path to training .bin prefix
+VALID_DATA_PATH=""    # Path to validation .bin prefix (Optional)
+SAVE_PATH=""          # Where to save checkpoints
+ITERS=5000            # Total iterations
+LR=1e-6               # Learning rate
+WANDB_PROJECT=""      # Optional WandB logging
+WANDB_EXP_NAME=""     # Optional WandB experiment name
 
 while [[ $# -gt 0 ]]; do
-    case "$1" in
-        --mode) MODE="$2"; shift 2 ;;
-        --model-size) MODEL_SIZE="$2"; shift 2 ;;
-        --hf-model) HF_MODEL="$2"; shift 2 ;;
-        --mcore-path) MCORE_PATH="$2"; shift 2 ;;
-        --data-path) DATA_PATH="$2"; shift 2 ;;
-        --save-path) SAVE_PATH="$2"; shift 2 ;;
-        --iters) ITERS="$2"; shift 2 ;;
-        --seq-len) SEQ_LEN="$2"; shift 2 ;;
-        --lr) LR="$2"; shift 2 ;;
-        --master-port) MASTER_PORT="$2"; shift 2 ;;
-        *) usage ;;
-    esac
+  case $1 in
+    --mode) MODE="$2"; shift 2 ;;
+    --model-size) MODEL_SIZE="$2"; shift 2 ;;
+    --mcore-path) MCORE_PATH="$2"; shift 2 ;;
+    --data-path) DATA_PATH="$2"; shift 2 ;;
+    --valid-data-path) VALID_DATA_PATH="$2"; shift 2 ;;
+    --save-path) SAVE_PATH="$2"; shift 2 ;;
+    --iters) ITERS="$2"; shift 2 ;;
+    --lr) LR="$2"; shift 2 ;;
+    --wandb-project) WANDB_PROJECT="$2"; shift 2 ;;
+    --wandb-exp-name) WANDB_EXP_NAME="$2"; shift 2 ;;
+    *) echo "Unknown parameter: $1"; exit 1 ;;
+  esac
 done
 
-[[ -z "$MODE" || -z "$MODEL_SIZE" || -z "$HF_MODEL" || -z "$MCORE_PATH" || -z "$DATA_PATH" || -z "$SAVE_PATH" ]] && usage
-
-# Specific Config Values for Gemma 3 Models
-case "$MODEL_SIZE" in
-    1b)
-        NUM_LAYERS=26
-        HIDDEN_SIZE=1152
-        NUM_ATTN_HEADS=8
-        NUM_QUERY_GROUPS=1
-        FFN_HIDDEN_SIZE=6912
-        WINDOW_SIZE=512
+# --- Architecture Configuration ---
+case $MODEL_SIZE in
+    "1b")
+        LAYERS=26; HIDDEN=1152; HEADS=8; GQA=1; WINDOW=512; TP=1; PP=1
         ;;
-    4b)
-        NUM_LAYERS=34
-        HIDDEN_SIZE=2560
-        NUM_ATTN_HEADS=8
-        NUM_QUERY_GROUPS=4
-        FFN_HIDDEN_SIZE=10240
-        WINDOW_SIZE=1024
+    "4b")
+        LAYERS=34; HIDDEN=2560; HEADS=8; GQA=4; WINDOW=1024; TP=1; PP=1
         ;;
-    12b)
-        NUM_LAYERS=48
-        HIDDEN_SIZE=3840
-        NUM_ATTN_HEADS=16
-        NUM_QUERY_GROUPS=8
-        FFN_HIDDEN_SIZE=15360
-        WINDOW_SIZE=1024
+    "12b")
+        LAYERS=48; HIDDEN=3840; HEADS=16; GQA=8; WINDOW=1024; TP=2; PP=1
         ;;
-    *)
-        echo "Invalid model size: $MODEL_SIZE. Choose 1b, 4b, or 12b."
-        exit 1
-        ;;
+    *) echo "Unsupported model size: $MODEL_SIZE"; exit 1 ;;
 esac
 
-# Get Vocab Size from config
-VOCAB_SIZE=$(python3 -c "import json, sys; print(json.load(open('$HF_MODEL/config.json')).get('vocab_size', 262144))")
+# --- Training Logic ---
+NUM_GPUS=$(nvidia-smi -L | wc -l)
+DISTRIBUTED_ARGS="--nproc_per_node $NUM_GPUS --nnodes 1 --node_rank 0 --master_addr localhost --master_port 6000"
 
-TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
-FINAL_SAVE_PATH="${SAVE_PATH}/${MODE}_${TIMESTAMP}"
-LOG_DIR="/home/jovyan/logs/gemma3/${MODE}_${TIMESTAMP}"
-mkdir -p "$LOG_DIR"
+COMMON_ARGS="
+    --use-mcore-models \
+    --transformer-impl transformer_engine \
+    --num-layers $LAYERS \
+    --hidden-size $HIDDEN \
+    --num-attention-heads $HEADS \
+    --group-query-attention \
+    --num-query-groups $GQA \
+    --sliding-window-size $WINDOW \
+    --seq-length 4096 \
+    --max-position-embeddings 4096 \
+    --micro-batch-size 1 \
+    --global-batch-size 64 \
+    --train-iters $ITERS \
+    --lr $LR \
+    --lr-decay-style cosine \
+    --min-lr 1e-7 \
+    --weight-decay 0.1 \
+    --clip-grad 1.0 \
+    --bf16 \
+    --use-flash-attn \
+    --no-gradient-accumulation-fusion \
+    --attention-dropout 0.0 \
+    --hidden-dropout 0.0 \
+    --load $MCORE_PATH \
+    --save $SAVE_PATH \
+    --save-interval 500 \
+    --eval-interval 100 \
+    --eval-iters 10
+"
 
-echo "--- Launching $MODE Training for Gemma 3 ($MODEL_SIZE) --- "
-echo "Architecture: $NUM_LAYERS Layers, $HIDDEN_SIZE Hidden, $NUM_ATTN_HEADS Heads, $NUM_QUERY_GROUPS KV-Groups"
-echo "Logs: $LOG_DIR"
+# Handle Data Path (With or without Validation)
+if [[ -n "$VALID_DATA_PATH" ]]; then
+    DATA_ARGS="--data-path 1.0 $DATA_PATH --valid-data-path $VALID_DATA_PATH"
+else
+    DATA_ARGS="--data-path 1.0 $DATA_PATH"
+fi
 
-DISTRIBUTED_ARGS=(
-    --nproc_per_node 1
-    --master_port "$MASTER_PORT"
-)
+# Handle Mode
+if [[ "$MODE" == "sft" ]]; then
+    DATA_ARGS="$DATA_ARGS --is-instruction-dataset"
+fi
 
-MODEL_ARGS=(
-    --use-mcore-models
-    --num-layers "$NUM_LAYERS"
-    --hidden-size "$HIDDEN_SIZE"
-    --num-attention-heads "$NUM_ATTN_HEADS"
-    --num-query-groups "$NUM_QUERY_GROUPS"
-    --group-query-attention
-    --kv-channels 256
-    --ffn-hidden-size "$FFN_HIDDEN_SIZE"
-    --seq-length "$SEQ_LEN"
-    --max-position-embeddings 32768
-    --position-embedding-type rope
-    --normalization RMSNorm
-    --swiglu
-    --qk-layernorm
-    --disable-bias-linear
-    --apply-layernorm-1p
-    --no-rope-fusion
-    --transformer-impl transformer_engine
-    --attention-backend flash
-    --attention-softmax-in-fp32
-    --window-size "$WINDOW_SIZE,$WINDOW_SIZE"
-    --vocab-size "$VOCAB_SIZE"
-)
+# Handle WandB
+if [[ -n "$WANDB_PROJECT" ]]; then
+    COMMON_ARGS="$COMMON_ARGS --wandb-project $WANDB_PROJECT --wandb-exp-name ${WANDB_EXP_NAME:-gemma3-$MODEL_SIZE-$MODE}"
+fi
 
-TRAINING_ARGS=(
-    --micro-batch-size 1
-    --global-batch-size 1
-    --train-iters "$ITERS"
-    --lr "$LR"
-    --lr-decay-style cosine
-    --optimizer adam
-    --use-distributed-optimizer
-    --use-precision-aware-optimizer
-    --main-params-dtype fp16
-    --exp-avg-dtype fp16
-    --exp-avg-sq-dtype fp16
-    --bf16
-    --grad-reduce-in-bf16
-    --cross-entropy-loss-fusion
-    --empty-unused-memory-level 1
-    --manual-gc
-    --manual-gc-interval 5
-    --recompute-activations
-    --recompute-granularity full
-    --attention-dropout 0.0
-    --hidden-dropout 0.0
-    --no-load-optim
-    --no-load-rng
-)
-
-DATA_ARGS=(
-    --data-path "$DATA_PATH"
-    --tokenizer-type HuggingFaceTokenizer
-    --tokenizer-model "$HF_MODEL"
-    --split 100,0,0
-)
-
-[[ "$MODE" == "sft" ]] && DATA_ARGS+=(--sft)
-
-LOGGING_ARGS=(
-    --log-interval 1
-    --save-interval "$ITERS"
-    --eval-interval 1000
-    --eval-iters 0
-    --tensorboard-dir "${FINAL_SAVE_PATH}/tensorboard"
-    --log-throughput
-    --log-params-norm
-)
-
-python3 -m torch.distributed.run "${DISTRIBUTED_ARGS[@]}" \
-    examples/gemma3/utils/pretrain_gemma3_mcore.py \
-    "${MODEL_ARGS[@]}" \
-    "${TRAINING_ARGS[@]}" \
-    "${DATA_ARGS[@]}" \
-    "${LOGGING_ARGS[@]}" \
-    --load "$MCORE_PATH" \
-    --save "$FINAL_SAVE_PATH" 2>&1 | tee "$LOG_DIR/training.log"
+# Launch
+echo "Starting $MODE training for Gemma 3 $MODEL_SIZE..."
+torchrun $DISTRIBUTED_ARGS \
+    pretrain_gemma3_mcore.py \
+    $COMMON_ARGS \
+    $DATA_ARGS \
+    --tensor-model-parallel-size $TP \
+    --pipeline-model-parallel-size $PP

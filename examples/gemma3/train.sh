@@ -173,6 +173,7 @@ fi
 
 if [[ "$MODE" == "sft" ]]; then
     DATA_ARGS="$DATA_ARGS --is-instruction-dataset"
+    TRAIN_ARGS="$TRAIN_ARGS --reset-position-ids --reset-attention-mask --eod-mask-loss"
 fi
 
 # ============================================================================

@@ -21,12 +21,12 @@ cd /root/Megatron-LM
 
 # 2. HF Setup
 echo "--- Authenticating with HuggingFace ---"
-huggingface-cli login --token $HF_TOKEN
+hf auth login --token $HF_TOKEN
 
 if [ ! -d "$HF_SOURCE_DIR" ]; then
     echo "--- Downloading $MODEL_ID ---"
     mkdir -p "/root/models"
-    huggingface-cli download "$MODEL_ID" --local-dir "$HF_SOURCE_DIR"
+    hf download "$MODEL_ID" --local-dir "$HF_SOURCE_DIR"
 fi
 
 # 3. Extraction

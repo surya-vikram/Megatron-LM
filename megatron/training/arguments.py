@@ -2713,22 +2713,6 @@ def _add_mixed_precision_args(parser):
     group.add_argument('--fused-linear-cross-entropy', action='store_true',
                        help='Use Apple cut-cross-entropy to compute token losses without materializing logits.',
                        dest='use_linear_cross_entropy')
-    group.add_argument('--linear-ce-impl', type=str, default='torch_compile',
-                       choices=['torch_compile', 'cce', 'cce_exact', 'cce_kahan_full',
-                                'cce_kahan_full_c_full_e', 'cce_kahan_full_c', 'cce_kahan_full_e'],
-                       help='CCE implementation selector.')
-    group.add_argument('--linear-ce-filter-eps', type=str, default='auto',
-                       help='Threshold for skipping gradient calculations on inactive vocabulary blocks.')
-    group.add_argument('--linear-ce-accum-e-fp32', action='store_true',
-                       help='Force fp32 gradient accumulation for embeddings.')
-    group.add_argument('--linear-ce-accum-c-fp32', action='store_true',
-                       help='Force fp32 gradient accumulation for classifier.')
-    group.add_argument('--no-linear-ce-filter-e-grad', action='store_false',
-                       dest='linear_ce_filter_e_grad', default=True,
-                       help='Disable embedding gradient filtering.')
-    group.add_argument('--no-linear-ce-filter-c-grad', action='store_false',
-                       dest='linear_ce_filter_c_grad', default=True,
-                       help='Disable classifier gradient filtering.')
     group.add_argument('--reuse-grad-buf-for-mxfp8-param-ag', action='store_true',
                        help='If True, reuse the grad buffer for MXFP8 parameter all-gather.')
 

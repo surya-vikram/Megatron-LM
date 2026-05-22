@@ -1,5 +1,6 @@
 #!/bin/bash
-set -euo pipefail
+set -eu
+set -o pipefail
 
 # train.sh: Production Training Engine for Gemma 3 CPT/SFT (1B/4B/12B)
 # Optimized for single-node training on NVIDIA H200/H100/A100 GPUs.
@@ -32,6 +33,8 @@ TOKENIZER_TYPE="HuggingFaceTokenizer"
 TOKENIZER_MODEL=""
 ATTENTION_BACKEND="flash"
 RECOMPUTE_GRANULARITY="selective"
+FUSED_LINEAR_CROSS_ENTROPY=false
+LOG_THROUGHPUT=false
 
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -53,6 +56,8 @@ while [[ $# -gt 0 ]]; do
     --tokenizer-model) TOKENIZER_MODEL="$2"; shift 2 ;;
     --attention-backend) ATTENTION_BACKEND="$2"; shift 2 ;;
     --recompute-granularity) RECOMPUTE_GRANULARITY="$2"; shift 2 ;;
+    --fused-linear-cross-entropy) FUSED_LINEAR_CROSS_ENTROPY=true; shift 1 ;;
+    --log-throughput) LOG_THROUGHPUT=true; shift 1 ;;
     *) echo "Unknown parameter: $1"; exit 1 ;;
   esac
 done
@@ -215,6 +220,17 @@ if [[ -n "$WANDB_PROJECT" ]]; then
 fi
 
 # ============================================================================
+# CCE and Throughput Extra Args
+# ============================================================================
+EXTRA_ARGS=""
+if [ "$FUSED_LINEAR_CROSS_ENTROPY" = true ]; then
+    EXTRA_ARGS="$EXTRA_ARGS --fused-linear-cross-entropy"
+fi
+if [ "$LOG_THROUGHPUT" = true ]; then
+    EXTRA_ARGS="$EXTRA_ARGS --log-throughput"
+fi
+
+# ============================================================================
 # Launch
 # ============================================================================
 echo "================================================================="
@@ -226,6 +242,8 @@ echo "  GBS:          $GBS (MBS=$MBS, Accum Steps=$((GBS / MBS / NUM_GPUS)))"
 echo "  LR:           $LR (warmup=$WARMUP_ITERS, decay=$ITERS iters)"
 echo "  Iters:        $ITERS"
 echo "  Checkpoints:  $SAVE_PATH"
+echo "  CCE loss:     $FUSED_LINEAR_CROSS_ENTROPY"
+echo "  Log Throughput: $LOG_THROUGHPUT"
 echo "================================================================="
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -238,5 +256,6 @@ torchrun $DISTRIBUTED_ARGS \
     $LOG_ARGS \
     $DATA_ARGS \
     $WANDB_ARGS \
+    $EXTRA_ARGS \
     --tensor-model-parallel-size $TP \
     --pipeline-model-parallel-size $PP

@@ -1100,6 +1100,22 @@ class TransformerConfig(ModelParallelConfig):
     """Transformer implementation to use.
     Options are 'transformer_engine' for Transformer Engine and 'local' for MCore."""
 
+    use_linear_cross_entropy: bool = False
+    """Use cut-cross-entropy to compute token losses without materializing logits."""
+
+    linear_ce_impl: str = "torch_compile"
+    """CCE implementation selector."""
+
+    linear_ce_reduction: str = "none"
+    """CCE reduction mode."""
+
+    linear_ce_shift: bool = False
+    """Whether CCE should apply the causal next-token shift internally."""
+
+    linear_ce_ignore_index: int = -100
+    """Ignore index passed through to CCE."""
+
+
     #####################################
     # Fine-grained Activation Offloading
     #####################################

@@ -30,6 +30,8 @@ WANDB_PROJECT=""
 WANDB_EXP_NAME=""
 TOKENIZER_TYPE="HuggingFaceTokenizer"
 TOKENIZER_MODEL=""
+ATTENTION_BACKEND="flash"
+RECOMPUTE_GRANULARITY="selective"
 
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -49,6 +51,8 @@ while [[ $# -gt 0 ]]; do
     --wandb-exp-name) WANDB_EXP_NAME="$2"; shift 2 ;;
     --tokenizer-type) TOKENIZER_TYPE="$2"; shift 2 ;;
     --tokenizer-model) TOKENIZER_MODEL="$2"; shift 2 ;;
+    --attention-backend) ATTENTION_BACKEND="$2"; shift 2 ;;
+    --recompute-granularity) RECOMPUTE_GRANULARITY="$2"; shift 2 ;;
     *) echo "Unknown parameter: $1"; exit 1 ;;
   esac
 done
@@ -99,7 +103,7 @@ if [[ "$NUM_GPUS" -lt "$((TP * PP))" ]]; then
     TP=1; PP=1
 fi
 
-DISTRIBUTED_ARGS="--nproc_per_node $NUM_GPUS --nnodes 1 --node_rank 0 --master_addr localhost --master_port 6000"
+DISTRIBUTED_ARGS="--nproc_per_node $NUM_GPUS --nnodes 1 --node_rank 0 --master_addr localhost --master_port 6543"
 
 # ============================================================================
 # Model Architecture Args (must match checkpoint exactly)
@@ -126,7 +130,7 @@ MODEL_ARGS="
     --make-vocab-size-divisible-by 1
     --bf16
     --use-flash-attn
-    --attention-backend flash
+    --attention-backend $ATTENTION_BACKEND
     --attention-dropout 0.0
     --hidden-dropout 0.0
     --tokenizer-type $TOKENIZER_TYPE
@@ -152,12 +156,18 @@ OPTIM_ARGS="
 # ============================================================================
 # Training Args
 # ============================================================================
-TRAIN_ARGS="
+# Recompute Args
+RECOMPUTE_ARGS=""
+if [[ "$RECOMPUTE_GRANULARITY" != "none" ]]; then
+    RECOMPUTE_ARGS="--recompute-granularity $RECOMPUTE_GRANULARITY"
+fi
+
+TRAIN_ARGS=" 
     --micro-batch-size $MBS
     --global-batch-size $GBS
     --train-iters $ITERS
     --no-gradient-accumulation-fusion
-    --recompute-granularity selective
+    $RECOMPUTE_ARGS
     --num-workers 4
 "
 
@@ -187,7 +197,13 @@ fi
 
 if [[ "$MODE" == "sft" ]]; then
     DATA_ARGS="$DATA_ARGS --is-instruction-dataset"
-    TRAIN_ARGS="$TRAIN_ARGS --reset-position-ids --reset-attention-mask --eod-mask-loss"
+    # Recompute Args
+RECOMPUTE_ARGS=""
+if [[ "$RECOMPUTE_GRANULARITY" != "none" ]]; then
+    RECOMPUTE_ARGS="--recompute-granularity $RECOMPUTE_GRANULARITY"
+fi
+
+TRAIN_ARGS=" $TRAIN_ARGS --reset-position-ids --reset-attention-mask --eod-mask-loss"
 fi
 
 # ============================================================================

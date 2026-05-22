@@ -86,8 +86,9 @@ if __name__ == "__main__":
             
         # Get HF-format state dict
         hf_text_state_dict = {}
-        for name, weight in bridge.stream_weights_megatron_to_hf(megatron_model, bridge.hf_pretrained):
-            hf_text_state_dict[name] = weight
+        # Using the correct public API of AutoBridge
+        for exported_weight in bridge.export_hf_weights(megatron_model, cpu=True):
+            hf_text_state_dict[exported_weight.param_name] = exported_weight.weight
 
     # 2. Stitch into VLM
     print(f"Loading original multimodal model from {args.vlm_hf_path}...")

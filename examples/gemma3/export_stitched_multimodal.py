@@ -101,17 +101,32 @@ if __name__ == "__main__":
     print("Stitching weights...")
     vlm_state_dict = vlm_model.state_dict()
     updated_count = 0
+    missing_keys = []
+    
     for name, weight in hf_text_state_dict.items():
+        # Correct mapping:
+        # Standalone 'model.embed_tokens.weight' -> VLM 'language_model.model.embed_tokens.weight'
+        # Standalone 'lm_head.weight'           -> VLM 'language_model.lm_head.weight'
         if name.startswith("model."):
-            vlm_name = name.replace("model.", "model.language_model.")
+            vlm_name = name.replace("model.", "language_model.model.")
+        elif name.startswith("lm_head."):
+            vlm_name = name.replace("lm_head.", "language_model.lm_head.")
         else:
             vlm_name = name
             
         if vlm_name in vlm_state_dict:
             vlm_state_dict[vlm_name].copy_(weight)
             updated_count += 1
+        else:
+            missing_keys.append(name)
 
     print(f"Updated {updated_count} parameters.")
+    if missing_keys:
+        print(f"Warning: {len(missing_keys)} keys from standalone model were NOT found in VLM:")
+        for k in missing_keys[:5]:
+            print(f"  - {k}")
+        if len(missing_keys) > 5:
+            print(f"  - ... and {len(missing_keys)-5} more.")
     vlm_model.load_state_dict(vlm_state_dict)
     
     print(f"Saving stitched model to {args.output_path}...")

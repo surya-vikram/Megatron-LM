@@ -34,15 +34,15 @@ from model_provider import model_provider
 try:
     from megatron.core.tokenizers.text.text_tokenizer import HuggingFaceTokenizer
     def tokenize_conversation(self, conversation):
-        """Minimal patch for Megatron SFTDataset."""
-        prompt = ""
-        for msg in conversation:
-            role = msg.get("role", "user")
-            content = msg.get("content", "")
-            if role == "user":
-                prompt += f"<|user|>\n{content}\n"
-            else:
-                prompt += f"<|model|>\n{content}<|end|>\n"
+        """Patch for Megatron SFTDataset using native HF Chat Templates offline."""
+        template_path = os.path.join(os.path.dirname(__file__), 'gemma3_chat_template.jinja')
+        if os.path.exists(template_path):
+            with open(template_path, 'r') as tf:
+                local_template = tf.read()
+        else:
+            raise FileNotFoundError("Local chat template not found at " + template_path)
+            
+        prompt = self.tokenizer.apply_chat_template(conversation, chat_template=local_template, tokenize=False, add_generation_prompt=False)
         tokens = self.tokenize(prompt)
         return tokens, tokens
     HuggingFaceTokenizer.tokenize_conversation = tokenize_conversation

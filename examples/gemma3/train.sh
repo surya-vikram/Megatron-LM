@@ -45,12 +45,18 @@ LOG_THROUGHPUT=true
 SAVE_INTERVAL=0
 EVAL_INTERVAL=0
 LOG_INTERVAL=1
+EPOCHS=1.0
+WARMUP_PRCT=5
+DECAY_PRCT=90
 PACK_SAMPLES=false
 
 while [[ $# -gt 0 ]]; do
   case $1 in
     --mode) MODE="$2"; shift 2 ;;
     --pack-samples) PACK_SAMPLES=true; shift 1 ;;
+    --epochs) EPOCHS="$2"; shift 2 ;;
+    --warmup-prct) WARMUP_PRCT="$2"; shift 2 ;;
+    --decay-prct) DECAY_PRCT="$2"; shift 2 ;;
     --model-size) MODEL_SIZE="$2"; shift 2 ;;
     --mcore-path) MCORE_PATH="$2"; shift 2 ;;
     --data-path) DATA_PATH="$2"; shift 2 ;;
@@ -127,12 +133,40 @@ fi
 
 # 4. Default Hyperparameter Logic (Branching)
 if [[ "$MODE" == "sft" ]]; then
-    # SFT Profile: 18,772 samples, GBS 64, 1 Epoch
-    [[ $ITERS -eq 0 ]] && ITERS=294
-    [[ $WARMUP_ITERS -eq 0 ]] && WARMUP_ITERS=6
-    [[ $DECAY_ITERS -eq 0 ]] && DECAY_ITERS=265
-    [[ $SAVE_INTERVAL -eq 0 ]] && SAVE_INTERVAL=30
-    [[ $EVAL_INTERVAL -eq 0 ]] && EVAL_INTERVAL=15
+    # SFT Profile: 18,772 samples, GBS 64, dynamic Epoch calculation
+    if [ "$PACK_SAMPLES" = true ]; then
+        # Dynamically calculate precise ITERS using SFT token scanner
+        if [[ $ITERS -eq 0 ]]; then
+            echo "Calculating exact SFT training iterations dynamically..."
+            ITERS=$(python3 examples/gemma3/utils/get_sft_tokens.py "$DATA_PATH" "$TOKENIZER_MODEL" "$EPOCHS" "$GBS" "$SEQ_LEN")
+            echo "Calculated training iterations: $ITERS"
+        fi
+        
+        # Scale lr scheduler and evaluation intervals dynamically by percentages
+        [[ $WARMUP_ITERS -eq 0 ]] && WARMUP_ITERS=$(( ITERS * WARMUP_PRCT / 100 ))
+        [[ $WARMUP_ITERS -eq 0 ]] && WARMUP_ITERS=1 # At least 1 step
+        
+        [[ $DECAY_ITERS -eq 0 ]] && DECAY_ITERS=$(( ITERS * DECAY_PRCT / 100 ))
+        
+        [[ $SAVE_INTERVAL -eq 0 ]] && SAVE_INTERVAL=$(( ITERS * 10 / 100 )) # Save every 10%
+        [[ $SAVE_INTERVAL -eq 0 ]] && SAVE_INTERVAL=5
+        
+        [[ $EVAL_INTERVAL -eq 0 ]] && EVAL_INTERVAL=$(( ITERS * 5 / 100 )) # Eval every 5%
+        [[ $EVAL_INTERVAL -eq 0 ]] && EVAL_INTERVAL=2
+    else
+        # Unpacked baseline: scale by EPOCHS
+        # Standard 1 Epoch base = 294 steps. Scale linearly with requested epochs.
+        if [[ $ITERS -eq 0 ]]; then
+            ITERS=$(python3 -c "import math; print(math.ceil(294 * $EPOCHS))")
+        fi
+        [[ $WARMUP_ITERS -eq 0 ]] && WARMUP_ITERS=$(( ITERS * WARMUP_PRCT / 100 ))
+        [[ $WARMUP_ITERS -eq 0 ]] && WARMUP_ITERS=1
+        [[ $DECAY_ITERS -eq 0 ]] && DECAY_ITERS=$(( ITERS * DECAY_PRCT / 100 ))
+        [[ $SAVE_INTERVAL -eq 0 ]] && SAVE_INTERVAL=$(( ITERS * 10 / 100 ))
+        [[ $SAVE_INTERVAL -eq 0 ]] && SAVE_INTERVAL=5
+        [[ $EVAL_INTERVAL -eq 0 ]] && EVAL_INTERVAL=$(( ITERS * 5 / 100 ))
+        [[ $EVAL_INTERVAL -eq 0 ]] && EVAL_INTERVAL=2
+    fi
     [[ $LR == "0" ]] && LR=1e-6
     if [[ "$WANDB_PROJECT" == "AUTO" ]]; then WANDB_PROJECT="gemma3-medical-sft-reasoning"; fi
     [[ $SEQ_LEN -eq 16384 ]] && SEQ_LEN=8192 

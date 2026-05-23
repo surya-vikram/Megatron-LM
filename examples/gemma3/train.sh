@@ -152,9 +152,9 @@ MODEL_ARGS="
 # ============================================================================
 OPTIM_ARGS="
     --lr $LR \
-    --min-lr 1e-6 \
+    --min-lr $MIN_LR \
     --lr-decay-style cosine \
-    --lr-decay-iters $ITERS \
+    --lr-decay-iters $DECAY_ITERS \
     --lr-warmup-iters $WARMUP_ITERS \
     --weight-decay 0.1 \
     --clip-grad 1.0 \
@@ -202,9 +202,9 @@ TRAIN_ARGS="
 LOG_ARGS="
     --load $MCORE_PATH \
     --save $SAVE_PATH \
-    --save-interval 1000 \
-    --log-interval 10 \
-    --eval-interval 500 \
+    --save-interval $SAVE_INTERVAL \
+    --eval-interval $EVAL_INTERVAL \
+    --log-interval $LOG_INTERVAL \
     --eval-iters 10 \
     --no-load-optim \
     --no-load-rng \

@@ -29,6 +29,15 @@ try:
     sft_tok._tokenizer.chat_template = local_template
     sft_tok._prompt_config.custom_chat_template = local_template
     
+    # Re-derive assistant header tokens after setting the template!
+    conv = [{"role": "user", "content": ""}]
+    full = sft_tok._tokenizer.apply_chat_template(conv, add_generation_prompt=True, tokenize=False, chat_template=sft_tok._prompt_config.custom_chat_template)
+    base = sft_tok._tokenizer.apply_chat_template(conv, add_generation_prompt=False, tokenize=False, chat_template=sft_tok._prompt_config.custom_chat_template)
+    prefix_text = full[len(base):]
+    sft_tok._assistant_header = sft_tok._tokenizer.encode(prefix_text, add_special_tokens=False)
+    if sft_tok._prompt_config.has_bos and len(sft_tok._assistant_header) > 0 and sft_tok._assistant_header[0] == sft_tok._tokenizer.bos_token_id:
+        sft_tok._assistant_header = sft_tok._assistant_header[1:]
+    
     tokens, target = sft_tok.tokenize_conversation(convo, return_target=True, add_generation_prompt=False)
     
     print("--- SFT Target Masking Audit ---")

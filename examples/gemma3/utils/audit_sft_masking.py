@@ -79,13 +79,22 @@ try:
         for offset in range(m):
             assert target[idx + offset] == -100, f"ERROR: Assistant header token '{tokenizer.decode([tokens[idx+offset]])}' is NOT masked!"
             
-    # 3. Stop token (<end_of_turn>) must be UNMASKED
+    # 3. Assistant's Stop token (<end_of_turn>) must be UNMASKED
     terminator_id = sft_tok._prompt_config.terminator_id
     terminator_found = False
-    for i, (tok, tar) in enumerate(zip(tokens.tolist(), target.tolist())):
-        if tok == terminator_id:
-            terminator_found = True
-            assert tar != -100, f"ERROR: Stop token (<end_of_turn>) at index {i} is MASKED! Model will not learn to stop."
+    
+    header = sft_tok._assistant_header
+    n, m = len(tokens), len(header)
+    for i in range(n - m + 1):
+        if np.array_equal(tokens[i:i+m], header):
+            footer_idx = -1
+            for j in range(i + m, n):
+                if tokens[j] == terminator_id or tokens[j] == sft_tok._tokenizer.eos_token_id:
+                    footer_idx = j
+                    break
+            if footer_idx != -1:
+                terminator_found = True
+                assert target[footer_idx] != -100, f"ERROR: Assistant stop token at index {footer_idx} is MASKED! Model will not learn to stop."
             
     assert terminator_found, "ERROR: Stop token (<end_of_turn>) was not found in the conversation!"
     print("SUCCESS: Target masking boundary check passed beautifully!")

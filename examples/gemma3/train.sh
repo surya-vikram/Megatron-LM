@@ -18,30 +18,32 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 # ============================================================================
 MODE="cpt"
 MODEL_SIZE="4b"
-MCORE_PATH="/home/jovyan/models/gemma-3-4b-pt-mcore"
+MCORE_PATH=""
 DATA_PATH=""
 VALID_DATA_PATH=""
 SAVE_PATH=""
-ITERS=476
-LR=5e-6
+ITERS=0
+LR=0
 MIN_LR=5e-7
-WARMUP_ITERS=9
-DECAY_ITERS=428
+WARMUP_ITERS=0
+DECAY_ITERS=0
 GBS=64
 MBS=1
 SEQ_LEN=16384
-WANDB_PROJECT="gemma3-medical-cpt-prod"
+WANDB_PROJECT="AUTO"
 WANDB_EXP_NAME=""
-TOKENIZER_TYPE="HuggingFaceTokenizer"
+TENSORBOARD_DIR=""
+TOKENIZER_TYPE=""
 TOKENIZER_MODEL=""
+SFT_PROMPT_FORMAT="gemma3"
 ATTENTION_BACKEND="flash"
 RECOMPUTE_GRANULARITY="full"
 RECOMPUTE_METHOD="uniform"
 RECOMPUTE_NUM_LAYERS="2"
 FUSED_LINEAR_CROSS_ENTROPY=true
 LOG_THROUGHPUT=true
-SAVE_INTERVAL=48
-EVAL_INTERVAL=24
+SAVE_INTERVAL=0
+EVAL_INTERVAL=0
 LOG_INTERVAL=1
 
 while [[ $# -gt 0 ]]; do
@@ -62,8 +64,10 @@ while [[ $# -gt 0 ]]; do
     --seq-len) SEQ_LEN="$2"; shift 2 ;;
     --wandb-project) WANDB_PROJECT="$2"; shift 2 ;;
     --wandb-exp-name) WANDB_EXP_NAME="$2"; shift 2 ;;
+    --tensorboard-dir) TENSORBOARD_DIR="$2"; shift 2 ;;
     --tokenizer-type) TOKENIZER_TYPE="$2"; shift 2 ;;
     --tokenizer-model) TOKENIZER_MODEL="$2"; shift 2 ;;
+    --sft-prompt-format) SFT_PROMPT_FORMAT="$2"; shift 2 ;;
     --attention-backend) ATTENTION_BACKEND="$2"; shift 2 ;;
     --recompute-granularity) RECOMPUTE_GRANULARITY="$2"; shift 2 ;;
     --recompute-method) RECOMPUTE_METHOD="$2"; shift 2 ;;
@@ -78,18 +82,74 @@ while [[ $# -gt 0 ]]; do
 done
 
 # ============================================================================
-# Validation & Defaults
+# Validation & Mode-Aware Defaults
 # ============================================================================
+
+# 0. Tensorboard IST Timestamp Logic (Unlocks WandB metrics)
+if [[ -z "$TENSORBOARD_DIR" ]]; then
+    IST_DATE=$(TZ='Asia/Kolkata' date +%Y%m%d_%H%M%S)
+    TENSORBOARD_DIR="/home/jovyan/logs/tb/${MODE}_${IST_DATE}"
+fi
+mkdir -p "$TENSORBOARD_DIR"
+
+# 1. Default Tokenizer Logic
+if [[ -z "$TOKENIZER_TYPE" ]]; then
+    if [[ "$MODE" == "cpt" ]]; then
+        TOKENIZER_TYPE="HuggingFaceTokenizer"
+    elif [[ "$MODE" == "sft" ]]; then
+        TOKENIZER_TYPE="SFTTokenizer"
+    fi
+fi
+
+# 2. Default MCORE_PATH logic
+if [[ -z "$MCORE_PATH" ]]; then
+  if [[ "$MODE" == "cpt" ]]; then
+    MCORE_PATH="/home/jovyan/models/gemma-3-${MODEL_SIZE}-pt-mcore"
+  elif [[ "$MODE" == "sft" ]]; then
+    MCORE_PATH="/home/jovyan/data/checkpoints/gemma3-${MODEL_SIZE}-cpt"
+  fi
+  echo "INFO: No --mcore-path specified. Using default for $MODE mode: $MCORE_PATH"
+fi
+
+# 3. Default DATA_PATH logic
 if [[ -z "$DATA_PATH" ]]; then
   if [[ "$MODE" == "cpt" ]]; then
     DATA_PATH="/home/jovyan/data/pubmed_train_text_document"
     VALID_DATA_PATH="/home/jovyan/data/pubmed_val_text_document"
   elif [[ "$MODE" == "sft" ]]; then
-    DATA_PATH="/home/jovyan/data/sft_train_text_document"
-    VALID_DATA_PATH="/home/jovyan/data/sft_val_text_document"
+    DATA_PATH="/home/jovyan/data/sft_train.jsonl"
+    VALID_DATA_PATH="/home/jovyan/data/sft_val.jsonl"
   fi
   echo "INFO: No --data-path specified. Using default for $MODE mode: $DATA_PATH"
 fi
+
+# 4. Default Hyperparameter Logic (Branching)
+if [[ "$MODE" == "sft" ]]; then
+    # SFT Profile: 18,772 samples, GBS 64, 1 Epoch
+    [[ $ITERS -eq 0 ]] && ITERS=294
+    [[ $WARMUP_ITERS -eq 0 ]] && WARMUP_ITERS=6
+    [[ $DECAY_ITERS -eq 0 ]] && DECAY_ITERS=265
+    [[ $SAVE_INTERVAL -eq 0 ]] && SAVE_INTERVAL=30
+    [[ $EVAL_INTERVAL -eq 0 ]] && EVAL_INTERVAL=15
+    [[ $LR == "0" ]] && LR=1e-6
+    if [[ "$WANDB_PROJECT" == "AUTO" ]]; then WANDB_PROJECT="gemma3-medical-sft-reasoning"; fi
+    [[ $SEQ_LEN -eq 16384 ]] && SEQ_LEN=8192 
+else
+    # CPT Profile: 500M token budget
+    [[ $ITERS -eq 0 ]] && ITERS=476
+    [[ $WARMUP_ITERS -eq 0 ]] && WARMUP_ITERS=9
+    [[ $DECAY_ITERS -eq 0 ]] && DECAY_ITERS=428
+    [[ $SAVE_INTERVAL -eq 0 ]] && SAVE_INTERVAL=48
+    [[ $EVAL_INTERVAL -eq 0 ]] && EVAL_INTERVAL=24
+    [[ $LR == "0" ]] && LR=5e-6
+    if [[ "$WANDB_PROJECT" == "AUTO" ]]; then WANDB_PROJECT="gemma3-medical-cpt-prod"; fi
+fi
+
+# Final Cleanup for WandB (if explicitly disabled)
+if [[ "$WANDB_PROJECT" == "NONE" || -z "$WANDB_PROJECT" ]]; then
+    WANDB_PROJECT=""
+fi
+
 # ============================================================================
 [[ -z "$MCORE_PATH" ]] && echo "ERROR: --mcore-path is required." && exit 1
 [[ -z "$DATA_PATH" ]]  && echo "ERROR: --data-path is required."  && exit 1
@@ -165,7 +225,8 @@ MODEL_ARGS="
     --attention-dropout 0.0 \
     --hidden-dropout 0.0 \
     --tokenizer-type $TOKENIZER_TYPE \
-    --tokenizer-model $TOKENIZER_MODEL
+    --tokenizer-model $TOKENIZER_MODEL \
+    --sft-tokenizer-prompt-format $SFT_PROMPT_FORMAT
 "
 
 # ============================================================================
@@ -223,6 +284,7 @@ TRAIN_ARGS="
 LOG_ARGS="
     --load $MCORE_PATH \
     --save $SAVE_PATH \
+    --tensorboard-dir $TENSORBOARD_DIR \
     --save-interval $SAVE_INTERVAL \
     --eval-interval $EVAL_INTERVAL \
     --log-interval $LOG_INTERVAL \
@@ -242,8 +304,8 @@ else
 fi
 
 if [[ "$MODE" == "sft" ]]; then
-    DATA_ARGS="$DATA_ARGS --is-instruction-dataset"
-    TRAIN_ARGS=" $TRAIN_ARGS --reset-position-ids --reset-attention-mask --eod-mask-loss"
+    DATA_ARGS="$DATA_ARGS --sft"
+    TRAIN_ARGS=" $TRAIN_ARGS --eod-mask-loss --no-create-attention-mask-in-dataloader"
 fi
 
 # ============================================================================
@@ -272,9 +334,12 @@ echo "  GPUs:         $NUM_GPUS (TP=$TP, PP=$PP)"
 echo "  Seq Length:    $SEQ_LEN"
 echo "  GBS:          $GBS (MBS=$MBS, Accum Steps=$((GBS / MBS / NUM_GPUS)))"
 echo "  Recompute:    $RECOMPUTE_GRANULARITY ($RECOMPUTE_METHOD $RECOMPUTE_NUM_LAYERS)"
-echo "  LR:           $LR (warmup=$WARMUP_ITERS, decay=$ITERS iters)"
+echo "  LR:           $LR (warmup=$WARMUP_ITERS, decay=$DECAY_ITERS iters)"
 echo "  Checkpoints:  $SAVE_PATH"
+echo "  Tensorboard:  $TENSORBOARD_DIR"
 echo "  CCE loss:     $FUSED_LINEAR_CROSS_ENTROPY"
+echo "  Tokenizer:    $TOKENIZER_TYPE ($SFT_PROMPT_FORMAT)"
+echo "  WandB:        ${WANDB_PROJECT:-DISABLED}"
 echo "================================================================="
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

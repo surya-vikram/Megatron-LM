@@ -34,11 +34,10 @@ TOKENIZER_TYPE="HuggingFaceTokenizer"
 TOKENIZER_MODEL=""
 ATTENTION_BACKEND="flash"
 RECOMPUTE_GRANULARITY="selective"
+RECOMPUTE_METHOD=""
+RECOMPUTE_NUM_LAYERS=""
 FUSED_LINEAR_CROSS_ENTROPY=true
 LOG_THROUGHPUT=true
-# Simply run the script with the --fused-linear-cross-entropy flag without passing the tuning overrides (--linear-ce-impl and --linear-ce-filter-eps):
-# LINEAR_CE_IMPL=""
-# LINEAR_CE_FILTER_EPS=""
 
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -60,10 +59,10 @@ while [[ $# -gt 0 ]]; do
     --tokenizer-model) TOKENIZER_MODEL="$2"; shift 2 ;;
     --attention-backend) ATTENTION_BACKEND="$2"; shift 2 ;;
     --recompute-granularity) RECOMPUTE_GRANULARITY="$2"; shift 2 ;;
+    --recompute-method) RECOMPUTE_METHOD="$2"; shift 2 ;;
+    --recompute-num-layers) RECOMPUTE_NUM_LAYERS="$2"; shift 2 ;;
     --fused-linear-cross-entropy) FUSED_LINEAR_CROSS_ENTROPY=true; shift 1 ;;
     --log-throughput) LOG_THROUGHPUT=true; shift 1 ;;
-    # --linear-ce-impl) LINEAR_CE_IMPL="$2"; shift 2 ;;
-    # --linear-ce-filter-eps) LINEAR_CE_FILTER_EPS="$2"; shift 2 ;;
     *) echo "Unknown parameter: $1"; exit 1 ;;
   esac
 done
@@ -86,7 +85,7 @@ if [[ -z "$TOKENIZER_MODEL" ]]; then
 fi
 
 # ============================================================================
-# Architecture Configuration (from Megatron-Bridge Gemma3ModelProvider)
+# Architecture Configuration
 # ============================================================================
 case $MODEL_SIZE in
     "1b")
@@ -117,93 +116,98 @@ fi
 DISTRIBUTED_ARGS="--nproc_per_node $NUM_GPUS --nnodes 1 --node_rank 0 --master_addr localhost --master_port 6543"
 
 # ============================================================================
-# Model Architecture Args (must match checkpoint exactly)
+# Model Architecture Args
 # ============================================================================
 MODEL_ARGS="
-    --use-mcore-models
-    --transformer-impl transformer_engine
-    --num-layers $LAYERS
-    --hidden-size $HIDDEN
-    --ffn-hidden-size $FFN
-    --num-attention-heads $HEADS
-    --group-query-attention
-    --num-query-groups $GQA
-    --kv-channels $KV_CH
-    --seq-length $SEQ_LEN
-    --max-position-embeddings $SEQ_LEN
-    --window-size $WINDOW
-    --position-embedding-type rope
-    --no-position-embedding
-    --qk-layernorm
-    --normalization RMSNorm
-    --disable-bias-linear
-    --no-masked-softmax-fusion
-    --make-vocab-size-divisible-by 1
-    --bf16
-    --use-flash-attn
-    --attention-backend $ATTENTION_BACKEND
-    --attention-dropout 0.0
-    --hidden-dropout 0.0
-    --tokenizer-type $TOKENIZER_TYPE
+    --use-mcore-models \
+    --transformer-impl transformer_engine \
+    --num-layers $LAYERS \
+    --hidden-size $HIDDEN \
+    --ffn-hidden-size $FFN \
+    --num-attention-heads $HEADS \
+    --group-query-attention \
+    --num-query-groups $GQA \
+    --kv-channels $KV_CH \
+    --seq-length $SEQ_LEN \
+    --max-position-embeddings $SEQ_LEN \
+    --window-size $WINDOW \
+    --position-embedding-type rope \
+    --no-position-embedding \
+    --qk-layernorm \
+    --normalization RMSNorm \
+    --disable-bias-linear \
+    --no-masked-softmax-fusion \
+    --make-vocab-size-divisible-by 1 \
+    --bf16 \
+    --use-flash-attn \
+    --attention-backend $ATTENTION_BACKEND \
+    --attention-dropout 0.0 \
+    --hidden-dropout 0.0 \
+    --tokenizer-type $TOKENIZER_TYPE \
     --tokenizer-model $TOKENIZER_MODEL
 "
 
 # ============================================================================
-# Optimizer Args (production-grade, from GPT-3/Mixtral/modelopt references)
+# Optimizer Args
 # ============================================================================
 OPTIM_ARGS="
-    --lr $LR
-    --min-lr 1e-6
-    --lr-decay-style cosine
-    --lr-decay-iters $ITERS
-    --lr-warmup-iters $WARMUP_ITERS
-    --weight-decay 0.1
-    --clip-grad 1.0
-    --adam-beta1 0.9
-    --adam-beta2 0.95
-    --init-method-std 0.01
-    --use-distributed-optimizer
-    --use-precision-aware-optimizer
-    --main-params-dtype fp16
-    --main-grads-dtype bf16
-    --grad-reduce-in-bf16
-    --exp-avg-dtype fp16
+    --lr $LR \
+    --min-lr 1e-6 \
+    --lr-decay-style cosine \
+    --lr-decay-iters $ITERS \
+    --lr-warmup-iters $WARMUP_ITERS \
+    --weight-decay 0.1 \
+    --clip-grad 1.0 \
+    --adam-beta1 0.9 \
+    --adam-beta2 0.95 \
+    --init-method-std 0.01 \
+    --use-distributed-optimizer \
+    --use-precision-aware-optimizer \
+    --main-params-dtype fp16 \
+    --main-grads-dtype bf16 \
+    --grad-reduce-in-bf16 \
+    --exp-avg-dtype fp16 \
     --exp-avg-sq-dtype fp16
 "
 
 # ============================================================================
-# Training Args
+# Training & Recompute Args
 # ============================================================================
-# Recompute Args
 RECOMPUTE_ARGS=""
 if [[ "$RECOMPUTE_GRANULARITY" != "none" ]]; then
     RECOMPUTE_ARGS="--recompute-granularity $RECOMPUTE_GRANULARITY"
 fi
+if [[ -n "$RECOMPUTE_METHOD" ]]; then
+    RECOMPUTE_ARGS="$RECOMPUTE_ARGS --recompute-method $RECOMPUTE_METHOD"
+fi
+if [[ -n "$RECOMPUTE_NUM_LAYERS" ]]; then
+    RECOMPUTE_ARGS="$RECOMPUTE_ARGS --recompute-num-layers $RECOMPUTE_NUM_LAYERS"
+fi
 
 TRAIN_ARGS=" 
-    --micro-batch-size $MBS
-    --global-batch-size $GBS
-    --train-iters $ITERS
-    $RECOMPUTE_ARGS
-    --num-workers 4
-    --manual-gc
-    --manual-gc-interval 5
-    --overlap-grad-reduce
+    --micro-batch-size $MBS \
+    --global-batch-size $GBS \
+    --train-iters $ITERS \
+    $RECOMPUTE_ARGS \
+    --num-workers 4 \
+    --manual-gc \
+    --manual-gc-interval 5 \
+    --overlap-grad-reduce \
     --overlap-param-gather
 "
 
 # ============================================================================
-# Checkpoint & Logging Args
+# Logging Args
 # ============================================================================
 LOG_ARGS="
-    --load $MCORE_PATH
-    --save $SAVE_PATH
-    --save-interval 1000
-    --log-interval 10
-    --eval-interval 500
-    --eval-iters 10
-    --no-load-optim
-    --no-load-rng
+    --load $MCORE_PATH \
+    --save $SAVE_PATH \
+    --save-interval 1000 \
+    --log-interval 10 \
+    --eval-interval 500 \
+    --eval-iters 10 \
+    --no-load-optim \
+    --no-load-rng \
     --finetune
 "
 
@@ -218,26 +222,17 @@ fi
 
 if [[ "$MODE" == "sft" ]]; then
     DATA_ARGS="$DATA_ARGS --is-instruction-dataset"
-    # Recompute Args
-RECOMPUTE_ARGS=""
-if [[ "$RECOMPUTE_GRANULARITY" != "none" ]]; then
-    RECOMPUTE_ARGS="--recompute-granularity $RECOMPUTE_GRANULARITY"
-fi
-
-TRAIN_ARGS=" $TRAIN_ARGS --reset-position-ids --reset-attention-mask --eod-mask-loss"
+    TRAIN_ARGS=" $TRAIN_ARGS --reset-position-ids --reset-attention-mask --eod-mask-loss"
 fi
 
 # ============================================================================
-# WandB (Optional)
+# WandB & Extra Args
 # ============================================================================
 WANDB_ARGS=""
 if [[ -n "$WANDB_PROJECT" ]]; then
     WANDB_ARGS="--wandb-project $WANDB_PROJECT --wandb-exp-name ${WANDB_EXP_NAME:-gemma3-${MODEL_SIZE}-${MODE}}"
 fi
 
-# ============================================================================
-# CCE and Throughput Extra Args
-# ============================================================================
 EXTRA_ARGS=""
 if [ "$FUSED_LINEAR_CROSS_ENTROPY" = true ]; then
     EXTRA_ARGS="$EXTRA_ARGS --fused-linear-cross-entropy"
@@ -245,12 +240,6 @@ fi
 if [ "$LOG_THROUGHPUT" = true ]; then
     EXTRA_ARGS="$EXTRA_ARGS --log-throughput"
 fi
-# if [[ -n "$LINEAR_CE_IMPL" ]]; then
-#     EXTRA_ARGS="$EXTRA_ARGS --linear-ce-impl $LINEAR_CE_IMPL"
-# fi
-# if [[ -n "$LINEAR_CE_FILTER_EPS" ]]; then
-#     EXTRA_ARGS="$EXTRA_ARGS --linear-ce-filter-eps $LINEAR_CE_FILTER_EPS"
-# fi
 
 # ============================================================================
 # Launch
@@ -261,11 +250,10 @@ echo "  Model:        Gemma 3 $MODEL_SIZE"
 echo "  GPUs:         $NUM_GPUS (TP=$TP, PP=$PP)"
 echo "  Seq Length:    $SEQ_LEN"
 echo "  GBS:          $GBS (MBS=$MBS, Accum Steps=$((GBS / MBS / NUM_GPUS)))"
+echo "  Recompute:    $RECOMPUTE_GRANULARITY ($RECOMPUTE_METHOD $RECOMPUTE_NUM_LAYERS)"
 echo "  LR:           $LR (warmup=$WARMUP_ITERS, decay=$ITERS iters)"
-echo "  Iters:        $ITERS"
 echo "  Checkpoints:  $SAVE_PATH"
 echo "  CCE loss:     $FUSED_LINEAR_CROSS_ENTROPY"
-echo "  Log Throughput: $LOG_THROUGHPUT"
 echo "================================================================="
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

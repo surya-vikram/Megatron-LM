@@ -128,21 +128,11 @@ fi
 # 4. Default Hyperparameter Logic (Branching)
 if [[ "$MODE" == "sft" ]]; then
     # SFT Profile: 18,772 samples, GBS 64, 1 Epoch
-    if [ "$PACK_SAMPLES" = true ]; then
-        # When packing is enabled, each sequence holds ~8 samples instead of 1.
-        # Scale steps by 8x to keep training to exactly 1 epoch and avoid overfitting.
-        [[ $ITERS -eq 0 ]] && ITERS=37
-        [[ $WARMUP_ITERS -eq 0 ]] && WARMUP_ITERS=1
-        [[ $DECAY_ITERS -eq 0 ]] && DECAY_ITERS=33
-        [[ $SAVE_INTERVAL -eq 0 ]] && SAVE_INTERVAL=5
-        [[ $EVAL_INTERVAL -eq 0 ]] && EVAL_INTERVAL=2
-    else
-        [[ $ITERS -eq 0 ]] && ITERS=294
-        [[ $WARMUP_ITERS -eq 0 ]] && WARMUP_ITERS=6
-        [[ $DECAY_ITERS -eq 0 ]] && DECAY_ITERS=265
-        [[ $SAVE_INTERVAL -eq 0 ]] && SAVE_INTERVAL=30
-        [[ $EVAL_INTERVAL -eq 0 ]] && EVAL_INTERVAL=15
-    fi
+    [[ $ITERS -eq 0 ]] && ITERS=294
+    [[ $WARMUP_ITERS -eq 0 ]] && WARMUP_ITERS=6
+    [[ $DECAY_ITERS -eq 0 ]] && DECAY_ITERS=265
+    [[ $SAVE_INTERVAL -eq 0 ]] && SAVE_INTERVAL=30
+    [[ $EVAL_INTERVAL -eq 0 ]] && EVAL_INTERVAL=15
     [[ $LR == "0" ]] && LR=1e-6
     if [[ "$WANDB_PROJECT" == "AUTO" ]]; then WANDB_PROJECT="gemma3-medical-sft-reasoning"; fi
     [[ $SEQ_LEN -eq 16384 ]] && SEQ_LEN=8192 

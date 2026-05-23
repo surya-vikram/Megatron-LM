@@ -22,6 +22,13 @@ try:
     from megatron.core.tokenizers.text.libraries.sft_tokenizer import SFTTokenizer
     sft_tok = SFTTokenizer("/home/jovyan/models/gemma-3-4b-pt", "gemma3")
     
+    # Load and apply the local Gemma 3 offline chat template
+    template_path = "/home/jovyan/repos/Megatron-LM/examples/gemma3/utils/gemma3_chat_template.jinja"
+    with open(template_path, "r") as tf:
+        local_template = tf.read()
+    sft_tok._tokenizer.chat_template = local_template
+    sft_tok._prompt_config.custom_chat_template = local_template
+    
     tokens, target = sft_tok.tokenize_conversation(convo, return_target=True, add_generation_prompt=False)
     
     print("--- SFT Target Masking Audit ---")

@@ -18,26 +18,31 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 # ============================================================================
 MODE="cpt"
 MODEL_SIZE="4b"
-MCORE_PATH=""
+MCORE_PATH="/home/jovyan/models/gemma-3-4b-pt-mcore"
 DATA_PATH=""
 VALID_DATA_PATH=""
 SAVE_PATH=""
-ITERS=20000
-LR=2e-5
-WARMUP_ITERS=1000
-GBS=32
+ITERS=476
+LR=5e-6
+MIN_LR=5e-7
+WARMUP_ITERS=9
+DECAY_ITERS=428
+GBS=64
 MBS=1
 SEQ_LEN=16384
-WANDB_PROJECT=""
+WANDB_PROJECT="gemma3-medical-cpt-prod"
 WANDB_EXP_NAME=""
 TOKENIZER_TYPE="HuggingFaceTokenizer"
 TOKENIZER_MODEL=""
 ATTENTION_BACKEND="flash"
-RECOMPUTE_GRANULARITY="selective"
-RECOMPUTE_METHOD=""
-RECOMPUTE_NUM_LAYERS=""
+RECOMPUTE_GRANULARITY="full"
+RECOMPUTE_METHOD="uniform"
+RECOMPUTE_NUM_LAYERS="2"
 FUSED_LINEAR_CROSS_ENTROPY=true
 LOG_THROUGHPUT=true
+SAVE_INTERVAL=48
+EVAL_INTERVAL=24
+LOG_INTERVAL=1
 
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -49,7 +54,9 @@ while [[ $# -gt 0 ]]; do
     --save-path) SAVE_PATH="$2"; shift 2 ;;
     --iters) ITERS="$2"; shift 2 ;;
     --lr) LR="$2"; shift 2 ;;
+    --min-lr) MIN_LR="$2"; shift 2 ;;
     --warmup-iters) WARMUP_ITERS="$2"; shift 2 ;;
+    --lr-decay-iters) DECAY_ITERS="$2"; shift 2 ;;
     --global-batch-size) GBS="$2"; shift 2 ;;
     --micro-batch-size) MBS="$2"; shift 2 ;;
     --seq-len) SEQ_LEN="$2"; shift 2 ;;
@@ -61,6 +68,9 @@ while [[ $# -gt 0 ]]; do
     --recompute-granularity) RECOMPUTE_GRANULARITY="$2"; shift 2 ;;
     --recompute-method) RECOMPUTE_METHOD="$2"; shift 2 ;;
     --recompute-num-layers) RECOMPUTE_NUM_LAYERS="$2"; shift 2 ;;
+    --save-interval) SAVE_INTERVAL="$2"; shift 2 ;;
+    --eval-interval) EVAL_INTERVAL="$2"; shift 2 ;;
+    --log-interval) LOG_INTERVAL="$2"; shift 2 ;;
     --fused-linear-cross-entropy) FUSED_LINEAR_CROSS_ENTROPY=true; shift 1 ;;
     --log-throughput) LOG_THROUGHPUT=true; shift 1 ;;
     *) echo "Unknown parameter: $1"; exit 1 ;;
@@ -68,7 +78,18 @@ while [[ $# -gt 0 ]]; do
 done
 
 # ============================================================================
-# Validation
+# Validation & Defaults
+# ============================================================================
+if [[ -z "$DATA_PATH" ]]; then
+  if [[ "$MODE" == "cpt" ]]; then
+    DATA_PATH="/home/jovyan/data/pubmed_train_text_document"
+    VALID_DATA_PATH="/home/jovyan/data/pubmed_val_text_document"
+  elif [[ "$MODE" == "sft" ]]; then
+    DATA_PATH="/home/jovyan/data/sft_train_text_document"
+    VALID_DATA_PATH="/home/jovyan/data/sft_val_text_document"
+  fi
+  echo "INFO: No --data-path specified. Using default for $MODE mode: $DATA_PATH"
+fi
 # ============================================================================
 [[ -z "$MCORE_PATH" ]] && echo "ERROR: --mcore-path is required." && exit 1
 [[ -z "$DATA_PATH" ]]  && echo "ERROR: --data-path is required."  && exit 1

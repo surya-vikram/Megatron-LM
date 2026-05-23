@@ -45,10 +45,12 @@ LOG_THROUGHPUT=true
 SAVE_INTERVAL=0
 EVAL_INTERVAL=0
 LOG_INTERVAL=1
+PACK_SAMPLES=false
 
 while [[ $# -gt 0 ]]; do
   case $1 in
     --mode) MODE="$2"; shift 2 ;;
+    --pack-samples) PACK_SAMPLES=true; shift 1 ;;
     --model-size) MODEL_SIZE="$2"; shift 2 ;;
     --mcore-path) MCORE_PATH="$2"; shift 2 ;;
     --data-path) DATA_PATH="$2"; shift 2 ;;
@@ -322,6 +324,9 @@ if [ "$FUSED_LINEAR_CROSS_ENTROPY" = true ]; then
 fi
 if [ "$LOG_THROUGHPUT" = true ]; then
     EXTRA_ARGS="$EXTRA_ARGS --log-throughput"
+fi
+if [ "$PACK_SAMPLES" = true ]; then
+    EXTRA_ARGS="$EXTRA_ARGS --pack-samples"
 fi
 
 # ============================================================================

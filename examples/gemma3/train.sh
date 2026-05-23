@@ -327,6 +327,19 @@ fi
 # ============================================================================
 # Launch
 # ============================================================================
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+if [[ "$MODE" == "sft" ]]; then
+    TEMPLATE_PATH="$SCRIPT_DIR/utils/gemma3_chat_template.jinja"
+    if [[ -f "$TEMPLATE_PATH" ]]; then
+        # Read template and strip newlines to safely pass as single string argument
+        CHAT_TEMPLATE=$(cat "$TEMPLATE_PATH" | tr -d '\n')
+        MODEL_ARGS="$MODEL_ARGS --chat-template \"$CHAT_TEMPLATE\""
+    else
+        echo "WARNING: Chat template not found at $TEMPLATE_PATH"
+    fi
+fi
+
 echo "================================================================="
 echo "  Mode:         $MODE"
 echo "  Model:        Gemma 3 $MODEL_SIZE"

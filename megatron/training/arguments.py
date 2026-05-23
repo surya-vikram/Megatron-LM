@@ -3351,6 +3351,10 @@ def _add_sft_args(parser):
     group.add_argument('--sft', action="store_true", help='Megatron SFT training')
     group.add_argument('--sft-tokenizer-prompt-format', type=str, default="nemotron-h-aligned",
                        help='SFT prompt format.')
+    group.add_argument('--pack-samples', action="store_true",
+                       help='Enable multi-sample packing in SFT dataset.')
+    group.add_argument('--pack-factor', type=int, default=None,
+                       help='Override maximum number of samples packed in one sequence.')
     return parser
 
 

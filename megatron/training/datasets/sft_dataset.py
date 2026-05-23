@@ -10,6 +10,7 @@ import torch
 from megatron.core.datasets.gpt_dataset import GPTDatasetConfig
 from megatron.core.datasets.megatron_dataset import LowLevelDataset, MegatronDataset
 from megatron.core.datasets.utils import Split
+from megatron.training import get_args
 
 IGNORE_INDEX = -100
 
@@ -92,9 +93,14 @@ class SFTDataset(MegatronDataset):
 
         tokenizer = self.config.tokenizer
         pack_length = self.config.sequence_length
+        args = get_args()
 
-        merged_conversations = self.dataset[int(self.indices[idx % len(self.indices)])]
-        split_conversations = self._split_conversations(merged_conversations)
+        # Retrieve feature-gate flag and pack-factor
+        pack_samples = getattr(args, "pack_samples", False)
+        pack_factor = getattr(args, "pack_factor", None)
+        if pack_factor is None:
+            # Estimate default pack factor: average conversation size is ~1k tokens
+            pack_factor = max(1, pack_length // 1024)
 
         def extend_with_padding(tokens, targets, positions, pad_len):
             tokens.extend([pad] * pad_len)
@@ -107,54 +113,73 @@ class SFTDataset(MegatronDataset):
         cu_seqlens = [0]
         eod = tokenizer.eod
         pad = tokenizer.pad
-        # TODO(duncan): Track number of convs dropped and/or truncated and amount of end-padding
-        for conversation in split_conversations:
 
-            tokens, targets = tokenizer.tokenize_conversation(
-                conversation, return_target=True, add_generation_prompt=False
-            )
+        # Deterministic, non-overlapping starting sample mapping
+        if pack_samples:
+            base_sample_idx = idx * pack_factor
+        else:
+            base_sample_idx = idx
 
-            tokens_list = tokens.tolist()
-            targets_list = targets.tolist()
+        curr_idx_offset = 0
+        while len(pack_tokens) < pack_length + 1:
+            sample_idx = int(self.indices[(base_sample_idx + curr_idx_offset) % len(self.indices)])
+            merged_conversations = self.dataset[sample_idx]
+            split_conversations = self._split_conversations(merged_conversations)
 
+            for conversation in split_conversations:
+                tokens, targets = tokenizer.tokenize_conversation(
+                    conversation, return_target=True, add_generation_prompt=False
+                )
 
-            pack_tokens.extend(tokens_list)
-            pack_targets.extend(targets_list)
+                tokens_list = tokens.tolist()
+                targets_list = targets.tolist()
 
-            assert not self.config.reset_position_ids
-            pack_positions.extend(range(len(tokens_list)))
+                pack_tokens.extend(tokens_list)
+                pack_targets.extend(targets_list)
 
-            if self.config.context_parallel_size > 1:
-                pad_granularity = self.config.context_parallel_size * 2
-                mod_token_count = len(pack_tokens) % pad_granularity
-                if mod_token_count != 0:
-                    pad_len = pad_granularity - mod_token_count
-                    extend_with_padding(pack_tokens, pack_targets, pack_positions, pad_len)
+                assert not self.config.reset_position_ids
+                pack_positions.extend(range(len(tokens_list)))
 
-            # TODO(duncan): Consider also padding to multiple of number of tokens here. This might
-            # be needed for efficiency (and potentially set via command-line argument).
+                if self.config.context_parallel_size > 1:
+                    pad_granularity = self.config.context_parallel_size * 2
+                    mod_token_count = len(pack_tokens) % pad_granularity
+                    if mod_token_count != 0:
+                        pad_len = pad_granularity - mod_token_count
+                        extend_with_padding(pack_tokens, pack_targets, pack_positions, pad_len)
 
-            cu_seqlens.append(len(pack_tokens))
+                cu_seqlens.append(len(pack_tokens))
 
-            # Handle any necessary truncation
-            if len(pack_tokens) >= pack_length + 1:  # +1 here to account for later alignment
-                # Truncate on the right
-                max_body = pack_length
-                pack_tokens = pack_tokens[:max_body]
-                pack_targets = pack_targets[:max_body]
-                pack_tokens.append(pad)
-                pack_targets.append(pad)
-                pack_positions = pack_positions[:pack_length+1]
-                # Note len({pack_tokens, pack_targets, pack_positions}) should be pack_length + 1
-                cu_seqlens[-1] = len(pack_tokens) - 1
+                # Handle truncation cleanly
+                if len(pack_tokens) >= pack_length + 1:
+                    max_body = pack_length
+                    pack_tokens = pack_tokens[:max_body]
+                    pack_targets = pack_targets[:max_body]
+                    pack_tokens.append(pad)
+                    pack_targets.append(pad)
+                    pack_positions = pack_positions[:pack_length+1]
+                    cu_seqlens[-1] = len(pack_tokens) - 1
+                    break
+
+            if len(pack_tokens) >= pack_length + 1 or not pack_samples:
                 break
 
-        # Handle any necessary padding
-        if len(pack_tokens) < pack_length + 1:  # +1 here to account for later alignment
+            curr_idx_offset += 1
+            # Bound packing range to preserve strictly disjoint dataset allocations
+            if curr_idx_offset >= pack_factor:
+                break
+
+        # Handle remaining padding if under-filled
+        if len(pack_tokens) < pack_length + 1:
             pad_len = pack_length + 1 - len(pack_tokens)
             extend_with_padding(pack_tokens, pack_targets, pack_positions, pad_len)
-            # Note len({pack_tokens, pack_targets, pack_positions}) should be pack_length + 1
-            cu_seqlens[-1] = len(pack_tokens) - 1
+            
+            if pack_samples:
+                # CRITICAL: Append padding as an isolated dummy sequence boundary.
+                # The real samples do not attend to it, saving quadratic compute!
+                cu_seqlens.append(len(pack_tokens) - 1)
+            else:
+                # Merge padding into last sequence (default behavior)
+                cu_seqlens[-1] = len(pack_tokens) - 1
 
         assert len(pack_tokens) == pack_length + 1
         assert len(pack_targets) == pack_length + 1

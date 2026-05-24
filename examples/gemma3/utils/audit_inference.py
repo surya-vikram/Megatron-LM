@@ -39,7 +39,7 @@ print("--------------------")
 
 # Generate
 print("\nGenerating response (greedy)...")
-inputs = tokenizer(prompt, return_tensors="pt").to("cuda")
+inputs = tokenizer(prompt, return_tensors="pt", add_special_tokens=False).to("cuda")
 
 input_ids = inputs["input_ids"]
 print(f"Input token count: {input_ids.shape[1]}")

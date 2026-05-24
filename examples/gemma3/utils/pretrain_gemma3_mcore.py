@@ -30,7 +30,7 @@ from megatron.core.enums import ModelType
 from megatron.core.utils import init_method_normal, scaled_init_method_normal
 from model_provider import model_provider
 
-# Patch HuggingFaceTokenizer for SFT compatibility
+# Patch tokenizers for SFT compatibility with offline Gemma 3 templates
 try:
     from megatron.core.tokenizers.text.text_tokenizer import HuggingFaceTokenizer
     def tokenize_conversation(self, conversation):
@@ -46,6 +46,36 @@ try:
         tokens = self.tokenize(prompt)
         return tokens, tokens
     HuggingFaceTokenizer.tokenize_conversation = tokenize_conversation
+except Exception:
+    pass
+
+try:
+    from megatron.core.tokenizers.text.libraries.sft_tokenizer import SFTTokenizer
+    orig_init = SFTTokenizer.__init__
+    def new_init(self, tokenizer_path, prompt_format):
+        orig_init(self, tokenizer_path, prompt_format)
+        if prompt_format == "gemma3":
+            template_path = os.path.join(os.path.dirname(__file__), 'gemma3_chat_template.jinja')
+            if os.path.exists(template_path):
+                with open(template_path, 'r') as tf:
+                    local_template = tf.read()
+                self._tokenizer.chat_template = local_template
+                self._prompt_config.custom_chat_template = local_template
+                
+                # Re-derive assistant header tokens after setting the template!
+                try:
+                    conv = [{"role": "user", "content": ""}]
+                    full = self._tokenizer.apply_chat_template(conv, add_generation_prompt=True, tokenize=False, chat_template=self._prompt_config.custom_chat_template)
+                    base = self._tokenizer.apply_chat_template(conv, add_generation_prompt=False, tokenize=False, chat_template=self._prompt_config.custom_chat_template)
+                    prefix_text = full[len(base):]
+                    self._assistant_header = self._tokenizer.encode(prefix_text, add_special_tokens=False)
+                    if self._prompt_config.has_bos and len(self._assistant_header) > 0 and self._assistant_header[0] == self._tokenizer.bos_token_id:
+                        self._assistant_header = self._assistant_header[1:]
+                except Exception:
+                    pass
+            else:
+                raise FileNotFoundError("Local chat template not found at " + template_path)
+    SFTTokenizer.__init__ = new_init
 except Exception:
     pass
 

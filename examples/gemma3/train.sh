@@ -40,7 +40,7 @@ ATTENTION_BACKEND="flash"
 RECOMPUTE_GRANULARITY="full"
 RECOMPUTE_METHOD="uniform"
 RECOMPUTE_NUM_LAYERS="2"
-FUSED_LINEAR_CROSS_ENTROPY=true
+FUSED_LINEAR_CROSS_ENTROPY=false
 LOG_THROUGHPUT=true
 SAVE_INTERVAL=0
 EVAL_INTERVAL=0
@@ -83,7 +83,7 @@ while [[ $# -gt 0 ]]; do
     --save-interval) SAVE_INTERVAL="$2"; shift 2 ;;
     --eval-interval) EVAL_INTERVAL="$2"; shift 2 ;;
     --log-interval) LOG_INTERVAL="$2"; shift 2 ;;
-    --fused-linear-cross-entropy) FUSED_LINEAR_CROSS_ENTROPY=true; shift 1 ;;
+    --fused-linear-cross-entropy) FUSED_LINEAR_CROSS_ENTROPY=false; shift 1 ;;
     --log-throughput) LOG_THROUGHPUT=true; shift 1 ;;
     *) echo "Unknown parameter: $1"; exit 1 ;;
   esac
@@ -230,7 +230,7 @@ if [[ "$NUM_GPUS" -lt "$((TP * PP))" ]]; then
     TP=1; PP=1
 fi
 
-DISTRIBUTED_ARGS="--nproc_per_node $NUM_GPUS --nnodes 1 --node_rank 0 --master_addr localhost --master_port 6543"
+DISTRIBUTED_ARGS="--nproc_per_node $NUM_GPUS --nnodes 1 --node_rank 0 --master_addr localhost --master_port 6789"
 
 # ============================================================================
 # Model Architecture Args

@@ -16,23 +16,6 @@ IGNORE_INDEX = -100
 
 
 class SFTLowLevelDataset:
-    """The low-level dataset loading jsonl data for SFT
-
-    Args:
-        dataset_path (str): The path to jsonl data
-            Each line of the jsonl must have key "messages" (List[Dict]),
-            which is a sequence of system/user/assistant messages.
-            Must be in the following format:
-            [
-                {"role": "system", "content": "something"},
-                {"role": "user", "content": "something1"},
-                {"role": "assistant", "content": "something2"},
-            ]
-            A jsonl line can contain multiple conversations packed together into on list. Each
-            conversation starts with the system role, and conversations can have multiple turns
-            of the user and assistant roles.
-    """
-
     def __init__(self, dataset_path: str) -> None:
         try:
             from datasets import load_dataset
@@ -50,8 +33,6 @@ class SFTLowLevelDataset:
 
 
 class SFTDataset(MegatronDataset):
-    """The dataset used during SFT"""
-
     def __init__(
         self,
         dataset: LowLevelDataset,
@@ -78,28 +59,24 @@ class SFTDataset(MegatronDataset):
         split_conversations = []
         current = []
         for msg in merged_conversations:
-            # Whenever we see a new system message, start a new conversation
             if msg["role"] == "system":
-                if current:  # If previously accumulating a conversation, then store it
+                if current:
                     split_conversations.append(current)
-                current = [msg]  # Then start the new conversation
+                current = [msg]
             else:
-                current.append(msg) # Continue accumulating the current conversation
-        if current:  # Store any remaining conversation
+                current.append(msg)
+        if current:
             split_conversations.append(current)
         return split_conversations
 
     def __getitem__(self, idx: int) -> Dict[str, Any]:
-
         tokenizer = self.config.tokenizer
         pack_length = self.config.sequence_length
         args = get_args()
 
-        # Retrieve feature-gate flag and pack-factor
         pack_samples = getattr(args, "pack_samples", False)
         pack_factor = getattr(args, "pack_factor", None)
         if pack_factor is None:
-            # Estimate default pack factor: average conversation size is ~1k tokens
             pack_factor = max(1, pack_length // 1024)
 
         def extend_with_padding(tokens, targets, positions, pad_len):
@@ -114,7 +91,6 @@ class SFTDataset(MegatronDataset):
         eod = tokenizer.eod
         pad = tokenizer.pad
 
-        # Deterministic, non-overlapping starting sample mapping
         if pack_samples:
             base_sample_idx = idx * pack_factor
         else:
@@ -149,69 +125,57 @@ class SFTDataset(MegatronDataset):
 
                 cu_seqlens.append(len(pack_tokens))
 
-                # Handle truncation cleanly
                 if len(pack_tokens) >= pack_length + 1:
-                    max_body = pack_length
-                    pack_tokens = pack_tokens[:max_body]
-                    pack_targets = pack_targets[:max_body]
-                    pack_tokens.append(pad)
-                    pack_targets.append(pad)
-                    pack_positions = pack_positions[:pack_length+1]
-                    cu_seqlens[-1] = len(pack_tokens) - 1
+                    # Clean truncation keeping the +1 token for label shifting
+                    pack_tokens = pack_tokens[:pack_length + 1]
+                    pack_targets = pack_targets[:pack_length + 1]
+                    pack_positions = pack_positions[:pack_length + 1]
+                    cu_seqlens[-1] = pack_length # Force sequence boundary at pack_length
                     break
 
             if len(pack_tokens) >= pack_length + 1 or not pack_samples:
                 break
-
             curr_idx_offset += 1
-            # Bound packing range to preserve strictly disjoint dataset allocations
             if curr_idx_offset >= pack_factor:
                 break
 
-        # Handle remaining padding if under-filled
         if len(pack_tokens) < pack_length + 1:
             pad_len = pack_length + 1 - len(pack_tokens)
             extend_with_padding(pack_tokens, pack_targets, pack_positions, pad_len)
-            
             if pack_samples:
-                # CRITICAL: Append padding as an isolated dummy sequence boundary.
-                # The real samples do not attend to it, saving quadratic compute!
-                cu_seqlens.append(len(pack_tokens) - 1)
+                cu_seqlens.append(pack_length)
             else:
-                # Merge padding into last sequence (default behavior)
-                cu_seqlens[-1] = len(pack_tokens) - 1
+                cu_seqlens[-1] = pack_length
 
-        assert len(pack_tokens) == pack_length + 1
-        assert len(pack_targets) == pack_length + 1
-        assert len(pack_positions) == pack_length + 1
+        # Final safety check: ensuring length exactly pack_length + 1
+        pack_tokens = pack_tokens[:pack_length+1]
+        pack_targets = pack_targets[:pack_length+1]
+        pack_positions = pack_positions[:pack_length+1]
 
-        # Align and convert to tensors
-        input_ids    = torch.tensor(pack_tokens[:-1],  dtype=torch.int64)
-        labels       = torch.tensor(pack_targets[1:], dtype=torch.int64)
-        position_ids = torch.tensor(pack_positions[:-1], dtype=torch.int64)
+        # Shifted alignment (Length L)
+        input_ids    = torch.tensor(pack_tokens[:-1],  dtype=torch.long)
+        labels       = torch.tensor(pack_targets[1:], dtype=torch.long)
+        position_ids = torch.tensor(pack_positions[:-1], dtype=torch.long)
 
-        # Loss mask.
+        # Loss mask derivation from shifted labels
         loss_mask = torch.ones(pack_length, dtype=torch.float32)
-        # BUG FIX: Use pack_targets[1:] for masking to align with labels
-        shifted_targets = torch.tensor(pack_targets[1:], dtype=torch.int64)
-        loss_mask[shifted_targets == pad] = 0.0  # Mask paddings
-        loss_mask[shifted_targets == IGNORE_INDEX] = 0.0  # mask prompts
+        loss_mask[labels == pad] = 0.0
+        loss_mask[labels == IGNORE_INDEX] = 0.0
 
-        # TODO(duncan): Optionally create an attention mask
         assert not self.config.create_attention_mask and not self.config.reset_attention_mask
-        # attention_mask = None
-
         assert len(cu_seqlens) >= 2
+        
+        # Ensure cu_seqlens does not exceed pack_length
+        cu_seqlens = [min(s, pack_length) for s in cu_seqlens]
         cu_seqlens = torch.tensor(cu_seqlens, dtype=torch.int32)
-        # Calculating max_seqlen here, rather than incrementally above, because of possible
-        # effects of truncation and padding
+        
         adjacent_diffs = cu_seqlens[1:] - cu_seqlens[:-1]
-        max_seqlen = adjacent_diffs.max()  # max_seqlen is a 0-D tensor
+        max_seqlen = adjacent_diffs.max()
 
+        # print(f"[SFTDataset] idx={idx} tokens={input_ids.shape} labels={labels.shape} mask={loss_mask.shape} sum_cu={cu_seqlens[-1]}")
         return {
             'tokens': input_ids,
             'labels': labels,
-            # 'attention_mask': attention_mask,  # PyTorch collate cannot handle NoneType
             'loss_mask': loss_mask,
             'position_ids': position_ids,
             'cu_seqlens': cu_seqlens,

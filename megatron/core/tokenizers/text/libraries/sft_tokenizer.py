@@ -1,3 +1,4 @@
+import os
 # Copyright (c) 2025, NVIDIA CORPORATION. All rights reserved.
 
 from dataclasses import dataclass
@@ -94,6 +95,8 @@ class SFTTokenizer:
                 has_system_role=True,
             )
         elif prompt_format == "gemma3":
+            template_file = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../../examples/gemma3/utils/gemma3_chat_template.jinja"))
+            with open(template_file, "r") as f: template = f.read().strip()
             self._prompt_config = PromptConfig(
                 assistant_prefix_len=3,
                 pad_token_id=(
@@ -101,7 +104,7 @@ class SFTTokenizer:
                     if tokenizer.pad_token_id is not None
                     else tokenizer.eos_token_id
                 ),
-                custom_chat_template=tokenizer.chat_template,
+                custom_chat_template=tokenizer.chat_template if tokenizer.chat_template else template,
                 has_bos=tokenizer.bos_token_id is not None,
                 has_system_role=False,
                 terminator_id=tokenizer.convert_tokens_to_ids("<end_of_turn>"),
@@ -114,7 +117,7 @@ class SFTTokenizer:
                     if tokenizer.pad_token_id is not None
                     else tokenizer.eos_token_id
                 ),
-                custom_chat_template=tokenizer.chat_template,
+                custom_chat_template=tokenizer.chat_template if tokenizer.chat_template else template,
                 has_bos=tokenizer.bos_token_id is not None,
                 has_system_role=True,
             )

@@ -153,9 +153,14 @@ class SFTDataset(MegatronDataset):
         pack_positions = pack_positions[:pack_length+1]
 
         # Shifted alignment (Length L)
-        input_ids    = torch.tensor(pack_tokens[:-1],  dtype=torch.long)
-        labels       = torch.tensor(pack_targets[1:], dtype=torch.long)
-        position_ids = torch.tensor(pack_positions[:-1], dtype=torch.long)
+        input_ids    = torch.tensor(pack_tokens[:-1],  dtype=torch.int64)
+        labels       = torch.tensor(pack_targets[1:], dtype=torch.int64)
+        position_ids = torch.tensor(pack_positions[:-1], dtype=torch.int64)
+
+        # Reference implementation fix: Force last label to IGNORE_INDEX
+        # This protects the gradient of the penultimate token (predicting EOD)
+        # from being dropped by the CCE kernel.
+        labels[-1] = IGNORE_INDEX
 
         # Loss mask derivation from shifted labels
         loss_mask = torch.ones(pack_length, dtype=torch.float32)

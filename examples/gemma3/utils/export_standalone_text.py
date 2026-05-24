@@ -119,7 +119,7 @@ if __name__ == "__main__":
         t_config["add_bos_token"] = False
         
         # Ensure chat_template is embedded if available in a standalone file
-        if "chat_template" not in t_config:
+        if "chat_template" not in t_config or t_config["chat_template"] is None:
             jinja_path = os.path.join(args.hf_save_path, "chat_template.jinja")
             if os.path.exists(jinja_path):
                 print("  Embedding chat_template from .jinja file...")

@@ -21,7 +21,17 @@ messages = [
     }
 ]
 
-prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+# Robust fallback to load local jinja template if tokenizer doesn't have it baked in yet
+import os
+template_path = os.path.join(os.path.dirname(__file__), "gemma3_chat_template.jinja")
+if os.path.exists(template_path):
+    print(f"Loading custom chat template from {template_path}...")
+    with open(template_path, "r") as f:
+        local_template = f.read()
+else:
+    local_template = getattr(tokenizer, "chat_template", None)
+
+prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True, chat_template=local_template)
 
 print("\n--- Model Prompt ---")
 print(repr(prompt))

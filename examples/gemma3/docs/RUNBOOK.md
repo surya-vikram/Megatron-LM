@@ -76,6 +76,17 @@ If your training cluster does not have direct internet access:
    wandb sync /path/to/checkpoints/wandb/offline-run-*
    ```
 
+#### D. Controlling the Loaded Checkpoint Iteration
+When initializing training (e.g., starting SFT from a CPT checkpoint, or resuming a paused run), Megatron-LM reads the `latest_checkpointed_iteration.txt` pointer file located in the root of the checkpoint load directory (the path specified by `--mcore-path`).
+
+To target a specific iteration checkpoint (such as loading iteration `1000` of CPT instead of a newer short debug run):
+1. Navigate to the checkpoint parent directory (e.g., `/home/jovyan/data/checkpoints/gemma3-4b-cpt`).
+2. Overwrite the `latest_checkpointed_iteration.txt` file with your desired iteration number:
+   ```bash
+   echo 1000 > /home/jovyan/data/checkpoints/gemma3-4b-cpt/latest_checkpointed_iteration.txt
+   ```
+3. Launch training. Megatron-LM will read this file and load the corresponding subdirectory (e.g., `iter_0001000`).
+
 ---
 
 ### Continual Pre-training (CPT)

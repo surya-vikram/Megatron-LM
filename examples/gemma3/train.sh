@@ -37,9 +37,9 @@ TOKENIZER_TYPE=""
 TOKENIZER_MODEL=""
 SFT_PROMPT_FORMAT="gemma3"
 ATTENTION_BACKEND="flash"
-RECOMPUTE_GRANULARITY="full"
-RECOMPUTE_METHOD="uniform"
-RECOMPUTE_NUM_LAYERS="2"
+RECOMPUTE_GRANULARITY="auto"
+RECOMPUTE_METHOD="auto"
+RECOMPUTE_NUM_LAYERS="auto"
 FUSED_LINEAR_CROSS_ENTROPY=true
 LINEAR_CE_FILTER_E_GRAD=false
 LINEAR_CE_FILTER_C_GRAD=false
@@ -49,9 +49,12 @@ SAVE_INTERVAL=0
 EVAL_INTERVAL=0
 LOG_INTERVAL=1
 EPOCHS=1.0
-WARMUP_PRCT=5
+WARMUP_PRCT="auto"
 DECAY_PRCT=90
 PACK_SAMPLES=false
+TOKEN_BUDGET=500000000
+EVAL_ITERS=0
+SPLIT="auto"
 
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -94,6 +97,9 @@ while [[ $# -gt 0 ]]; do
     --no-linear-ce-filter-c-grad) LINEAR_CE_FILTER_C_GRAD=false; shift 1 ;;
     --linear-ce-filter-eps) LINEAR_CE_FILTER_EPS="$2"; shift 2 ;;
     --log-throughput) LOG_THROUGHPUT=true; shift 1 ;;
+    --token-budget) TOKEN_BUDGET="$2"; shift 2 ;;
+    --eval-iters) EVAL_ITERS="$2"; shift 2 ;;
+    --split) SPLIT="$2"; shift 2 ;;
     *) echo "Unknown parameter: $1"; exit 1 ;;
   esac
 done
@@ -142,7 +148,7 @@ fi
 
 # 4. Default Hyperparameter Logic (Branching)
 if [[ "$MODE" == "sft" ]]; then
-    # SFT Profile: 18,772 samples, GBS 64, dynamic Epoch calculation
+    # SFT Profile: 1.0 Epoch over whatever we have
     if [ "$PACK_SAMPLES" = true ]; then
         # Dynamically calculate precise ITERS using SFT token scanner
         if [[ $ITERS -eq 0 ]]; then
@@ -150,44 +156,83 @@ if [[ "$MODE" == "sft" ]]; then
             ITERS=$(python3 examples/gemma3/utils/get_sft_tokens.py "$DATA_PATH" "$TOKENIZER_MODEL" "$EPOCHS" "$GBS" "$SEQ_LEN")
             echo "Calculated training iterations: $ITERS"
         fi
-        
-        # Scale lr scheduler and evaluation intervals dynamically by percentages
-        [[ $WARMUP_ITERS -eq 0 ]] && WARMUP_ITERS=$(( ITERS * WARMUP_PRCT / 100 ))
-        [[ $WARMUP_ITERS -eq 0 ]] && WARMUP_ITERS=1 # At least 1 step
-        
-        [[ $DECAY_ITERS -eq 0 ]] && DECAY_ITERS=$(( ITERS * DECAY_PRCT / 100 ))
-        
-        [[ $SAVE_INTERVAL -eq 0 ]] && SAVE_INTERVAL=$(( ITERS * 10 / 100 )) # Save every 10%
-        [[ $SAVE_INTERVAL -eq 0 ]] && SAVE_INTERVAL=5
-        
-        [[ $EVAL_INTERVAL -eq 0 ]] && EVAL_INTERVAL=$(( ITERS * 5 / 100 )) # Eval every 5%
-        [[ $EVAL_INTERVAL -eq 0 ]] && EVAL_INTERVAL=2
     else
         # Unpacked baseline: scale by EPOCHS
         # Standard 1 Epoch base = 294 steps. Scale linearly with requested epochs.
         if [[ $ITERS -eq 0 ]]; then
             ITERS=$(python3 -c "import math; print(math.ceil(294 * $EPOCHS))")
         fi
-        [[ $WARMUP_ITERS -eq 0 ]] && WARMUP_ITERS=$(( ITERS * WARMUP_PRCT / 100 ))
-        [[ $WARMUP_ITERS -eq 0 ]] && WARMUP_ITERS=1
-        [[ $DECAY_ITERS -eq 0 ]] && DECAY_ITERS=$(( ITERS * DECAY_PRCT / 100 ))
-        [[ $SAVE_INTERVAL -eq 0 ]] && SAVE_INTERVAL=$(( ITERS * 10 / 100 ))
-        [[ $SAVE_INTERVAL -eq 0 ]] && SAVE_INTERVAL=5
-        [[ $EVAL_INTERVAL -eq 0 ]] && EVAL_INTERVAL=$(( ITERS * 5 / 100 ))
-        [[ $EVAL_INTERVAL -eq 0 ]] && EVAL_INTERVAL=2
     fi
-    [[ $LR == "0" ]] && LR=1e-6
+
+    [[ "$WARMUP_PRCT" == "auto" ]] && WARMUP_PRCT=5
+
+    # Scale lr scheduler and evaluation intervals dynamically by percentages
+    [[ $LR == "0" ]] && LR=5e-6
+    [[ $MIN_LR == "5e-7" ]] && MIN_LR=$(python3 -c "print(f'{float($LR) * 0.1:.2g}')")
+    
+    [[ $WARMUP_ITERS -eq 0 ]] && WARMUP_ITERS=$(( ITERS * WARMUP_PRCT / 100 ))
+    [[ $WARMUP_ITERS -eq 0 ]] && WARMUP_ITERS=1 # At least 1 step
+    
+    [[ $DECAY_ITERS -eq 0 ]] && DECAY_ITERS=$(( ITERS * DECAY_PRCT / 100 ))
+    [[ $DECAY_ITERS -eq 0 ]] && DECAY_ITERS=$ITERS
+    
+    # Save every 20%, validation is exactly save / 2
+    [[ $SAVE_INTERVAL -eq 0 ]] && SAVE_INTERVAL=$(( ITERS * 20 / 100 ))
+    [[ $SAVE_INTERVAL -eq 0 ]] && SAVE_INTERVAL=10
+    
+    [[ $EVAL_INTERVAL -eq 0 ]] && EVAL_INTERVAL=$(( SAVE_INTERVAL / 2 ))
+    [[ $EVAL_INTERVAL -eq 0 ]] && EVAL_INTERVAL=5
+
     if [[ "$WANDB_PROJECT" == "AUTO" ]]; then WANDB_PROJECT="gemma3-medical-sft-reasoning"; fi
     [[ $SEQ_LEN -eq 16384 ]] && SEQ_LEN=8192 
 else
-    # CPT Profile: 500M token budget
-    [[ $ITERS -eq 0 ]] && ITERS=476
-    [[ $WARMUP_ITERS -eq 0 ]] && WARMUP_ITERS=9
-    [[ $DECAY_ITERS -eq 0 ]] && DECAY_ITERS=428
-    [[ $SAVE_INTERVAL -eq 0 ]] && SAVE_INTERVAL=48
-    [[ $EVAL_INTERVAL -eq 0 ]] && EVAL_INTERVAL=24
-    [[ $LR == "0" ]] && LR=5e-6
+    # CPT Profile: 500M token budget (or custom TOKEN_BUDGET)
+    if [[ $ITERS -eq 0 ]]; then
+        ITERS=$(( TOKEN_BUDGET / (SEQ_LEN * GBS) ))
+        [[ $(( TOKEN_BUDGET % (SEQ_LEN * GBS) )) -ne 0 ]] && ITERS=$(( ITERS + 1 ))
+    fi
+
+    [[ "$WARMUP_PRCT" == "auto" ]] && WARMUP_PRCT=2
+    [[ "$SPLIT" == "auto" ]] && SPLIT="99,1,0"
+
+    [[ $LR == "0" ]] && LR=1e-5
+    [[ $MIN_LR == "5e-7" ]] && MIN_LR=$(python3 -c "print(f'{float($LR) * 0.1:.2g}')")
+
+    [[ $WARMUP_ITERS -eq 0 ]] && WARMUP_ITERS=$(( ITERS * WARMUP_PRCT / 100 ))
+    [[ $WARMUP_ITERS -eq 0 ]] && WARMUP_ITERS=1
+
+    [[ $DECAY_ITERS -eq 0 ]] && DECAY_ITERS=$(( ITERS * DECAY_PRCT / 100 ))
+    [[ $DECAY_ITERS -eq 0 ]] && DECAY_ITERS=$ITERS
+
+    # Save every 20%, validation is exactly save / 2
+    [[ $SAVE_INTERVAL -eq 0 ]] && SAVE_INTERVAL=$(( ITERS * 20 / 100 ))
+    [[ $SAVE_INTERVAL -eq 0 ]] && SAVE_INTERVAL=50
+
+    [[ $EVAL_INTERVAL -eq 0 ]] && EVAL_INTERVAL=$(( SAVE_INTERVAL / 2 ))
+    [[ $EVAL_INTERVAL -eq 0 ]] && EVAL_INTERVAL=25
+
     if [[ "$WANDB_PROJECT" == "AUTO" ]]; then WANDB_PROJECT="gemma3-medical-cpt-prod"; fi
+fi
+
+# 4.5 Dynamic Validation & Recomputation defaults
+[[ $EVAL_ITERS -eq 0 ]] && EVAL_ITERS=2
+
+if [[ "$RECOMPUTE_GRANULARITY" == "auto" ]]; then
+    if [[ $SEQ_LEN -le 8192 ]]; then
+        RECOMPUTE_GRANULARITY="none"
+        RECOMPUTE_METHOD=""
+        RECOMPUTE_NUM_LAYERS=""
+    else
+        RECOMPUTE_GRANULARITY="selective"
+        RECOMPUTE_METHOD=""
+        RECOMPUTE_NUM_LAYERS=""
+    fi
+elif [[ "$RECOMPUTE_GRANULARITY" == "full" ]]; then
+    [[ "$RECOMPUTE_METHOD" == "auto" ]] && RECOMPUTE_METHOD="uniform"
+    [[ "$RECOMPUTE_NUM_LAYERS" == "auto" ]] && RECOMPUTE_NUM_LAYERS="2"
+else
+    RECOMPUTE_METHOD=""
+    RECOMPUTE_NUM_LAYERS=""
 fi
 
 # Final Cleanup for WandB (if explicitly disabled)
@@ -333,7 +378,7 @@ LOG_ARGS="
     --save-interval $SAVE_INTERVAL \
     --eval-interval $EVAL_INTERVAL \
     --log-interval $LOG_INTERVAL \
-    --eval-iters 10 \
+    --eval-iters $EVAL_ITERS \
     --no-load-optim \
     --no-load-rng \
     --finetune
@@ -346,6 +391,9 @@ if [[ -n "$VALID_DATA_PATH" ]]; then
     DATA_ARGS="--train-data-path 1.0 $DATA_PATH --valid-data-path 1.0 $VALID_DATA_PATH"
 else
     DATA_ARGS="--data-path 1.0 $DATA_PATH"
+    if [[ "$SPLIT" != "auto" && -n "$SPLIT" ]]; then
+        DATA_ARGS="$DATA_ARGS --split $SPLIT"
+    fi
 fi
 
 if [[ "$MODE" == "sft" ]]; then

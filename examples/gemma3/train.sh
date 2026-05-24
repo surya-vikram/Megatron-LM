@@ -29,7 +29,7 @@ WARMUP_ITERS=0
 DECAY_ITERS=0
 GBS=64
 MBS=1
-SEQ_LEN=16384
+SEQ_LEN=8192
 WANDB_PROJECT="AUTO"
 WANDB_EXP_NAME=""
 TENSORBOARD_DIR=""
@@ -184,7 +184,6 @@ if [[ "$MODE" == "sft" ]]; then
     [[ $EVAL_INTERVAL -eq 0 ]] && EVAL_INTERVAL=5
 
     if [[ "$WANDB_PROJECT" == "AUTO" ]]; then WANDB_PROJECT="gemma3-medical-sft-reasoning"; fi
-    [[ $SEQ_LEN -eq 16384 ]] && SEQ_LEN=8192 
 else
     # CPT Profile: 500M token budget (or custom TOKEN_BUDGET)
     if [[ $ITERS -eq 0 ]]; then

@@ -497,7 +497,7 @@ class GPTModel(LanguageModule):
         padding_mask: Optional[Tensor] = None,
         output_processor: Optional[Callable[..., Tensor]] = None,
         output_processor_context: Optional[Any] = None,
-        cce_temperature: float = 1.0,
+        cce_temperature: Optional[float] = None,
         cce_shift: Optional[bool] = None,
     ) -> Tensor:
         """Forward function of the GPT Model This function passes the input tensors
@@ -604,7 +604,7 @@ class GPTModel(LanguageModule):
         inference_context=None,
         output_processor=None,
         output_processor_context=None,
-        cce_temperature=1.0,
+        cce_temperature=None,
         cce_shift=None,
     ):
         """Postprocesses decoder hidden states to generate logits or compute loss.

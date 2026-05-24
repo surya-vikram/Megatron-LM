@@ -41,6 +41,9 @@ RECOMPUTE_GRANULARITY="full"
 RECOMPUTE_METHOD="uniform"
 RECOMPUTE_NUM_LAYERS="2"
 FUSED_LINEAR_CROSS_ENTROPY=false
+LINEAR_CE_FILTER_E_GRAD=true
+LINEAR_CE_FILTER_C_GRAD=true
+LINEAR_CE_FILTER_EPS="auto"
 LOG_THROUGHPUT=true
 SAVE_INTERVAL=0
 EVAL_INTERVAL=0
@@ -83,7 +86,10 @@ while [[ $# -gt 0 ]]; do
     --save-interval) SAVE_INTERVAL="$2"; shift 2 ;;
     --eval-interval) EVAL_INTERVAL="$2"; shift 2 ;;
     --log-interval) LOG_INTERVAL="$2"; shift 2 ;;
-    --fused-linear-cross-entropy) FUSED_LINEAR_CROSS_ENTROPY=false; shift 1 ;;
+    --fused-linear-cross-entropy) FUSED_LINEAR_CROSS_ENTROPY=true; shift 1 ;;
+    --no-linear-ce-filter-e-grad) LINEAR_CE_FILTER_E_GRAD=false; shift 1 ;;
+    --no-linear-ce-filter-c-grad) LINEAR_CE_FILTER_C_GRAD=false; shift 1 ;;
+    --linear-ce-filter-eps) LINEAR_CE_FILTER_EPS="$2"; shift 2 ;;
     --log-throughput) LOG_THROUGHPUT=true; shift 1 ;;
     *) echo "Unknown parameter: $1"; exit 1 ;;
   esac
@@ -355,6 +361,15 @@ fi
 EXTRA_ARGS=""
 if [ "$FUSED_LINEAR_CROSS_ENTROPY" = true ]; then
     EXTRA_ARGS="$EXTRA_ARGS --fused-linear-cross-entropy"
+    if [ "$LINEAR_CE_FILTER_E_GRAD" = false ]; then
+        EXTRA_ARGS="$EXTRA_ARGS --no-linear-ce-filter-e-grad"
+    fi
+    if [ "$LINEAR_CE_FILTER_C_GRAD" = false ]; then
+        EXTRA_ARGS="$EXTRA_ARGS --no-linear-ce-filter-c-grad"
+    fi
+    if [ "$LINEAR_CE_FILTER_EPS" != "auto" ]; then
+        EXTRA_ARGS="$EXTRA_ARGS --linear-ce-filter-eps $LINEAR_CE_FILTER_EPS"
+    fi
 fi
 if [ "$LOG_THROUGHPUT" = true ]; then
     EXTRA_ARGS="$EXTRA_ARGS --log-throughput"

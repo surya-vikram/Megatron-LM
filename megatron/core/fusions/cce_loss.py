@@ -42,7 +42,7 @@ def cce_per_token_loss(
     shift: bool = False,
     ignore_index: int = -100,
     return_lse: bool = False,
-    temperature: float = 1.0,
+    temperature: Optional[float] = None,
     filter_eps: Optional[Union[float, str]] = "auto",
     accum_e_fp32: bool = False,
     accum_c_fp32: bool = False,

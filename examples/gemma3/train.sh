@@ -149,6 +149,11 @@ fi
 # 4. Default Hyperparameter Logic (Branching)
 if [[ "$MODE" == "sft" ]]; then
     # SFT Profile: 1.0 Epoch over whatever we have
+    if [[ $GBS -eq 64 ]]; then
+        # Default SFT GBS to 32 (0.25M tokens) so the model updates its weights twice as often on instructions!
+        GBS=32
+    fi
+
     if [ "$PACK_SAMPLES" = true ]; then
         # Dynamically calculate precise ITERS using SFT token scanner
         if [[ $ITERS -eq 0 ]]; then
@@ -157,10 +162,9 @@ if [[ "$MODE" == "sft" ]]; then
             echo "Calculated training iterations: $ITERS"
         fi
     else
-        # Unpacked baseline: scale by EPOCHS
-        # Standard 1 Epoch base = 294 steps. Scale linearly with requested epochs.
+        # Unpacked SFT baseline (18,772 samples in sft_train.jsonl)
         if [[ $ITERS -eq 0 ]]; then
-            ITERS=$(python3 -c "import math; print(math.ceil(294 * $EPOCHS))")
+            ITERS=$(python3 -c "import math; print(math.ceil(18772 / $GBS * $EPOCHS))")
         fi
     fi
 

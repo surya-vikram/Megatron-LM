@@ -192,8 +192,10 @@ class SFTDataset(MegatronDataset):
 
         # Loss mask.
         loss_mask = torch.ones(pack_length, dtype=torch.float32)
-        loss_mask[labels == pad] = 0.0  # Mask paddings
-        loss_mask[labels == IGNORE_INDEX] = 0.0  # mask prompts
+        # BUG FIX: Use pack_targets[1:] for masking to align with labels
+        shifted_targets = torch.tensor(pack_targets[1:], dtype=torch.int64)
+        loss_mask[shifted_targets == pad] = 0.0  # Mask paddings
+        loss_mask[shifted_targets == IGNORE_INDEX] = 0.0  # mask prompts
 
         # TODO(duncan): Optionally create an attention mask
         assert not self.config.create_attention_mask and not self.config.reset_attention_mask

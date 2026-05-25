@@ -18,49 +18,48 @@ def calculate_simpo_loss(
     Expects input tensors from a THD-packed format where sequences are independent,
     and chosen/rejected conversations appear as consecutive pairs.
     """
-    
     # 1. Compute per-token log probabilities
     # loss_mask masks out padding and prompt tokens.
     # labels already handle ignore_index.
-    
-    from megatron.training import print_rank_0
-    print_rank_0(f"DEBUG: logits shape: {logits.shape}, labels shape: {labels.shape}")
 
+    from megatron.training import print_rank_0
+
+    # Flatten everything to 1D/2D base formats for THD consistency
     if logits.dim() == 3:
-        # If [batch, seq, vocab], flatten to [batch*seq, vocab]
         logits = logits.view(-1, logits.size(-1))
     if labels.dim() == 2:
-        # If [batch, seq], flatten to [batch*seq]
         labels = labels.view(-1)
-        
+    if loss_mask.dim() == 2:
+        loss_mask = loss_mask.view(-1)
+
     # Handle ignore_index (-100) for gather
     labels_for_gather = labels.clone()
     labels_for_gather[labels == -100] = 0
-    
+
     per_token_logps = torch.gather(logits.log_softmax(-1), dim=-1, index=labels_for_gather.unsqueeze(-1)).squeeze(-1)
-    
-    # Mask out logprobs for ignore_index
-    per_token_logps = per_token_logps * (labels != -100)
-    
+
+    # Mask out logprobs for ignore_index AND loss_mask
+    # loss_mask usually already excludes ignore_index, but we stay safe.
+    per_token_logps = per_token_logps * (labels != -100) * loss_mask
+
     # 2. Compute sequence-level average log probabilities
     seq_avg_logps = []
-    
+
     for i in range(len(cu_seqlens) - 1):
         start_idx = cu_seqlens[i]
         end_idx = cu_seqlens[i+1]
-        
+
         seq_logps = per_token_logps[start_idx:end_idx]
         seq_mask = loss_mask[start_idx:end_idx]
-        
-        # Avoid division by zero if a sequence has no valid tokens (e.g. all padding)
+
         sum_mask = seq_mask.sum()
         if sum_mask > 0:
-            avg_logp = (seq_logps * seq_mask).sum() / sum_mask
+            avg_logp = seq_logps.sum() / sum_mask
         else:
             avg_logp = torch.tensor(0.0, device=logits.device, dtype=logits.dtype)
-            
+
         seq_avg_logps.append(avg_logp)
-        
+
     seq_avg_logps = torch.stack(seq_avg_logps)
     
     # 3. Group into Chosen and Rejected

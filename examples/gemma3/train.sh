@@ -106,6 +106,7 @@ while [[ $# -gt 0 ]]; do
     --save-interval) SAVE_INTERVAL="$2"; shift 2 ;;
     --eval-interval) EVAL_INTERVAL="$2"; shift 2 ;;
     --log-interval) LOG_INTERVAL="$2"; shift 2 ;;
+    --weight-decay) WEIGHT_DECAY="$2"; shift 2 ;;
     --fused-linear-cross-entropy) FUSED_LINEAR_CROSS_ENTROPY=true; shift 1 ;;
     --no-fused-linear-cross-entropy) FUSED_LINEAR_CROSS_ENTROPY=false; shift 1 ;;
     --linear-ce-filter-e-grad) LINEAR_CE_FILTER_E_GRAD=true; shift 1 ;;
@@ -358,14 +359,15 @@ MODEL_ARGS="
 # ============================================================================
 # Optimizer Args
 # ============================================================================
-OPTIM_ARGS="
-    --lr $LR \
-    --min-lr $MIN_LR \
-    --lr-decay-style cosine \
-    --lr-decay-iters $DECAY_ITERS \
-    --lr-warmup-iters $WARMUP_ITERS \
-    --weight-decay 0.1 \
-    --clip-grad 1.0 \
+TRAIN_ARGS="
+    --lr $LR
+    --min-lr $MIN_LR
+    --lr-decay-style cosine
+    --lr-decay-iters $DECAY_ITERS
+    --lr-warmup-iters $WARMUP_ITERS
+    --weight-decay ${WEIGHT_DECAY:-0.1}
+    --clip-grad 1.0
+
     --adam-beta1 0.9 \
     --adam-beta2 0.95 \
     --init-method-std 0.01 \

@@ -18,7 +18,8 @@ from pretrain_gpt import (
     _PROGRAM_START_TIME,
     get_batch,
     stimer,
-    is_dataset_built_on_rank
+    is_dataset_built_on_rank,
+    core_gpt_dataset_config_from_args
 )
 
 from megatron.training.utils import get_timers
@@ -91,7 +92,7 @@ from megatron.training import (
     pretrain
 )
 from megatron.training.arguments import parse_and_validate_args
-from megatron.training.argument_utils import pretrain_cfg_container_from_args, core_gpt_dataset_config_from_args
+from megatron.training.argument_utils import pretrain_cfg_container_from_args
 from megatron.core.enums import ModelType
 from megatron.core.utils import init_method_normal, scaled_init_method_normal
 from model_provider import model_provider

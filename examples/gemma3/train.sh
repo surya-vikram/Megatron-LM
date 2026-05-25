@@ -438,6 +438,7 @@ if [[ "$MODE" == "sft" ]]; then
 elif [[ "$MODE" == "simpo" ]]; then
     DATA_ARGS="$DATA_ARGS --simpo --sft --simpo-beta $SIMPO_BETA --simpo-gamma $SIMPO_GAMMA --simpo-loss-type $SIMPO_LOSS_TYPE --simpo-sft-weight $SIMPO_SFT_WEIGHT"
     TRAIN_ARGS=" $TRAIN_ARGS --eod-mask-loss --no-create-attention-mask-in-dataloader"
+    FUSED_LINEAR_CROSS_ENTROPY=false
 fi
 
 # ============================================================================

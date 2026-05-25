@@ -85,6 +85,10 @@ class SimPODataset(MegatronDataset):
         base_sample_idx = idx * pack_factor if pack_samples else idx
         curr_idx_offset = 0
 
+        if len(self.indices) == 0:
+            raise ValueError(f"SimPODataset received empty indices for split {self.index_split}. "
+                             f"Check your dataset size and --split argument.")
+
         while len(pack_tokens) < pack_length + 1:
             sample_idx = int(self.indices[(base_sample_idx + curr_idx_offset) % len(self.indices)])
             # Expecting a list of TWO conversations: [chosen, rejected]

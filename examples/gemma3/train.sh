@@ -63,6 +63,11 @@ NODE_RANK=0
 MASTER_ADDR="localhost"
 MASTER_PORT=6789
 
+SIMPO_BETA="2.0"
+SIMPO_GAMMA="0.5"
+SIMPO_LOSS_TYPE="sigmoid"
+SIMPO_SFT_WEIGHT="0.0"
+
 while [[ $# -gt 0 ]]; do
   case $1 in
     --mode) MODE="$2"; shift 2 ;;
@@ -112,6 +117,10 @@ while [[ $# -gt 0 ]]; do
     --token-budget) TOKEN_BUDGET="$2"; shift 2 ;;
     --eval-iters) EVAL_ITERS="$2"; shift 2 ;;
     --split) SPLIT="$2"; shift 2 ;;
+    --simpo-beta) SIMPO_BETA="$2"; shift 2 ;;
+    --simpo-gamma) SIMPO_GAMMA="$2"; shift 2 ;;
+    --simpo-loss-type) SIMPO_LOSS_TYPE="$2"; shift 2 ;;
+    --simpo-sft-weight) SIMPO_SFT_WEIGHT="$2"; shift 2 ;;
     *) echo "Unknown parameter: $1"; exit 1 ;;
   esac
 done
@@ -427,7 +436,7 @@ if [[ "$MODE" == "sft" ]]; then
     DATA_ARGS="$DATA_ARGS --sft"
     TRAIN_ARGS=" $TRAIN_ARGS --eod-mask-loss --no-create-attention-mask-in-dataloader"
 elif [[ "$MODE" == "simpo" ]]; then
-    DATA_ARGS="$DATA_ARGS --simpo --sft"
+    DATA_ARGS="$DATA_ARGS --simpo --sft --simpo-beta $SIMPO_BETA --simpo-gamma $SIMPO_GAMMA --simpo-loss-type $SIMPO_LOSS_TYPE --simpo-sft-weight $SIMPO_SFT_WEIGHT"
     TRAIN_ARGS=" $TRAIN_ARGS --eod-mask-loss --no-create-attention-mask-in-dataloader"
 fi
 

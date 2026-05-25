@@ -75,7 +75,7 @@ def simpo_train_valid_test_datasets_provider(train_val_test_num_samples):
         blend=args.data_path,
         split=args.split,
         path_to_cache=args.data_cache_path,
-        tokenizer=args.tokenizer,
+        tokenizer=get_tokenizer(),
         reset_position_ids=args.reset_position_ids,
         reset_attention_mask=args.reset_attention_mask,
         eod_mask_loss=args.eod_mask_loss,
@@ -96,6 +96,7 @@ def simpo_train_valid_test_datasets_provider(train_val_test_num_samples):
 
 from megatron.training import (
     get_args,
+    get_tokenizer,
     print_rank_0,
     set_startup_timestamps,
     pretrain

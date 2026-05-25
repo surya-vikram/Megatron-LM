@@ -42,7 +42,7 @@ def simpo_forward_step(data_iterator, model: torch.nn.Module, return_schedule_pl
 
     with stimer:
         output_tensor = model(
-            tokens, position_ids, attention_mask, labels=labels, loss_mask=loss_mask, packed_seq_params=packed_seq_params
+            tokens, position_ids, attention_mask, labels=None, loss_mask=loss_mask, packed_seq_params=packed_seq_params
         )
 
     def simpo_loss_func(loss_mask_tensor, labels_tensor, cu_seqlens_tensor, output_tensor_logits):

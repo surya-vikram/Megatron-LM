@@ -3,7 +3,6 @@
 import torch
 import torch.nn.functional as F
 from megatron.core import mpu
-from megatron.core.rerun_state_machine import get_rerun_state_machine
 
 def calculate_simpo_loss(
     logits: torch.Tensor,
@@ -21,8 +20,6 @@ def calculate_simpo_loss(
     # 1. Compute per-token log probabilities
     # loss_mask masks out padding and prompt tokens.
     # labels already handle ignore_index.
-
-    from megatron.training import print_rank_0
 
     # Flatten everything to 1D/2D base formats for THD consistency
     if logits.dim() == 3:
@@ -112,11 +109,6 @@ def calculate_simpo_loss(
         if chosen_sft_losses:
             sft_loss = torch.stack(chosen_sft_losses).mean()
             loss = loss + args.simpo_sft_weight * sft_loss
-
-    # Check for NaNs
-    rerun_state_machine = get_rerun_state_machine()
-    if args.check_for_nan_in_loss_and_grad:
-        rerun_state_machine.validate_result(result=loss)
 
     # 5. Metrics
     chosen_rewards = args.simpo_beta * chosen_logps.detach()

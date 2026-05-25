@@ -66,9 +66,11 @@ The training script `train.sh` supports the following custom WandB flags:
 
 #### C. Running Offline (No Internet Access)
 If your training cluster does not have direct internet access:
-1. Set the WandB mode to offline before training:
+1. Set the environment variables to force offline mode:
    ```bash
    export WANDB_MODE=offline
+   export TRANSFORMERS_OFFLINE=1
+   export HF_DATASETS_OFFLINE=1
    ```
 2. Launch training as usual. Logs will be saved locally inside the training checkpoint directory: `/path/to/checkpoints/wandb/`.
 3. After training finishes, synchronize the offline logs to the cloud from a machine with internet access:

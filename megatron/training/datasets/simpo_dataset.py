@@ -67,7 +67,9 @@ class SimPODataset(MegatronDataset):
         pack_samples = getattr(args, "pack_samples", False)
         # We strictly require pack_samples for SimPO efficiency.
         # Fallback to standard 1 if not provided, but train.sh should enforce it.
-        pack_factor = getattr(args, "pack_factor", max(1, pack_length // 1024))
+        pack_factor = getattr(args, "pack_factor", None)
+        if pack_factor is None:
+            pack_factor = max(1, pack_length // 1024)
 
         def extend_with_padding(tokens, targets, positions, pad_len):
             tokens.extend([pad] * pad_len)

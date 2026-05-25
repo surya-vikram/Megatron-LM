@@ -140,7 +140,7 @@ mkdir -p "$TENSORBOARD_DIR"
 if [[ -z "$TOKENIZER_TYPE" ]]; then
     if [[ "$MODE" == "cpt" ]]; then
         TOKENIZER_TYPE="HuggingFaceTokenizer"
-    elif [[ "$MODE" == "sft" ]]; then
+    elif [[ "$MODE" == "sft" ]] || [[ "$MODE" == "simpo" ]]; then
         TOKENIZER_TYPE="SFTTokenizer"
     fi
 fi

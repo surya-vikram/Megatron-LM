@@ -69,18 +69,7 @@ def simpo_forward_step(data_iterator, model: torch.nn.Module, return_schedule_pl
 
 def simpo_train_valid_test_datasets_provider(train_val_test_num_samples):
     args = get_args()
-    config = GPTDatasetConfig(
-        random_seed=args.seed,
-        sequence_length=args.seq_length,
-        blend=args.data_path,
-        split=args.split,
-        path_to_cache=args.data_cache_path,
-        tokenizer=get_tokenizer(),
-        reset_position_ids=args.reset_position_ids,
-        reset_attention_mask=args.reset_attention_mask,
-        eod_mask_loss=args.eod_mask_loss,
-        create_attention_mask=args.create_attention_mask_in_dataloader,
-    )
+    config = core_gpt_dataset_config_from_args(args)
     
     print_rank_0("> building train, validation, and test datasets for SimPO ...")
     
@@ -102,7 +91,7 @@ from megatron.training import (
     pretrain
 )
 from megatron.training.arguments import parse_and_validate_args
-from megatron.training.argument_utils import pretrain_cfg_container_from_args
+from megatron.training.argument_utils import pretrain_cfg_container_from_args, core_gpt_dataset_config_from_args
 from megatron.core.enums import ModelType
 from megatron.core.utils import init_method_normal, scaled_init_method_normal
 from model_provider import model_provider

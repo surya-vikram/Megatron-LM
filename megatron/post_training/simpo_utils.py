@@ -76,8 +76,9 @@ def calculate_simpo_loss(
     num_pairs = len(seq_avg_logps) // 2
     
     if num_pairs == 0:
-        # Fallback if no valid pairs were found in this microbatch
-        loss = torch.tensor(0.0, device=logits.device, requires_grad=True, dtype=logits.dtype)
+        # Fallback if no valid pairs were found in this microbatch.
+        # We create a non-leaf zero tensor connected to the graph to avoid in-place errors.
+        loss = (logits.sum() * 0.0)
         return loss, {}
         
     chosen_logps = seq_avg_logps[0 : 2 * num_pairs : 2]

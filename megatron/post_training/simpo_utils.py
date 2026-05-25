@@ -20,8 +20,6 @@ def calculate_simpo_loss(
     """
     # 1. Compute per-token log probabilities
     # We use vocab_parallel_cross_entropy to handle TP sharded logits correctly.
-    # The CE loss is -log_softmax(logits)[target].
-    # So logprob = -CE_loss.
     
     # Flatten everything to 1D/2D base formats for THD consistency
     if logits.dim() == 3:
@@ -32,13 +30,10 @@ def calculate_simpo_loss(
         loss_mask = loss_mask.view(-1)
         
     # Handle ignore_index (-100) for vocab_parallel_cross_entropy
-    # We clone labels and replace -100 with 0 to avoid out-of-bounds in sharded logic,
-    # but we strictly rely on loss_mask to zero out these contributions.
     labels_for_tp = labels.clone()
     labels_for_tp[labels == -100] = 0
     
     # Calculate negative log-likelihood (NLL)
-    # nll[i] = -log P(label[i] | logits[i])
     nll = vocab_parallel_cross_entropy(logits, labels_for_tp)
     
     # Strictly mask out NLL for padding/prompt tokens
@@ -47,6 +42,7 @@ def calculate_simpo_loss(
     
     # 2. Compute sequence-level average log probabilities (Length Normalization)
     seq_avg_logps = []
+    pair_valid_masks = [] # Track which sequences are actually valid (mask sum > 0)
     chosen_sft_losses = []
 
     for i in range(len(cu_seqlens) - 1):
@@ -59,13 +55,15 @@ def calculate_simpo_loss(
         sum_mask = seq_mask.sum()
         if sum_mask > 0:
             avg_logp = seq_logps.sum() / sum_mask
+            pair_valid_masks.append(True)
             
             # For Chosen sequences (even indices), we also collect the SFT loss component
             if i % 2 == 0:
                 chosen_sft_losses.append(nll[start_idx:end_idx].sum() / sum_mask)
         else:
-            # Dummy sequence or all-padding. Use -1e9 to avoid it being "perfect" 0.0 logprob.
+            # Dummy sequence or all-padding. Use -1e9 for metric but mark as invalid.
             avg_logp = torch.tensor(-1e9, device=logits.device, dtype=logits.dtype)
+            pair_valid_masks.append(False)
 
         seq_avg_logps.append(avg_logp)
 
@@ -73,19 +71,39 @@ def calculate_simpo_loss(
     
     # 3. Group into Chosen and Rejected pairs
     # Since SimPODataset packs [chosen, rejected] pairs, chosen are even indices, rejected are odd indices.
-    num_pairs = len(seq_avg_logps) // 2
+    num_total_sequences = len(seq_avg_logps)
+    num_possible_pairs = num_total_sequences // 2
     
-    if num_pairs == 0:
-        # Fallback if no valid pairs were found in this microbatch.
-        # We create a non-leaf zero tensor connected to the graph to avoid in-place errors.
+    valid_chosen_logps = []
+    valid_rejected_logps = []
+    valid_chosen_sft_losses = []
+    
+    for p in range(num_possible_pairs):
+        c_idx = 2 * p
+        r_idx = 2 * p + 1
+        if pair_valid_masks[c_idx] and pair_valid_masks[r_idx]:
+            valid_chosen_logps.append(seq_avg_logps[c_idx])
+            valid_rejected_logps.append(seq_avg_logps[r_idx])
+            # Match SFT loss index. SFT losses were only collected for even indices that were valid.
+            # We need to find the correct index in chosen_sft_losses.
+            # Simplified: calculate it here if valid.
+            start_idx = cu_seqlens[c_idx]
+            end_idx = cu_seqlens[c_idx+1]
+            sum_mask = loss_mask[start_idx:end_idx].sum()
+            valid_chosen_sft_losses.append(nll[start_idx:end_idx].sum() / sum_mask)
+
+    if len(valid_chosen_logps) == 0:
+        # No valid pairs in this microbatch. 
+        # Return 0 loss connected to graph to avoid in-place leaf variable errors.
+        from megatron.training import print_rank_0
+        print_rank_0("WARNING: No valid SimPO pairs in this microbatch. Skipping loss calculation.")
         loss = (logits.sum() * 0.0)
         return loss, {}
-        
-    chosen_logps = seq_avg_logps[0 : 2 * num_pairs : 2]
-    rejected_logps = seq_avg_logps[1 : 2 * num_pairs : 2]
+
+    chosen_logps = torch.stack(valid_chosen_logps)
+    rejected_logps = torch.stack(valid_rejected_logps)
     
     # 4. Calculate SimPO Margin Loss
-    # pi_logratios is the margin between normalized chosen and rejected log-probs
     pi_logratios = chosen_logps - rejected_logps
     simpo_logits = pi_logratios - args.simpo_gamma
     
@@ -100,8 +118,8 @@ def calculate_simpo_loss(
     
     # Combine with optional SFT loss to prevent logprob collapse
     sft_loss_val = torch.tensor(0.0, device=logits.device, dtype=logits.dtype)
-    if args.simpo_sft_weight > 0.0 and len(chosen_sft_losses) > 0:
-        sft_loss_val = torch.stack(chosen_sft_losses).mean()
+    if args.simpo_sft_weight > 0.0 and len(valid_chosen_sft_losses) > 0:
+        sft_loss_val = torch.stack(valid_chosen_sft_losses).mean()
         loss = loss + args.simpo_sft_weight * sft_loss_val
 
     # 5. Metrics Formatting

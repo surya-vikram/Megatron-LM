@@ -23,11 +23,13 @@ def calculate_simpo_loss(
     # loss_mask masks out padding and prompt tokens.
     # labels already handle ignore_index.
     
-    # Shift logits and labels not needed because `SFTDataset`/`SimPODataset` 
-    # already returns shifted labels!
-    # labels = batch['labels']  (shifted)
-    # tokens = batch['tokens']  (not shifted)
-    
+    if logits.dim() == 3:
+        # If [batch, seq, vocab], flatten to [batch*seq, vocab]
+        logits = logits.view(-1, logits.size(-1))
+    if labels.dim() == 2:
+        # If [batch, seq], flatten to [batch*seq]
+        labels = labels.view(-1)
+        
     per_token_logps = torch.gather(logits.log_softmax(-1), dim=-1, index=labels.unsqueeze(-1)).squeeze(-1)
     
     # 2. Compute sequence-level average log probabilities

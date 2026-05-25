@@ -62,6 +62,7 @@ def add_megatron_arguments(parser: argparse.ArgumentParser):
     parser = _add_regularization_args(parser)
     parser = _add_training_args(parser)
     parser = _add_rl_args(parser)
+    parser = _add_simpo_args(parser)
     parser = _add_initialization_args(parser)
     parser = _add_learning_rate_args(parser)
     parser = _add_checkpointing_args(parser)
@@ -2506,6 +2507,20 @@ def _add_rl_args(parser):
     group.add_argument('--rl-inference-parsers', nargs='*', default=[],
                        help='List of response parsers to enable for RL inference '
                             '(e.g. --rl-inference-parsers deepseek-r1-reasoning qwen3-coder-tool).')
+    return parser
+
+def _add_simpo_args(parser):
+    group = parser.add_argument_group(title='simpo')
+    group.add_argument('--simpo', action='store_true',
+                       help='Enable SimPO (Simple Preference Optimization) training mode.')
+    group.add_argument('--simpo-beta', type=float, default=2.0,
+                       help='Inverse temperature parameter for SimPO loss.')
+    group.add_argument('--simpo-gamma', type=float, default=0.5,
+                       help='Target reward margin for SimPO loss.')
+    group.add_argument('--simpo-loss-type', type=str, default='sigmoid', choices=['sigmoid', 'hinge'],
+                       help='Type of SimPO loss function (sigmoid or hinge).')
+    group.add_argument('--simpo-sft-weight', type=float, default=0.0,
+                       help='Weight for the supervised fine-tuning (SFT) loss on chosen responses in SimPO.')
     return parser
 
 def _add_training_args(parser):

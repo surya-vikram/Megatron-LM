@@ -15,8 +15,74 @@ from pretrain_gpt import (
     forward_step,
     train_valid_test_datasets_provider,
     get_embedding_ranks,
-    _PROGRAM_START_TIME
+    _PROGRAM_START_TIME,
+    get_batch,
+    stimer,
+    is_dataset_built_on_rank
 )
+
+from megatron.training.utils import get_timers
+from megatron.core.utils import get_attr_wrapped_model
+from megatron.post_training.simpo_utils import calculate_simpo_loss
+from megatron.core.datasets.blended_megatron_dataset_builder import BlendedMegatronDatasetBuilder
+from megatron.core.datasets.gpt_dataset import GPTDatasetConfig
+from megatron.training.datasets.simpo_dataset import SimPODataset
+
+def simpo_forward_step(data_iterator, model: torch.nn.Module, return_schedule_plan: bool = False):
+    args = get_args()
+    timers = get_timers()
+
+    timers('batch-generator', log_level=2).start()
+    global stimer
+    with stimer(bdata=True):
+        vp_stage = get_attr_wrapped_model(model, "vp_stage")
+        tokens, labels, loss_mask, attention_mask, position_ids, packed_seq_params = get_batch(data_iterator, vp_stage)
+    timers('batch-generator').stop()
+
+    with stimer:
+        output_tensor = model(
+            tokens, position_ids, attention_mask, labels=labels, loss_mask=loss_mask, packed_seq_params=packed_seq_params
+        )
+
+    def simpo_loss_func(loss_mask_tensor, labels_tensor, cu_seqlens_tensor, output_tensor_logits):
+        loss, metrics = calculate_simpo_loss(
+            logits=output_tensor_logits,
+            labels=labels_tensor,
+            loss_mask=loss_mask_tensor,
+            cu_seqlens=cu_seqlens_tensor,
+            args=args
+        )
+        return loss, loss_mask_tensor.sum(), metrics
+
+    cu_seqlens = packed_seq_params.cu_seqlens_q if packed_seq_params else None
+    return output_tensor, partial(simpo_loss_func, loss_mask, labels, cu_seqlens)
+
+def simpo_train_valid_test_datasets_provider(train_val_test_num_samples):
+    args = get_args()
+    config = GPTDatasetConfig(
+        random_seed=args.seed,
+        sequence_length=args.seq_length,
+        blend=args.data_path,
+        split=args.split,
+        path_to_cache=args.data_cache_path,
+        tokenizer=args.tokenizer,
+        reset_position_ids=args.reset_position_ids,
+        reset_attention_mask=args.reset_attention_mask,
+        eod_mask_loss=args.eod_mask_loss,
+        create_attention_mask=args.create_attention_mask_in_dataloader,
+    )
+    
+    print_rank_0("> building train, validation, and test datasets for SimPO ...")
+    
+    train_ds, valid_ds, test_ds = BlendedMegatronDatasetBuilder(
+        SimPODataset,
+        train_val_test_num_samples,
+        is_dataset_built_on_rank,
+        config
+    ).build()
+    
+    print_rank_0("> finished creating SimPO datasets ...")
+    return train_ds, valid_ds, test_ds
 
 from megatron.training import (
     get_args,
@@ -126,10 +192,15 @@ def gemma3_model_builder(args, pre_process, post_process, vp_stage=None, config=
 
     provider.bf16 = args.bf16
     provider.fp16 = args.fp16
+    
     # Forward CCE flag: without this the provider never enables fused linear cross
-    # entropy and the model materialises the full (seq*batch x vocab) logit tensor,
-    # causing an OOM on large vocab / batch sizes.
-    provider.use_linear_cross_entropy = getattr(args, 'use_linear_cross_entropy', False)
+    # entropy and the model materialises the full (seq*batch x vocab) logit tensor.
+    # For SimPO, we MUST disable this to get raw logits for the margin loss.
+    if getattr(args, 'simpo', False):
+        provider.use_linear_cross_entropy = False
+    else:
+        provider.use_linear_cross_entropy = getattr(args, 'use_linear_cross_entropy', False)
+        
     provider.finalize()
     return provider.provide(pre_process=pre_process, post_process=post_process, vp_stage=vp_stage)
 
@@ -144,10 +215,18 @@ if __name__ == "__main__":
     )
     
     full_config = pretrain_cfg_container_from_args(args)
+    
+    if getattr(args, 'simpo', False):
+        active_dataset_provider = simpo_train_valid_test_datasets_provider
+        active_forward_step = simpo_forward_step
+    else:
+        active_dataset_provider = train_valid_test_datasets_provider
+        active_forward_step = forward_step
+        
     pretrain(full_config,
-        train_valid_test_datasets_provider,
+        active_dataset_provider,
         partial(model_provider, gemma3_model_builder),
         ModelType.encoder_or_decoder,
-        forward_step,
+        active_forward_step,
         get_embedding_ranks=get_embedding_ranks,
     )

@@ -159,22 +159,26 @@ if [[ -z "$DATA_PATH" ]]; then
 fi
 
 # 4. Default Hyperparameter Logic (Branching)
-if [[ "$MODE" == "sft" ]]; then
-    # SFT Profile: 1.0 Epoch over whatever we have
+if [[ "$MODE" == "sft" ]] || [[ "$MODE" == "simpo" ]]; then
+    # SFT/SimPO Profile: 1.0 Epoch over whatever we have
     if [[ $GBS -eq 64 ]]; then
-        # Default SFT GBS to 32 (0.25M tokens) so the model updates its weights twice as often on instructions!
+        # Default GBS to 32
         GBS=32
+    fi
+
+    if [[ "$MODE" == "simpo" ]]; then
+        PACK_SAMPLES=true # Enforce sequence packing for SimPO
     fi
 
     if [ "$PACK_SAMPLES" = true ]; then
         # Dynamically calculate precise ITERS using SFT token scanner
         if [[ $ITERS -eq 0 ]]; then
-            echo "Calculating exact SFT training iterations dynamically..."
+            echo "Calculating exact training iterations dynamically..."
             ITERS=$(python3 examples/gemma3/utils/get_sft_tokens.py "$DATA_PATH" "$TOKENIZER_MODEL" "$EPOCHS" "$GBS" "$SEQ_LEN")
             echo "Calculated training iterations: $ITERS"
         fi
     else
-        # Unpacked SFT baseline (18,772 samples in sft_train.jsonl)
+        # Unpacked baseline
         if [[ $ITERS -eq 0 ]]; then
             ITERS=$(python3 -c "import math; print(math.ceil(18772 / $GBS * $EPOCHS))")
         fi
@@ -199,8 +203,9 @@ if [[ "$MODE" == "sft" ]]; then
     [[ $EVAL_INTERVAL -eq 0 ]] && EVAL_INTERVAL=$(( SAVE_INTERVAL / 2 ))
     [[ $EVAL_INTERVAL -eq 0 ]] && EVAL_INTERVAL=5
 
-    if [[ "$WANDB_PROJECT" == "AUTO" ]]; then WANDB_PROJECT="gemma3-medical-sft-reasoning"; fi
+    if [[ "$WANDB_PROJECT" == "AUTO" ]]; then WANDB_PROJECT="gemma3-medical-${MODE}-reasoning"; fi
 else
+
     # CPT Profile: 500M token budget (or custom TOKEN_BUDGET)
     if [[ $ITERS -eq 0 ]]; then
         ITERS=$(( TOKEN_BUDGET / (SEQ_LEN * GBS) ))
@@ -420,6 +425,9 @@ fi
 
 if [[ "$MODE" == "sft" ]]; then
     DATA_ARGS="$DATA_ARGS --sft"
+    TRAIN_ARGS=" $TRAIN_ARGS --eod-mask-loss --no-create-attention-mask-in-dataloader"
+elif [[ "$MODE" == "simpo" ]]; then
+    DATA_ARGS="$DATA_ARGS --simpo --sft"
     TRAIN_ARGS=" $TRAIN_ARGS --eod-mask-loss --no-create-attention-mask-in-dataloader"
 fi
 

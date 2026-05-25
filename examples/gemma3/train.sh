@@ -55,6 +55,7 @@ PACK_SAMPLES=false
 TOKEN_BUDGET=500000000
 EVAL_ITERS=0
 SPLIT="auto"
+TP_OVERRIDE=0
 
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -64,6 +65,7 @@ while [[ $# -gt 0 ]]; do
     --warmup-prct) WARMUP_PRCT="$2"; shift 2 ;;
     --decay-prct) DECAY_PRCT="$2"; shift 2 ;;
     --model-size) MODEL_SIZE="$2"; shift 2 ;;
+    --tp-size) TP_OVERRIDE="$2"; shift 2 ;;
     --mcore-path) MCORE_PATH="$2"; shift 2 ;;
     --data-path) DATA_PATH="$2"; shift 2 ;;
     --valid-data-path) VALID_DATA_PATH="$2"; shift 2 ;;
@@ -277,14 +279,21 @@ case $MODEL_SIZE in
     *) echo "Unsupported model size: $MODEL_SIZE"; exit 1 ;;
 esac
 
+# 4.6 Manual Parallelism Overrides
+if [[ $TP_OVERRIDE -gt 0 ]]; then
+    echo "INFO: Overriding default TP=$TP with manual --tp-size=$TP_OVERRIDE"
+    TP=$TP_OVERRIDE
+fi
+
 # ============================================================================
 # GPU Detection & Parallelism Safety
 # ============================================================================
 NUM_GPUS=$(nvidia-smi -L | wc -l)
 
 if [[ "$NUM_GPUS" -lt "$((TP * PP))" ]]; then
-    echo "WARNING: Only $NUM_GPUS GPU(s) detected but TP=$TP PP=$PP requires $((TP * PP)). Overriding to TP=1 PP=1."
-    TP=1; PP=1
+    echo "ERROR: Requested TP=$TP and PP=$PP requires at least $((TP * PP)) GPUs, but only $NUM_GPUS were detected."
+    echo "Please check CUDA_VISIBLE_DEVICES or adjust parallelism flags."
+    exit 1
 fi
 
 DISTRIBUTED_ARGS="--nproc_per_node $NUM_GPUS --nnodes 1 --node_rank 0 --master_addr localhost --master_port 6789"

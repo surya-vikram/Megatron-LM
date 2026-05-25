@@ -52,7 +52,17 @@ def simpo_forward_step(data_iterator, model: torch.nn.Module, return_schedule_pl
             cu_seqlens=cu_seqlens_tensor,
             args=args
         )
-        return loss, loss_mask_tensor.sum(), metrics
+        
+        num_tokens = loss_mask_tensor.sum().clone().detach().to(torch.int)
+        
+        # Format metrics for Megatron's logger: expect [metric_sum, num_tokens]
+        # Our metrics are already averaged, so we multiply by num_tokens to get the sum
+        report = {}
+        report['simpo loss'] = torch.cat([(loss.clone().detach() * num_tokens).view(1), num_tokens.view(1)])
+        for k, v in metrics.items():
+            report[k] = torch.cat([(v * num_tokens).view(1), num_tokens.view(1)])
+            
+        return loss, num_tokens, report
 
     cu_seqlens = packed_seq_params.cu_seqlens_q if packed_seq_params else None
     return output_tensor, partial(simpo_loss_func, loss_mask, labels, cu_seqlens)

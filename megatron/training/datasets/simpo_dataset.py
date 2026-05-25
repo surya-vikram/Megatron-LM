@@ -40,8 +40,12 @@ class SimPODataset(MegatronDataset):
         super().__init__(dataset, dataset_path, indices, num_samples, config)
         self.tokenizer = get_tokenizer()
 
-    @classmethod
-    def build_low_level_dataset(cls, dataset_path: str, config: GPTDatasetConfig) -> Any:
+    @staticmethod
+    def numel_low_level_dataset(low_level_dataset: Any) -> int:
+        return len(low_level_dataset)
+
+    @staticmethod
+    def build_low_level_dataset(dataset_path: str, config: GPTDatasetConfig) -> Any:
         return JsonlLowLevelDataset(dataset_path)
 
     def __len__(self) -> int:

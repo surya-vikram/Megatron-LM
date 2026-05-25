@@ -6,7 +6,6 @@ import numpy as np
 import torch
 
 from megatron.core.datasets.gpt_dataset import GPTDatasetConfig
-from megatron.core.datasets.low_level_dataset import LowLevelDataset
 from megatron.core.datasets.megatron_dataset import MegatronDataset
 from megatron.training import get_args, get_tokenizer
 
@@ -17,7 +16,7 @@ class SimPODataset(MegatronDataset):
 
     def __init__(
         self,
-        dataset: LowLevelDataset,
+        dataset: Any,
         dataset_path: Optional[str],
         indices: np.ndarray,
         num_samples: Optional[int],

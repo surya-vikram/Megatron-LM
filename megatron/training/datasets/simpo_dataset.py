@@ -35,9 +35,10 @@ class SimPODataset(MegatronDataset):
         dataset_path: Optional[str],
         indices: np.ndarray,
         num_samples: Optional[int],
+        index_split: Any,
         config: GPTDatasetConfig,
     ) -> None:
-        super().__init__(dataset, dataset_path, indices, num_samples, config)
+        super().__init__(dataset, dataset_path, indices, num_samples, index_split, config)
         self.tokenizer = get_tokenizer()
 
     @staticmethod

@@ -63,7 +63,36 @@ While much is automated, certain performance and state configurations require ma
 *   **Checkpoint Resuming:** To resume from a specific iteration, you must manually edit the text inside:
     `/home/jovyan/data/checkpoints/latest_checkpointed_iteration.txt`
 
-## 7. Air-Gap Environment Variables
+## 7. Multi-Node Operation (Cluster Scaling)
+Megatron-LM is designed for massive scaling. If you are deploying the container across multiple physical nodes (e.g., two 4xH200 nodes), you must coordinate them using the distributed CLI flags.
+
+*   **Prerequisites:**
+    *   All nodes must have the exact same `/home/jovyan/models` and `/home/jovyan/data` mounted (e.g., via NFS).
+    *   Nodes must be able to ping each other over the local high-speed network.
+
+**Example: 2 Nodes, 4 GPUs each**
+
+*   **Node 0 (Master Node):**
+    ```bash
+    bash examples/gemma3/train.sh \
+      --nnodes 2 \
+      --node-rank 0 \
+      --master-addr 10.0.0.1 \
+      --master-port 6789 \
+      [... other args]
+    ```
+*   **Node 1 (Worker Node):**
+    ```bash
+    bash examples/gemma3/train.sh \
+      --nnodes 2 \
+      --node-rank 1 \
+      --master-addr 10.0.0.1 \
+      --master-port 6789 \
+      [... other args]
+    ```
+*   *Note:* The total Global Batch Size (`GBS`) remains constant; Megatron will automatically distribute the work across the `NNODES * NUM_GPUS` total GPUs.
+
+## 8. Air-Gap Environment Variables
 The following flags are **pre-baked** into the image but should be verified if you are running in a custom shell:
 *   `export WANDB_MODE=offline`
 *   `export TRANSFORMERS_OFFLINE=1`

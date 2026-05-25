@@ -57,6 +57,12 @@ EVAL_ITERS=0
 SPLIT="auto"
 TP_OVERRIDE=0
 
+# Multi-node Defaults
+NNODES=1
+NODE_RANK=0
+MASTER_ADDR="localhost"
+MASTER_PORT=6789
+
 while [[ $# -gt 0 ]]; do
   case $1 in
     --mode) MODE="$2"; shift 2 ;;
@@ -66,6 +72,10 @@ while [[ $# -gt 0 ]]; do
     --decay-prct) DECAY_PRCT="$2"; shift 2 ;;
     --model-size) MODEL_SIZE="$2"; shift 2 ;;
     --tp-size) TP_OVERRIDE="$2"; shift 2 ;;
+    --nnodes) NNODES="$2"; shift 2 ;;
+    --node-rank) NODE_RANK="$2"; shift 2 ;;
+    --master-addr) MASTER_ADDR="$2"; shift 2 ;;
+    --master-port) MASTER_PORT="$2"; shift 2 ;;
     --mcore-path) MCORE_PATH="$2"; shift 2 ;;
     --data-path) DATA_PATH="$2"; shift 2 ;;
     --valid-data-path) VALID_DATA_PATH="$2"; shift 2 ;;
@@ -296,7 +306,7 @@ if [[ "$NUM_GPUS" -lt "$((TP * PP))" ]]; then
     exit 1
 fi
 
-DISTRIBUTED_ARGS="--nproc_per_node $NUM_GPUS --nnodes 1 --node_rank 0 --master_addr localhost --master_port 6789"
+DISTRIBUTED_ARGS="--nproc_per_node $NUM_GPUS --nnodes $NNODES --node_rank $NODE_RANK --master_addr $MASTER_ADDR --master_port $MASTER_PORT"
 
 # ============================================================================
 # Model Architecture Args
@@ -461,7 +471,8 @@ fi
 echo "================================================================="
 echo "  Mode:         $MODE"
 echo "  Model:        Gemma 3 $MODEL_SIZE"
-echo "  GPUs:         $NUM_GPUS (TP=$TP, PP=$PP)"
+echo "  Cluster:      $NNODES Node(s) | Node Rank: $NODE_RANK"
+echo "  GPUs/Node:    $NUM_GPUS (TP=$TP, PP=$PP)"
 echo "  Seq Length:    $SEQ_LEN"
 echo "  GBS:          $GBS (MBS=$MBS, Accum Steps=$((GBS / MBS / NUM_GPUS)))"
 echo "  Recompute:    $RECOMPUTE_GRANULARITY ($RECOMPUTE_METHOD $RECOMPUTE_NUM_LAYERS)"

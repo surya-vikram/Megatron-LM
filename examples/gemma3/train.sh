@@ -149,7 +149,7 @@ fi
 if [[ -z "$MCORE_PATH" ]]; then
   if [[ "$MODE" == "cpt" ]]; then
     MCORE_PATH="/home/jovyan/models/gemma-3-${MODEL_SIZE}-pt-mcore"
-  elif [[ "$MODE" == "sft" ]]; then
+  elif [[ "$MODE" == "sft" ]] || [[ "$MODE" == "simpo" ]]; then
     MCORE_PATH="/home/jovyan/data/checkpoints/gemma3-${MODEL_SIZE}-cpt"
   fi
   echo "INFO: No --mcore-path specified. Using default for $MODE mode: $MCORE_PATH"
@@ -160,7 +160,7 @@ if [[ -z "$DATA_PATH" ]]; then
   if [[ "$MODE" == "cpt" ]]; then
     DATA_PATH="/home/jovyan/data/pubmed_train_text_document"
     VALID_DATA_PATH="/home/jovyan/data/pubmed_val_text_document"
-  elif [[ "$MODE" == "sft" ]]; then
+  elif [[ "$MODE" == "sft" ]] || [[ "$MODE" == "simpo" ]]; then
     DATA_PATH="/home/jovyan/data/sft_train.jsonl"
     VALID_DATA_PATH="/home/jovyan/data/sft_val.jsonl"
   fi

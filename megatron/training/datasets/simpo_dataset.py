@@ -32,7 +32,10 @@ class SimPOLowLevelDataset:
         return len(self.dataset)
 
     def __getitem__(self, idx: int) -> list:
-        return self.dataset[idx]["messages"]
+        row = self.dataset[idx]
+        if "conversations" in row:
+            return row["conversations"]
+        return row["messages"]
 
 class SimPODataset(MegatronDataset):
     """The dataset used during SimPO (Simple Preference Optimization)"""

@@ -23,6 +23,9 @@ def calculate_simpo_loss(
     # loss_mask masks out padding and prompt tokens.
     # labels already handle ignore_index.
     
+    from megatron.training import print_rank_0
+    print_rank_0(f"DEBUG: logits shape: {logits.shape}, labels shape: {labels.shape}")
+
     if logits.dim() == 3:
         # If [batch, seq, vocab], flatten to [batch*seq, vocab]
         logits = logits.view(-1, logits.size(-1))
@@ -30,7 +33,14 @@ def calculate_simpo_loss(
         # If [batch, seq], flatten to [batch*seq]
         labels = labels.view(-1)
         
-    per_token_logps = torch.gather(logits.log_softmax(-1), dim=-1, index=labels.unsqueeze(-1)).squeeze(-1)
+    # Handle ignore_index (-100) for gather
+    labels_for_gather = labels.clone()
+    labels_for_gather[labels == -100] = 0
+    
+    per_token_logps = torch.gather(logits.log_softmax(-1), dim=-1, index=labels_for_gather.unsqueeze(-1)).squeeze(-1)
+    
+    # Mask out logprobs for ignore_index
+    per_token_logps = per_token_logps * (labels != -100)
     
     # 2. Compute sequence-level average log probabilities
     seq_avg_logps = []

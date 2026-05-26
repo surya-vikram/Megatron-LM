@@ -192,7 +192,7 @@ class SimPODataset(MegatronDataset):
             pad_len = pack_length + 1 - len(pack_tokens)
             last_pos = pack_positions[-1] if pack_positions else -1
             pack_tokens.extend([pad] * pad_len)
-            pack_targets.extend([IGNORE_INDEX] * pad_len)
+            pack_targets.extend([pad] * pad_len)
             pack_positions.extend(range(last_pos + 1, last_pos + 1 + pad_len))
             if pack_samples:
                 cu_seqlens.append(len(pack_tokens) - 1)

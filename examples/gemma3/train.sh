@@ -51,48 +51,60 @@ echo "--- Gemma 3 Production Training Engine ---"
 export CUDA_DEVICE_MAX_CONNECTIONS=1
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
-# ============================================================================
-# TIER 1 — IDENTITY
-# ============================================================================
-MODE="cpt"
-MODEL_SIZE="4b"
-MCORE_PATH=""
-DATA_PATH=""
+# ════════════════════════════════════════════════════════════════════════════
+# ★  USER CONFIGURATION
+#    Edit values directly here — or pass any as a CLI flag to override.
+#    CLI flags always win over what's written below.
+# ════════════════════════════════════════════════════════════════════════════
 
-# ============================================================================
-# TIER 2 — TRAINING BUDGET
-# ============================================================================
-TOKEN_BUDGET=500000000   # CPT: train until this many tokens seen
-EPOCHS=1.0               # SFT/SimPO: number of epochs
-ITERS=0                  # Hard override: if > 0, skips all auto-calculation
+# ── Identity (REQUIRED) ─────────────────────────────────────────────────────
+MODE="cpt"              # cpt | sft | simpo
+MODEL_SIZE="4b"         # 1b  | 4b  | 12b
+MCORE_PATH=""           # checkpoint to load from (HF-converted MCore format)
+DATA_PATH=""            # training data: Megatron binary prefix (CPT), JSONL (SFT/SimPO)
+VALID_DATA_PATH=""      # validation data — leave empty to disable validation entirely
 
-# ============================================================================
-# TIER 3 — LEARNING RATE  (0 = auto-set per mode)
-# ============================================================================
-LR=0
-MIN_LR=0
-WARMUP_PRCT="auto"       # auto → CPT: 2%, SFT/SimPO: 5%
-DECAY_PRCT=90
+# ── Training Budget ──────────────────────────────────────────────────────────
+TOKEN_BUDGET=500000000  # CPT:       tokens to train on        (default: 500M)
+EPOCHS=1.0              # SFT/SimPO: epochs to train for       (default: 1 epoch)
+ITERS=0                 # All modes: hard step override — set > 0 to skip auto-calc
 
-# ============================================================================
-# TIER 4 — BATCH & SEQUENCE  (0 = auto-set per mode)
-# ============================================================================
-GBS=0                    # auto → CPT: 64, SFT/SimPO: 32
-MBS=1
-SEQ_LEN=8192
+# ── Learning Rate  (0 = auto-set per mode) ───────────────────────────────────
+#    Auto defaults: CPT → 1e-5 | SFT → 5e-6 | SimPO → 1e-6
+LR=0                    # peak learning rate
+MIN_LR=0                # decay floor  (0 = LR × 0.1)
+WARMUP_PRCT="auto"      # warmup % of total iters  (auto: CPT→2%, SFT/SimPO→5%)
+DECAY_PRCT=90           # cosine decay over this % of total iters
 
-# ============================================================================
-# TIER 5 — ALGORITHM PARAMS  (SimPO only)
-# ============================================================================
-SIMPO_BETA="2.0"
-SIMPO_GAMMA="0.5"
-SIMPO_LOSS_TYPE="sigmoid"
-SIMPO_SFT_WEIGHT="0.0"
+# ── Batch & Sequence  (0 = auto-set per mode) ────────────────────────────────
+#    Auto defaults: CPT GBS→64 | SFT/SimPO GBS→32
+GBS=0                   # global batch size  (tokens/step = GBS × SEQ_LEN)
+MBS=1                   # micro-batch size   (reduce if OOM)
+SEQ_LEN=8192            # sequence / context length
 
-# ============================================================================
-# TIER 6 — INFRA
-# ============================================================================
-VALID_DATA_PATH=""        # if not passed → no validation
+# ── SimPO Algorithm Params ───────────────────────────────────────────────────
+SIMPO_BETA="2.0"        # reward scaling factor
+SIMPO_GAMMA="0.5"       # target margin between chosen and rejected
+SIMPO_LOSS_TYPE="sigmoid"  # loss function: sigmoid | hinge
+SIMPO_SFT_WEIGHT="0.0"  # SFT regularization weight (0 = disabled)
+
+# ── Parallelism ──────────────────────────────────────────────────────────────
+#    Auto defaults: 1b/4b → TP=1 PP=1 | 12b → TP=2 PP=1
+#    DP is always auto = NUM_GPUS / (TP × PP)
+TP_OVERRIDE=0           # Tensor Parallel degree  (0 = auto per model size)
+NNODES=1                # number of nodes in cluster
+NODE_RANK=0             # rank of THIS node  (0 = master)
+MASTER_ADDR="localhost" # master node IP  (change for multi-node)
+MASTER_PORT=6789        # distributed rendezvous port
+
+# ── Dataset Visibility / Debug ───────────────────────────────────────────────
+DEBUG_DATASET=false     # per-step packing trace → stdout rank-0 (very verbose)
+LOG_DATASET_STATS=false # aggregate packing stats every 100 steps → stdout rank-0
+WARN_OVERSIZED=false    # one-time warning when samples are skipped or malformed
+
+# ════════════════════════════════════════════════════════════════════════════
+# ✦  INTERNAL DEFAULTS  —  rarely need changing
+# ════════════════════════════════════════════════════════════════════════════
 SAVE_PATH=""
 SAVE_INTERVAL=0
 EVAL_INTERVAL=0
@@ -113,20 +125,10 @@ LINEAR_CE_FILTER_E_GRAD=false
 LINEAR_CE_FILTER_C_GRAD=false
 LINEAR_CE_FILTER_EPS="0.0"
 LOG_THROUGHPUT=true
-PACK_FACTOR=""            # expert: cap samples per packed step (default: unlimited)
-SPLIT="auto"              # CPT expert override; default forced to 100,0,0
+PACK_FACTOR=""          # expert: cap samples per packed step (default: unlimited)
+SPLIT="auto"            # CPT expert override (default: 100,0,0 when no valid-data-path)
 WEIGHT_DECAY=0.1
-TP_OVERRIDE=0
-# Dataset visibility / debug flags
-DEBUG_DATASET=false       # per-step packing trace to stdout (rank 0 only)
-LOG_DATASET_STATS=false   # aggregate packing stats every 100 steps to stdout
-WARN_OVERSIZED=false      # one-time warning when a sample is skipped or malformed
 
-# Multi-node
-NNODES=1
-NODE_RANK=0
-MASTER_ADDR="localhost"
-MASTER_PORT=6789
 
 # ============================================================================
 # Argument Parsing

@@ -117,6 +117,10 @@ PACK_FACTOR=""            # expert: cap samples per packed step (default: unlimi
 SPLIT="auto"              # CPT expert override; default forced to 100,0,0
 WEIGHT_DECAY=0.1
 TP_OVERRIDE=0
+# Dataset visibility / debug flags
+DEBUG_DATASET=false       # per-step packing trace to stdout (rank 0 only)
+LOG_DATASET_STATS=false   # aggregate packing stats every 100 steps to stdout
+WARN_OVERSIZED=false      # one-time warning when a sample is skipped or malformed
 
 # Multi-node
 NNODES=1
@@ -185,6 +189,10 @@ while [[ $# -gt 0 ]]; do
     --no-linear-ce-filter-c-grad)    LINEAR_CE_FILTER_C_GRAD=false;    shift 1 ;;
     --linear-ce-filter-eps)          LINEAR_CE_FILTER_EPS="$2";        shift 2 ;;
     --log-throughput)     LOG_THROUGHPUT=true; shift 1 ;;
+    # Debug / Visibility
+    --debug-dataset)          DEBUG_DATASET=true;    shift 1 ;;
+    --log-dataset-stats)      LOG_DATASET_STATS=true; shift 1 ;;
+    --warn-oversized-samples) WARN_OVERSIZED=true;   shift 1 ;;
     *) echo "ERROR: Unknown parameter: $1"; exit 1 ;;
   esac
 done
@@ -542,6 +550,11 @@ if [[ "$MODE" == "sft" || "$MODE" == "simpo" ]]; then
     EXTRA_ARGS="$EXTRA_ARGS --pack-samples"
     [[ -n "$PACK_FACTOR" ]] && EXTRA_ARGS="$EXTRA_ARGS --pack-factor $PACK_FACTOR"
 fi
+
+# Dataset visibility flags (passed through to dataset classes via args namespace)
+[ "$DEBUG_DATASET"    = true ] && EXTRA_ARGS="$EXTRA_ARGS --debug-dataset"
+[ "$LOG_DATASET_STATS" = true ] && EXTRA_ARGS="$EXTRA_ARGS --log-dataset-stats"
+[ "$WARN_OVERSIZED"   = true ] && EXTRA_ARGS="$EXTRA_ARGS --warn-oversized-samples"
 
 # ============================================================================
 # Chat Template (SFT + SimPO both use SFTTokenizer with tokenize_conversation)

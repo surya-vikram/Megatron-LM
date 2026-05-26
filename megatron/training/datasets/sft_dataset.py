@@ -1,5 +1,6 @@
 # Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
 
+import os
 import atexit, json
 from collections import Counter
 from typing import Any, Dict, Optional
@@ -13,6 +14,9 @@ from megatron.core.datasets.utils import Split
 from megatron.training import get_args
 
 IGNORE_INDEX = -100
+
+# Only emit each oversized-sample warning once per process lifetime
+_warned_oversized = set()
 
 
 class SFTLowLevelDataset:
@@ -63,6 +67,16 @@ class SFTDataset(MegatronDataset):
     ) -> None:
         super().__init__(dataset, dataset_path, indices, num_samples, index_split, config)
 
+        # ── Running stats (accumulated across __getitem__ calls on this worker) ──
+        self._stats = {
+            "steps":              0,
+            "total_packed":       0,   # total conversations packed
+            "total_active_tok":   0,   # tokens contributing to loss
+            "total_pad_tok":      0,   # padding tokens
+            "total_tok":          0,   # total tokens (= active + pad + prompt)
+            "skipped_oversized":  0,   # conversations skipped because they exceed seq_len
+        }
+
     @staticmethod
     def numel_low_level_dataset(low_level_dataset: LowLevelDataset) -> int:
         return len(low_level_dataset)
@@ -95,9 +109,13 @@ class SFTDataset(MegatronDataset):
         pack_length = self.config.sequence_length
         args = get_args()
 
-        # Retrieve feature-gate flag and pack-factor
-        pack_samples = getattr(args, "pack_samples", False)
-        pack_factor = getattr(args, "pack_factor", None)
+        # Feature flags
+        pack_samples    = getattr(args, "pack_samples", False)
+        pack_factor     = getattr(args, "pack_factor", None)
+        debug_dataset   = getattr(args, "debug_dataset", False)
+        log_stats       = getattr(args, "log_dataset_stats", False)
+        warn_oversized  = getattr(args, "warn_oversized_samples", False)
+        is_rank_0       = (os.environ.get("RANK", "0") == "0")
 
         def extend_with_padding(tokens, targets, positions, pad_len):
             tokens.extend([pad] * pad_len)
@@ -110,6 +128,10 @@ class SFTDataset(MegatronDataset):
         cu_seqlens = [0]
         eod = tokenizer.eod
         pad = tokenizer.pad
+
+        # ── Per-step debug counters ──
+        step_packed      = 0
+        step_skipped     = 0
 
         # Deterministic, non-overlapping starting sample mapping
         if pack_samples:
@@ -133,25 +155,29 @@ class SFTDataset(MegatronDataset):
                 tokens_list = tokens.tolist()
                 targets_list = targets.tolist()
 
-                # Strictly pack ONLY if the entire conversation fits in the remaining sequence space
+                # Strictly pack ONLY if the entire conversation fits in the remaining space
                 if len(pack_tokens) + len(tokens_list) <= pack_length + 1:
                     pack_tokens.extend(tokens_list)
                     pack_targets.extend(targets_list)
                     assert not self.config.reset_position_ids
                     pack_positions.extend(range(len(tokens_list)))
                     cu_seqlens.append(len(pack_tokens))
+                    step_packed += 1
                 else:
                     if len(pack_tokens) == 0:
-                        # Fallback: if it's the first conversation and exceeds context length, truncate it
-                        max_body = pack_length
-                        pack_tokens.extend(tokens_list[:max_body])
-                        pack_targets.extend(targets_list[:max_body])
-                        pack_tokens.append(pad)
-                        pack_targets.append(pad)
-                        pack_positions.extend(range(pack_length + 1))
-                        cu_seqlens.append(pack_length)
+                        # Oversized single conversation: skip it entirely (same as SimPO).
+                        # Never truncate mid-turn — move to the next sample.
+                        step_skipped += 1
+                        self._stats["skipped_oversized"] += 1
+                        if warn_oversized and sample_idx not in _warned_oversized:
+                            _warned_oversized.add(sample_idx)
+                            print(
+                                f"[SFTDataset][WARN] Sample idx={sample_idx} "
+                                f"({len(tokens_list)} tokens) exceeds seq_len={pack_length}. "
+                                f"Skipping (will appear in the next available step)."
+                            )
                     else:
-                        # Leave this conversation for the next batch, stop packing this block
+                        # Leave this conversation for the next packed step
                         should_break_outer = True
                     break
 
@@ -167,7 +193,7 @@ class SFTDataset(MegatronDataset):
         if len(pack_tokens) < pack_length + 1:
             pad_len = pack_length + 1 - len(pack_tokens)
             extend_with_padding(pack_tokens, pack_targets, pack_positions, pad_len)
-            
+
             if pack_samples:
                 # CRITICAL: Append padding as an isolated dummy sequence boundary.
                 # The real samples do not attend to it, saving quadratic compute!
@@ -185,30 +211,65 @@ class SFTDataset(MegatronDataset):
         labels       = torch.tensor(pack_targets[1:], dtype=torch.int64)
         position_ids = torch.tensor(pack_positions[:-1], dtype=torch.int64)
 
-        # Loss mask.
+        # Loss mask: zero out pad and prompt (IGNORE_INDEX) positions
         loss_mask = torch.ones(pack_length, dtype=torch.float32)
-        # BUG FIX: Use pack_targets[1:] for masking to align with labels
         shifted_targets = torch.tensor(pack_targets[1:], dtype=torch.int64)
-        loss_mask[shifted_targets == pad] = 0.0  # Mask paddings
-        loss_mask[shifted_targets == IGNORE_INDEX] = 0.0  # mask prompts
+        loss_mask[shifted_targets == pad] = 0.0
+        loss_mask[shifted_targets == IGNORE_INDEX] = 0.0
 
         # TODO(duncan): Optionally create an attention mask
         assert not self.config.create_attention_mask and not self.config.reset_attention_mask
-        # attention_mask = None
 
         assert len(cu_seqlens) >= 2
         cu_seqlens = torch.tensor(cu_seqlens, dtype=torch.int32)
-        # Calculating max_seqlen here, rather than incrementally above, because of possible
-        # effects of truncation and padding
         adjacent_diffs = cu_seqlens[1:] - cu_seqlens[:-1]
-        max_seqlen = adjacent_diffs.max()  # max_seqlen is a 0-D tensor
+        max_seqlen = adjacent_diffs.max()
+
+        # ── Stats accumulation ──
+        active_tok = int(loss_mask.sum().item())
+        pad_tok    = int((shifted_targets == pad).sum().item())
+        total_tok  = pack_length
+
+        self._stats["steps"]            += 1
+        self._stats["total_packed"]     += step_packed
+        self._stats["total_active_tok"] += active_tok
+        self._stats["total_pad_tok"]    += pad_tok
+        self._stats["total_tok"]        += total_tok
+
+        # ── Per-step debug log (rank 0 only) ──
+        if debug_dataset and is_rank_0:
+            utilization = 100.0 * active_tok / total_tok if total_tok > 0 else 0.0
+            seqs_in_pack = len(cu_seqlens) - 1
+            print(
+                f"[SFTDataset][DEBUG] step={self._stats['steps']:>6d} | "
+                f"idx={idx:>6d} | packed={step_packed} conv(s) | "
+                f"skipped={step_skipped} | seqs_in_pack={seqs_in_pack} | "
+                f"active_tok={active_tok} | pad_tok={pad_tok} | "
+                f"utilization={utilization:.1f}% | "
+                f"cu_seqlens={cu_seqlens.tolist()}"
+            )
+
+        # ── Aggregate stats log (every 100 steps, rank 0 only) ──
+        if log_stats and is_rank_0 and self._stats["steps"] % 100 == 0:
+            s = self._stats
+            avg_packed    = s["total_packed"]     / s["steps"]
+            avg_active    = s["total_active_tok"] / s["steps"]
+            avg_pad       = s["total_pad_tok"]    / s["steps"]
+            avg_util      = 100.0 * s["total_active_tok"] / s["total_tok"] if s["total_tok"] > 0 else 0.0
+            print(
+                f"[SFTDataset][STATS] steps={s['steps']} | "
+                f"avg_packed={avg_packed:.2f} conv/step | "
+                f"avg_active_tok={avg_active:.1f} | "
+                f"avg_pad_tok={avg_pad:.1f} | "
+                f"utilization={avg_util:.1f}% | "
+                f"total_skipped_oversized={s['skipped_oversized']}"
+            )
 
         return {
-            'tokens': input_ids,
-            'labels': labels,
-            # 'attention_mask': attention_mask,  # PyTorch collate cannot handle NoneType
-            'loss_mask': loss_mask,
+            'tokens':      input_ids,
+            'labels':      labels,
+            'loss_mask':   loss_mask,
             'position_ids': position_ids,
-            'cu_seqlens': cu_seqlens,
-            'max_seqlen': max_seqlen,
+            'cu_seqlens':  cu_seqlens,
+            'max_seqlen':  max_seqlen,
         }

@@ -66,10 +66,9 @@ class SimPODataset(MegatronDataset):
 
         pack_samples = getattr(args, "pack_samples", False)
         pack_factor = getattr(args, "pack_factor", None)
-        if pack_factor is None:
-            pack_factor = max(1, pack_length // 1024)
 
-        base_sample_idx = idx * pack_factor if pack_samples else idx
+        stride = pack_factor if pack_factor is not None else 1
+        base_sample_idx = idx * stride if pack_samples else idx
         curr_idx_offset = 0
 
         if len(self.indices) == 0:
@@ -126,6 +125,10 @@ class SimPODataset(MegatronDataset):
                     break
 
             if not pack_samples:
+                break
+
+            # Bound packing range ONLY if a fixed pack_factor is explicitly supplied by the user
+            if pack_factor is not None and curr_idx_offset >= pack_factor:
                 break
 
         # Terminal Padding

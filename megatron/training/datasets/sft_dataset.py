@@ -98,9 +98,6 @@ class SFTDataset(MegatronDataset):
         # Retrieve feature-gate flag and pack-factor
         pack_samples = getattr(args, "pack_samples", False)
         pack_factor = getattr(args, "pack_factor", None)
-        if pack_factor is None:
-            # Estimate default pack factor: average conversation size is ~1k tokens
-            pack_factor = max(1, pack_length // 1024)
 
         def extend_with_padding(tokens, targets, positions, pad_len):
             tokens.extend([pad] * pad_len)
@@ -116,10 +113,12 @@ class SFTDataset(MegatronDataset):
 
         # Deterministic, non-overlapping starting sample mapping
         if pack_samples:
-            base_sample_idx = idx * pack_factor
+            stride = pack_factor if pack_factor is not None else 1
+            base_sample_idx = idx * stride
         else:
             base_sample_idx = idx
 
+        should_break_outer = False
         curr_idx_offset = 0
         while len(pack_tokens) < pack_length + 1:
             sample_idx = int(self.indices[(base_sample_idx + curr_idx_offset) % len(self.indices)])
@@ -134,38 +133,34 @@ class SFTDataset(MegatronDataset):
                 tokens_list = tokens.tolist()
                 targets_list = targets.tolist()
 
-                pack_tokens.extend(tokens_list)
-                pack_targets.extend(targets_list)
-
-                assert not self.config.reset_position_ids
-                pack_positions.extend(range(len(tokens_list)))
-
-                if self.config.context_parallel_size > 1:
-                    pad_granularity = self.config.context_parallel_size * 2
-                    mod_token_count = len(pack_tokens) % pad_granularity
-                    if mod_token_count != 0:
-                        pad_len = pad_granularity - mod_token_count
-                        extend_with_padding(pack_tokens, pack_targets, pack_positions, pad_len)
-
-                cu_seqlens.append(len(pack_tokens))
-
-                # Handle truncation cleanly
-                if len(pack_tokens) >= pack_length + 1:
-                    max_body = pack_length
-                    pack_tokens = pack_tokens[:max_body]
-                    pack_targets = pack_targets[:max_body]
-                    pack_tokens.append(pad)
-                    pack_targets.append(pad)
-                    pack_positions = pack_positions[:pack_length+1]
-                    cu_seqlens[-1] = len(pack_tokens) - 1
+                # Strictly pack ONLY if the entire conversation fits in the remaining sequence space
+                if len(pack_tokens) + len(tokens_list) <= pack_length + 1:
+                    pack_tokens.extend(tokens_list)
+                    pack_targets.extend(targets_list)
+                    assert not self.config.reset_position_ids
+                    pack_positions.extend(range(len(tokens_list)))
+                    cu_seqlens.append(len(pack_tokens))
+                else:
+                    if len(pack_tokens) == 0:
+                        # Fallback: if it's the first conversation and exceeds context length, truncate it
+                        max_body = pack_length
+                        pack_tokens.extend(tokens_list[:max_body])
+                        pack_targets.extend(targets_list[:max_body])
+                        pack_tokens.append(pad)
+                        pack_targets.append(pad)
+                        pack_positions.extend(range(pack_length + 1))
+                        cu_seqlens.append(pack_length)
+                    else:
+                        # Leave this conversation for the next batch, stop packing this block
+                        should_break_outer = True
                     break
 
-            if len(pack_tokens) >= pack_length + 1 or not pack_samples:
+            if should_break_outer or len(pack_tokens) >= pack_length + 1 or not pack_samples:
                 break
 
             curr_idx_offset += 1
-            # Bound packing range to preserve strictly disjoint dataset allocations
-            if curr_idx_offset >= pack_factor:
+            # Bound packing range ONLY if a fixed pack_factor is explicitly supplied by the user
+            if pack_factor is not None and curr_idx_offset >= pack_factor:
                 break
 
         # Handle remaining padding if under-filled

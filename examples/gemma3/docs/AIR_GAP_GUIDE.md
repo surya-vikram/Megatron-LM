@@ -44,15 +44,17 @@ The pipeline automatically scales based on the `--model-size` flag, but provides
 ## 5. Hyperparameter Sliders (Experimentation)
 Adjust these flags in `train.sh` to tune your training runs:
 
-| Parameter | CLI Flag | Description |
-| :--- | :--- | :--- |
-| **Validation** | `--valid-data-path` | Path to a separate `.bin/.idx` (CPT) or `.jsonl` (SFT). |
-| **Split** | `--split 99,1,0` | Allocates 99% Train, 1% Val, 0% Test (Recommended). |
-| **Learning Rate** | `--lr` | Peak learning rate (e.g., `1e-5`). |
-| **Min LR** | `--min-lr` | The floor for cosine decay (Default: 10% of peak). |
-| **Warmup** | `--warmup-iters` | Steps to ramp up LR (Recommend 1-5% of total). |
-| **Decay** | `--lr-decay-iters` | Steps to decay LR (Recommend matching total iters). |
-| **Seq Len** | `--seq-len` | Context length. 8192 is optimized for H200 throughput. |
+| Tier | Parameter | CLI Flag | Description |
+| :--- | :--- | :--- | :--- |
+| 2 | **Budget (CPT)** | `--token-budget` | Tokens to train on (default: 500M). |
+| 2 | **Budget (SFT/SimPO)** | `--epochs` | Epochs to train for (default: 1.0). |
+| 2 | **Hard Step Override** | `--iters` | Explicit step count — skips all budget auto-calc. |
+| 3 | **Learning Rate** | `--lr` | Peak LR. Auto: CPT=1e-5, SFT=5e-6, SimPO=1e-6. |
+| 3 | **Min LR** | `--min-lr` | Floor for cosine decay (default: `lr × 0.1`). |
+| 3 | **LR Warmup** | `--warmup-prct` | % of iters for warmup. Auto: CPT=2%, SFT/SimPO=5%. |
+| 4 | **Batch Size** | `--global-batch-size` | Auto: CPT=64, SFT/SimPO=32. |
+| 4 | **Seq Length** | `--seq-len` | Context length (default: 8192). |
+| 6 | **Validation** | `--valid-data-path` | Separate val file. If omitted → no validation at all. |
 
 ## 6. Automated vs. Manual (The "Must Changes")
 While much is automated, certain performance and state configurations require manual intervention:
@@ -99,4 +101,4 @@ The following flags are **pre-baked** into the image but should be verified if y
 *   `export HF_DATASETS_OFFLINE=1`
 
 ---
-*Created by Gemini CLI - v1.0-cpt-sft-verified*
+*Updated: CPT/SFT/SimPO pipeline — tiered train.sh with per-mode LR defaults and always-on packing.*

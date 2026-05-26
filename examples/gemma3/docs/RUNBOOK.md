@@ -1,141 +1,268 @@
-# Gemma 3 Production Training Runbook (4B & 12B)
+# Gemma 3 Production Training Runbook
 
-This runbook describes the modular workflow for importing, training, and exporting Gemma 3 models using Megatron-LM.
+This runbook describes the end-to-end workflow for importing, training (CPT → SFT → SimPO), and exporting Gemma 3 models using Megatron-LM.
+
+---
 
 ## 1. Environment Setup
+
 Bootstrap the node with all dependencies (FlashAttn, TE, Bridge) and persistent symlinks.
 ```bash
 bash examples/gemma3/setup.sh
 source /home/jovyan/load_env.sh
 ```
 
-## 2. Import: HF VLM -> Megatron
-Convert the original Google VLM into a Megatron-Core text backbone.
+---
+
+## 2. Import: HuggingFace → Megatron
+
+Convert the original Google HF checkpoint into a Megatron-Core checkpoint.
 ```bash
 bash examples/gemma3/import.sh \
-    --hf-model /path/to/gemma-3-12b-pt \
-    --mcore-path /path/to/gemma-3-12b-pt-mcore
+    --hf-model /path/to/gemma-3-4b-pt \
+    --mcore-path /path/to/gemma-3-4b-pt-mcore
 ```
-
-## 3. Preprocess: Prepare Training Data
-Convert raw text to binary for CPT, or validate JSONL for SFT.
-
-### For CPT (Raw Text to Binary)
-```bash
-bash examples/gemma3/preprocess.sh \
-    --mode cpt \
-    --input /path/to/my_data.txt \
-    --output-prefix /path/to/my_data_bin \
-    --hf-tokenizer /path/to/gemma-3-pt
-```
-
-### For SFT (Validate Instruction Data)
-```bash
-bash examples/gemma3/preprocess.sh \
-    --mode sft \
-    --input /path/to/my_instructions.jsonl
-```
-
-## 4. Train: CPT or SFT
-Launch unified training with Precision-Aware Adam and dynamic model detection.
-
-### Weights & Biases (WandB) Integration
-WandB is pre-installed via `setup.sh` and is enabled by default in the training scripts. Megatron-LM logs key metrics (training loss, learning rate, GPU memory allocation, validation loss, throughput) automatically.
-
-> [!NOTE]
-> WandB logs are initialized only on the last rank (master process) to prevent duplicate runs and log clutter in multi-GPU distributed environments.
-
-#### A. Authentication
-Before launching training, you must authenticate your node with WandB. You can do this in two ways:
-1. **Interactive Login**:
-   ```bash
-   wandb login
-   ```
-2. **Environment Variable** (recommended for automated scripts or background `nohup` jobs):
-   ```bash
-   export WANDB_API_KEY="your_wandb_api_key_here"
-   ```
-
-#### B. Script Parameters & Default Projects
-The training script `train.sh` supports the following custom WandB flags:
-* `--wandb-project`: Set the WandB project name.
-  * **SFT Default**: `gemma3-medical-sft-reasoning`
-  * **CPT Default**: `gemma3-medical-cpt-prod`
-  * **Disable logging**: Pass `--wandb-project NONE` or `--wandb-project ""` to completely turn off WandB.
-* `--wandb-exp-name`: Set a custom experiment run name. Defaults to `gemma3-${MODEL_SIZE}-${MODE}`.
-
-#### C. Running Offline (No Internet Access)
-If your training cluster does not have direct internet access:
-1. Set the environment variables to force offline mode:
-   ```bash
-   export WANDB_MODE=offline
-   export TRANSFORMERS_OFFLINE=1
-   export HF_DATASETS_OFFLINE=1
-   ```
-2. Launch training as usual. Logs will be saved locally inside the training checkpoint directory: `/path/to/checkpoints/wandb/`.
-3. After training finishes, synchronize the offline logs to the cloud from a machine with internet access:
-   ```bash
-   wandb sync /path/to/checkpoints/wandb/offline-run-*
-   ```
-
-#### D. Controlling the Loaded Checkpoint Iteration
-When initializing training (e.g., starting SFT from a CPT checkpoint, or resuming a paused run), Megatron-LM reads the `latest_checkpointed_iteration.txt` pointer file located in the root of the checkpoint load directory (the path specified by `--mcore-path`).
-
-To target a specific iteration checkpoint (such as loading iteration `1000` of CPT instead of a newer short debug run):
-1. Navigate to the checkpoint parent directory (e.g., `/home/jovyan/data/checkpoints/gemma3-4b-cpt`).
-2. Overwrite the `latest_checkpointed_iteration.txt` file with your desired iteration number:
-   ```bash
-   echo 1000 > /home/jovyan/data/checkpoints/gemma3-4b-cpt/latest_checkpointed_iteration.txt
-   ```
-3. Launch training. Megatron-LM will read this file and load the corresponding subdirectory (e.g., `iter_0001000`).
 
 ---
 
-### Continual Pre-training (CPT)
+## 3. Preprocess: Prepare Training Data
+
+### CPT — Raw Text to Megatron Binary
+```bash
+bash examples/gemma3/preprocess.sh \
+    --mode cpt \
+    --input /path/to/corpus.txt \
+    --output-prefix /path/to/corpus_bin \
+    --hf-tokenizer /path/to/gemma-3-4b-pt
+```
+> **Note:** Pass `--data-path` to `train.sh` **without** the `.bin`/`.idx` extension.  
+> Correct: `--data-path /path/to/corpus_bin_text_document`
+
+### SFT / SimPO — Validate JSONL
+```bash
+bash examples/gemma3/preprocess.sh \
+    --mode sft \
+    --input /path/to/instructions.jsonl
+```
+
+**SFT JSONL format** — each line must have a `messages` key:
+```json
+{"messages": [
+  {"role": "system",    "content": "You are a medical assistant."},
+  {"role": "user",      "content": "What is hypertension?"},
+  {"role": "assistant", "content": "Hypertension is..."}
+]}
+```
+
+**SimPO JSONL format** — each line must have a `conversations` key with exactly 2 conversations (chosen + rejected):
+```json
+{"conversations": [
+  [{"role": "system", "content": "..."}, {"role": "user", "content": "..."}, {"role": "assistant", "content": "chosen response"}],
+  [{"role": "system", "content": "..."}, {"role": "user", "content": "..."}, {"role": "assistant", "content": "rejected response"}]
+]}
+```
+
+---
+
+## 4. Train
+
+`train.sh` uses a **tiered argument system** — most things are automatic. You only need to supply what's in Tier 1.
+
+```
+TIER 1 — IDENTITY        Must pass. Controls everything.
+TIER 2 — BUDGET          One arg per mode (token-budget / epochs / iters).
+TIER 3 — LEARNING RATE   Auto-set per mode. Override with --lr.
+TIER 4 — BATCH & SEQ     Auto per mode. Override with --global-batch-size / --seq-len.
+TIER 5 — ALGO PARAMS     SimPO-specific knobs (beta, gamma, etc.).
+TIER 6 — INFRA           Expert overrides (save paths, WandB, parallelism, etc.).
+```
+
+### Minimal Commands (copy-paste ready)
+
+#### Continual Pre-Training (CPT)
+Trains on 500M tokens by default. Adjust with `--token-budget`.
 ```bash
 bash examples/gemma3/train.sh \
     --mode cpt \
-    --model-size 12b \
-    --hf-model /path/to/gemma-3-12b-pt \
-    --mcore-path /path/to/gemma-3-12b-pt-mcore \
-    --data-path /path/to/my_data_bin_text_document \
-    --save-path /path/to/checkpoints \
-    --wandb-project my-custom-cpt-project \
-    --wandb-exp-name gemma3-12b-cpt-run1
+    --model-size 4b \
+    --mcore-path /home/jovyan/models/gemma-3-4b-pt-mcore \
+    --data-path /home/jovyan/data/pubmed_train_text_document
 ```
 
-### Instruction Tuning (SFT)
+#### Supervised Fine-Tuning (SFT)
+Trains for 1 epoch by default. Adjust with `--epochs`. Packing is always on.
 ```bash
 bash examples/gemma3/train.sh \
     --mode sft \
     --model-size 4b \
-    --hf-model /path/to/gemma-3-4b-pt \
-    --mcore-path /path/to/gemma-3-4b-pt-mcore \
-    --data-path /path/to/my_instructions.jsonl \
-    --save-path /path/to/checkpoints \
-    --wandb-project my-custom-sft-project \
-    --wandb-exp-name gemma3-4b-sft-run1
+    --mcore-path /home/jovyan/data/checkpoints/gemma3-4b-cpt \
+    --data-path /home/jovyan/data/sft_train.jsonl
 ```
 
-## 5. Export: Megatron -> HF
-Convert the trained weights back to the HuggingFace format.
-### Standalone Text Model
+#### Preference Optimization (SimPO)
+Trains for 1 epoch by default. Adjust with `--epochs`. Packing is always on.
 ```bash
-bash examples/gemma3/export.sh \
-    --target text \
-    --mcore-path /path/to/trained_mcore \
-    --hf-reference /path/to/gemma-3-pt \
-    --save-path /path/to/exported_hf
+bash examples/gemma3/train.sh \
+    --mode simpo \
+    --model-size 4b \
+    --mcore-path /home/jovyan/data/checkpoints/gemma3-4b-sft \
+    --data-path /home/jovyan/data/dpo_mix.jsonl
 ```
 
-### Stitched Multimodal VLM
+### Adding Validation
+
+Pass `--valid-data-path` to any mode. If omitted, validation is completely disabled.
 ```bash
-bash examples/gemma3/export.sh \
-    --target vlm \
-    --mcore-path /path/to/trained_mcore \
-    --hf-reference /path/to/gemma-3-pt \
-    --save-path /path/to/stitched_vlm
+# CPT with validation
+bash examples/gemma3/train.sh \
+    --mode cpt --model-size 4b \
+    --mcore-path /home/jovyan/models/gemma-3-4b-pt-mcore \
+    --data-path /home/jovyan/data/pubmed_train_text_document \
+    --valid-data-path /home/jovyan/data/pubmed_val_text_document
+
+# SFT with validation
+bash examples/gemma3/train.sh \
+    --mode sft --model-size 4b \
+    --mcore-path /home/jovyan/data/checkpoints/gemma3-4b-cpt \
+    --data-path /home/jovyan/data/sft_train.jsonl \
+    --valid-data-path /home/jovyan/data/sft_val.jsonl
+```
+
+### Per-Mode Automatic Defaults
+
+| Setting | CPT | SFT | SimPO |
+|---|---|---|---|
+| **Budget control** | `--token-budget 500M` | `--epochs 1.0` | `--epochs 1.0` |
+| **GBS** | 64 | 32 | 32 |
+| **LR** | 1e-5 | 5e-6 | 1e-6 |
+| **Min LR** | 1e-6 | 5e-7 | 1e-7 |
+| **LR warmup** | 2% of iters | 5% of iters | 5% of iters |
+| **LR decay** | 90% of iters | 90% of iters | 90% of iters |
+| **Sequence packing** | N/A (GPT native) | Always on | Always on |
+| **No-validation split** | `100,0,0` | eval disabled | eval disabled |
+| **Fused CCE loss** | ✅ | ✅ | ❌ (needs full logits) |
+
+### Common Overrides (Tier 2–4)
+
+```bash
+# Train for a specific number of steps (hard override, skips budget calc)
+--iters 2000
+
+# Train for 3 epochs instead of 1 (SFT/SimPO)
+--epochs 3.0
+
+# Use a 500M token budget (CPT only, this is already the default)
+--token-budget 500000000
+
+# Change batch size and context length
+--global-batch-size 16 --seq-len 4096
+
+# Override learning rate
+--lr 2e-6 --min-lr 2e-7
+```
+
+### SimPO Algorithm Knobs (Tier 5)
+
+```bash
+--simpo-beta 2.0        # reward scaling (default: 2.0)
+--simpo-gamma 0.5       # target margin (default: 0.5)
+--simpo-loss-type sigmoid  # loss function (default: sigmoid)
+--simpo-sft-weight 0.1  # add SFT regularization (default: 0.0)
 ```
 
 ---
-**Note for 12B:** 12B requires TP=2 or PP=2 for production runs to avoid OOM on single-GPU (even H200). Update `train.sh` distributed flags accordingly for multi-GPU nodes.
+
+## 5. WandB Integration
+
+WandB is enabled by default with a per-mode project name.
+
+| Mode | Default Project |
+|---|---|
+| CPT | `gemma3-medical-cpt` |
+| SFT | `gemma3-medical-sft` |
+| SimPO | `gemma3-medical-simpo` |
+
+```bash
+# Authenticate once
+export WANDB_API_KEY="your_key_here"
+
+# Override project and run name
+--wandb-project my-project --wandb-exp-name my-run-name
+
+# Disable WandB entirely
+--wandb-project NONE
+```
+
+**Offline mode** (no internet):
+```bash
+export WANDB_MODE=offline
+# After training, sync from a machine with internet:
+wandb sync /path/to/checkpoints/wandb/offline-run-*
+```
+
+---
+
+## 6. Loading a Specific Checkpoint Iteration
+
+Megatron reads `latest_checkpointed_iteration.txt` from the `--mcore-path` directory to decide which checkpoint to load. To target a specific iteration:
+
+```bash
+echo 1000 > /home/jovyan/data/checkpoints/gemma3-4b-cpt/latest_checkpointed_iteration.txt
+```
+
+Then launch training normally. Megatron will load `iter_0001000/`.
+
+---
+
+## 7. Export: Megatron → HuggingFace
+
+Convert trained weights back to HF format for inference or deployment.
+
+### Text Model
+```bash
+bash examples/gemma3/export.sh \
+    --target text \
+    --mcore-path /home/jovyan/data/checkpoints/gemma3-4b-sft \
+    --hf-reference /home/jovyan/models/gemma-3-4b-pt \
+    --save-path /home/jovyan/models/gemma3-4b-sft-hf
+```
+
+### Stitched VLM (Multimodal)
+```bash
+bash examples/gemma3/export.sh \
+    --target vlm \
+    --mcore-path /home/jovyan/data/checkpoints/gemma3-4b-cpt \
+    --hf-reference /home/jovyan/models/gemma-3-4b-pt \
+    --save-path /home/jovyan/models/gemma3-4b-cpt-vlm
+```
+
+---
+
+## 8. Full Pipeline (CPT → SFT → SimPO)
+
+```bash
+# Step 1: CPT on domain corpus
+bash examples/gemma3/train.sh --mode cpt --model-size 4b \
+    --mcore-path /home/jovyan/models/gemma-3-4b-pt-mcore \
+    --data-path /home/jovyan/data/pubmed_train_text_document
+
+# Step 2: SFT on instruction data
+bash examples/gemma3/train.sh --mode sft --model-size 4b \
+    --mcore-path /home/jovyan/data/checkpoints/gemma3-4b-cpt \
+    --data-path /home/jovyan/data/sft_train.jsonl
+
+# Step 3: SimPO on preference pairs
+bash examples/gemma3/train.sh --mode simpo --model-size 4b \
+    --mcore-path /home/jovyan/data/checkpoints/gemma3-4b-sft \
+    --data-path /home/jovyan/data/dpo_mix.jsonl
+
+# Step 4: Export final model
+bash examples/gemma3/export.sh --target text \
+    --mcore-path /home/jovyan/data/checkpoints/gemma3-4b-simpo \
+    --hf-reference /home/jovyan/models/gemma-3-4b-pt \
+    --save-path /home/jovyan/models/gemma3-4b-final-hf
+```
+
+---
+
+> **12B note:** 12B requires TP=2 by default (set automatically). On shared nodes, restrict GPU visibility first: `export CUDA_VISIBLE_DEVICES=0,1,2,3`

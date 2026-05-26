@@ -62,14 +62,27 @@ ls -lh /home/jovyan/data/pubmed_val_text_document.bin
 ---
 
 ## 5. Launch Training
-With the binary data ready, you can launch the production CPT run using `train.sh`.
 
+With the binary data ready, launch CPT. Pass `--valid-data-path` to enable validation; omit it to train without validation.
+
+**With validation (recommended for long runs):**
 ```bash
 bash examples/gemma3/train.sh \
     --mode cpt \
     --model-size 4b \
     --mcore-path /home/jovyan/models/gemma-3-4b-pt-mcore \
     --data-path /home/jovyan/data/pubmed_train_text_document \
-    --valid-data-path /home/jovyan/data/pubmed_val_text_document \
-    --wandb-project gemma3-medical-cpt
+    --valid-data-path /home/jovyan/data/pubmed_val_text_document
 ```
+
+**Without validation (fastest, no split needed):**
+```bash
+bash examples/gemma3/train.sh \
+    --mode cpt \
+    --model-size 4b \
+    --mcore-path /home/jovyan/models/gemma-3-4b-pt-mcore \
+    --data-path /home/jovyan/data/pubmed_train_text_document
+```
+
+> **Token budget:** Default is 500M tokens. Override with `--token-budget 2000000000` (2B tokens).
+> **LR:** Default is `1e-5` for CPT. Override with `--lr`.

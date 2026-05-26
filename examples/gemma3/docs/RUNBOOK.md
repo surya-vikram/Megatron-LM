@@ -172,7 +172,86 @@ bash examples/gemma3/train.sh \
 
 ---
 
-## 5. WandB Integration
+## 5. Parallelism
+
+The script automatically configures parallelism based on model size and available GPUs. You rarely need to change anything here.
+
+### Automatic Defaults
+
+| Model | TP | PP | DP (example, 4 GPUs) |
+|---|---|---|---|
+| 1b | 1 | 1 | 4 |
+| 4b | 1 | 1 | 4 |
+| 12b | 2 | 1 | 2 |
+
+- **TP (Tensor Parallel):** splits model weight matrices across GPUs within a node. Higher TP = less memory per GPU, but more inter-GPU communication.
+- **PP (Pipeline Parallel):** splits layers across GPUs. Always `PP=1` by default (not recommended to change for single-node fine-tuning).
+- **DP (Data Parallel):** computed automatically as `NUM_GPUS / (TP × PP)`. Each DP replica processes a different micro-batch.
+- **SP (Sequence Parallel):** automatically enabled when `TP > 1`. Distributes layer-norm and dropout activations across the TP group to save memory.
+
+> `NUM_GPUS` is auto-detected via `nvidia-smi`. The script will error out if `TP × PP > NUM_GPUS`.
+
+### Limiting GPU Visibility
+
+If you're on a shared node and want to use only some GPUs, restrict visibility **before** launching:
+```bash
+export CUDA_VISIBLE_DEVICES=0,1,2,3   # use 4 of 8 GPUs
+bash examples/gemma3/train.sh --mode sft ...
+```
+The script reads `NUM_GPUS` from `nvidia-smi`, so it will see exactly the GPUs you expose.
+
+### Manual TP Override
+
+```bash
+# Force TP=4 on a 4-GPU node for a 12b model to maximize memory savings
+bash examples/gemma3/train.sh --mode cpt --model-size 12b \
+    --tp-size 4 \
+    --mcore-path ... --data-path ...
+```
+
+### Multi-Node Training
+
+All nodes must share the same model/data via NFS or equivalent. Launch on each node simultaneously:
+
+**Node 0 (master):**
+```bash
+bash examples/gemma3/train.sh \
+    --mode cpt --model-size 4b \
+    --mcore-path /path/mcore \
+    --data-path /path/data \
+    --nnodes 2 \
+    --node-rank 0 \
+    --master-addr 10.0.0.1 \
+    --master-port 6789
+```
+
+**Node 1 (worker):**
+```bash
+bash examples/gemma3/train.sh \
+    --mode cpt --model-size 4b \
+    --mcore-path /path/mcore \
+    --data-path /path/data \
+    --nnodes 2 \
+    --node-rank 1 \
+    --master-addr 10.0.0.1 \
+    --master-port 6789
+```
+
+> Global batch size remains constant across nodes — Megatron distributes the work automatically across `NNODES × NUM_GPUS` total GPUs. Effective DP = `(NNODES × NUM_GPUS) / (TP × PP)`.
+
+### Parallelism Quick Reference
+
+| Flag | Default | What it does |
+|---|---|---|
+| `--tp-size` | auto (1 or 2) | Tensor parallel degree |
+| `--nnodes` | 1 | Number of nodes in cluster |
+| `--node-rank` | 0 | Rank of this node (0 = master) |
+| `--master-addr` | `localhost` | IP of the master node |
+| `--master-port` | 6789 | Port for distributed rendezvous |
+
+---
+
+## 6. WandB Integration
 
 WandB is enabled by default with a per-mode project name.
 
@@ -202,7 +281,7 @@ wandb sync /path/to/checkpoints/wandb/offline-run-*
 
 ---
 
-## 6. Loading a Specific Checkpoint Iteration
+## 7. Loading a Specific Checkpoint Iteration
 
 Megatron reads `latest_checkpointed_iteration.txt` from the `--mcore-path` directory to decide which checkpoint to load. To target a specific iteration:
 
@@ -214,7 +293,7 @@ Then launch training normally. Megatron will load `iter_0001000/`.
 
 ---
 
-## 7. Export: Megatron → HuggingFace
+## 8. Export: Megatron → HuggingFace
 
 Convert trained weights back to HF format for inference or deployment.
 
@@ -238,7 +317,7 @@ bash examples/gemma3/export.sh \
 
 ---
 
-## 8. Full Pipeline (CPT → SFT → SimPO)
+## 9. Full Pipeline (CPT → SFT → SimPO)
 
 ```bash
 # Step 1: CPT on domain corpus

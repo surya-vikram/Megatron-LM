@@ -65,7 +65,7 @@ def simpo_forward_step(data_iterator, model: torch.nn.Module, return_schedule_pl
         for k, v in metrics.items():
             report[k] = torch.cat([(v * num_tokens).view(1), num_tokens.view(1)])
             
-        return loss, num_tokens, report
+        return loss * num_tokens, num_tokens, report
 
     cu_seqlens = packed_seq_params.cu_seqlens_q if packed_seq_params else None
     return output_tensor, partial(simpo_loss_func, loss_mask, labels, cu_seqlens)
@@ -220,6 +220,7 @@ if __name__ == "__main__":
     full_config = pretrain_cfg_container_from_args(args)
     
     if getattr(args, 'simpo', False):
+        assert args.context_parallel_size == 1, "SimPO training does not support Context Parallelism (CP > 1) because sequence-level length-normalization requires sequence boundaries to be local to the rank."
         active_dataset_provider = simpo_train_valid_test_datasets_provider
         active_forward_step = simpo_forward_step
     else:

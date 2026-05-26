@@ -103,7 +103,7 @@ SIMPO_BETA="2.0"        # reward scaling factor
 SIMPO_GAMMA="0.5"       # target margin between chosen and rejected
 SIMPO_LOSS_TYPE="sigmoid"  # loss function: sigmoid | hinge
 SIMPO_SFT_WEIGHT="0.0"  # SFT regularization weight (0 = disabled)
-USE_CCE_SIMPO=false     # use Apple's memory-efficient Cut Cross-Entropy (CCE) for SimPO (reduces VRAM)
+USE_CCE_SIMPO=true      # use Apple's memory-efficient Cut Cross-Entropy (CCE) for SimPO (reduces VRAM)
 
 # ── Compute, Parallelism & Performance ──────────────────────────────────────
 #    Auto defaults: 1b/4b → TP=1 PP=1 | 12b → TP=2 PP=1

@@ -100,5 +100,21 @@ The following flags are **pre-baked** into the image but should be verified if y
 *   `export TRANSFORMERS_OFFLINE=1`
 *   `export HF_DATASETS_OFFLINE=1`
 
+## 9. Environment Setup & PYTHONPATH (Manual Host Configuration)
+If you are running outside the pre-baked Docker container (e.g., directly on a bare-metal server or VM environment), you must configure your shell environment manually. The container automatically has these environment values pre-set, but users running custom hostVMs must manually execute these configurations (which is what `source load_env.sh` typically performs):
+
+1. **Activate your Python Virtual Environment:** Activate the environment containing PyTorch, Megatron dependencies, and cut-cross-entropy:
+   ```bash
+   source /home/jovyan/venv/bin/activate
+   ```
+2. **Configure Python Path:** You must place `Megatron-LM` and `Megatron-Bridge` (if utilizing Megatron-Bridge to implement Gemma 3 models) in your `PYTHONPATH` so that Python can locate all core modules:
+   ```bash
+   export PYTHONPATH="/home/jovyan/repos/Megatron-LM:/home/jovyan/repos/Megatron-Bridge/src:$PYTHONPATH"
+   ```
+3. **Configure Hugging Face Cache:** Force the Hugging Face cache directory to point to your persistent mounted disk to prevent it from consuming root VRAM disk space or redownloading model files repeatedly:
+   ```bash
+   export HF_HOME=/home/jovyan/models/.cache
+   ```
+
 ---
-*Updated: CPT/SFT/SimPO pipeline — tiered train.sh with per-mode LR defaults and always-on packing.*
+*Updated: CPT/SFT/SimPO pipeline — tiered train.sh with CCE enabled by default, 100% accurate padding stats, and host environment guides.*

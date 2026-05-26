@@ -10,7 +10,8 @@ def calculate_simpo_loss(
     labels: torch.Tensor,
     loss_mask: torch.Tensor,
     cu_seqlens: torch.Tensor,
-    args
+    args,
+    output_layer_weight: torch.Tensor = None
 ):
     """
     Computes the SimPO (Simple Preference Optimization) loss.
@@ -19,8 +20,14 @@ def calculate_simpo_loss(
     and chosen/rejected conversations appear as consecutive pairs.
     """
     # 1. Compute per-token log probabilities
-    # We use vocab_parallel_cross_entropy to handle TP sharded logits correctly.
     
+    # When CCE is active, logits contains the transformer hidden states
+    if output_layer_weight is not None:
+        # Gather sequence-parallel hidden states across TP ranks if SP is enabled
+        if getattr(args, 'sequence_parallel', False):
+            from megatron.core.tensor_parallel import gather_from_sequence_parallel_region
+            logits = gather_from_sequence_parallel_region(logits, group=mpu.get_tensor_model_parallel_group())
+
     # Flatten everything to 1D/2D base formats for THD consistency
     if logits.dim() == 3:
         logits = logits.view(-1, logits.size(-1))
@@ -29,12 +36,38 @@ def calculate_simpo_loss(
     if loss_mask.dim() == 2:
         loss_mask = loss_mask.view(-1)
         
-    # Handle ignore_index (-100) for vocab_parallel_cross_entropy
-    labels_for_tp = labels.clone()
-    labels_for_tp[labels == -100] = 0
-    
-    # Calculate negative log-likelihood (NLL)
-    nll = vocab_parallel_cross_entropy(logits, labels_for_tp)
+    if output_layer_weight is not None:
+        # Use Apple Cut Cross-Entropy (CCE)
+        from cut_cross_entropy import linear_cross_entropy, VocabParallelOptions
+        
+        # Vocab Parallel Options for CCE sharding
+        tp_size = mpu.get_tensor_model_parallel_world_size()
+        tp_rank = mpu.get_tensor_model_parallel_rank()
+        sharded_vocab_size = output_layer_weight.size(0)
+        
+        vp_opts = VocabParallelOptions(
+            vp_start=tp_rank * sharded_vocab_size,
+            vp_stop=(tp_rank + 1) * sharded_vocab_size,
+            group=mpu.get_tensor_model_parallel_group()
+        )
+        
+        # Calculate NLL on-the-fly without materializing logits
+        assert logits.size(0) == labels.size(0), f"CCE hidden_states size {logits.size(0)} does not match labels size {labels.size(0)}"
+        cce_loss = linear_cross_entropy(
+            embeddings=logits,
+            weight=output_layer_weight,
+            targets=labels,
+            vocab_parallel_options=vp_opts,
+            reduction='none'
+        )
+        nll = cce_loss
+    else:
+        # Handle ignore_index (-100) for vocab_parallel_cross_entropy
+        labels_for_tp = labels.clone()
+        labels_for_tp[labels == -100] = 0
+        
+        # Calculate negative log-likelihood (NLL) using standard parallel logits
+        nll = vocab_parallel_cross_entropy(logits, labels_for_tp)
     
     # Strictly mask out NLL for padding/prompt tokens
     nll = nll * loss_mask

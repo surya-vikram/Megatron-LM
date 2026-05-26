@@ -103,6 +103,7 @@ SIMPO_BETA="2.0"        # reward scaling factor
 SIMPO_GAMMA="0.5"       # target margin between chosen and rejected
 SIMPO_LOSS_TYPE="sigmoid"  # loss function: sigmoid | hinge
 SIMPO_SFT_WEIGHT="0.0"  # SFT regularization weight (0 = disabled)
+USE_CCE_SIMPO=false     # use Apple's memory-efficient Cut Cross-Entropy (CCE) for SimPO (reduces VRAM)
 
 # ── Compute, Parallelism & Performance ──────────────────────────────────────
 #    Auto defaults: 1b/4b → TP=1 PP=1 | 12b → TP=2 PP=1
@@ -183,6 +184,8 @@ while [[ $# -gt 0 ]]; do
     --simpo-gamma)        SIMPO_GAMMA="$2";       shift 2 ;;
     --simpo-loss-type)    SIMPO_LOSS_TYPE="$2";   shift 2 ;;
     --simpo-sft-weight)   SIMPO_SFT_WEIGHT="$2";  shift 2 ;;
+    --use-cce-simpo)      USE_CCE_SIMPO=true;     shift 1 ;;
+    --no-use-cce-simpo)   USE_CCE_SIMPO=false;    shift 1 ;;
     # TIER 6
     --valid-data-path)    VALID_DATA_PATH="$2";       shift 2 ;;
     --wandb-project)      WANDB_PROJECT="$2";         shift 2 ;;
@@ -568,10 +571,9 @@ fi
 [ "$LOG_THROUGHPUT" = true ] && EXTRA_ARGS="$EXTRA_ARGS --log-throughput"
 
 # SFT and SimPO always use sequence packing
-if [[ "$MODE" == "sft" || "$MODE" == "simpo" ]]; then
-    EXTRA_ARGS="$EXTRA_ARGS --pack-samples"
-    [[ -n "$PACK_FACTOR" ]] && EXTRA_ARGS="$EXTRA_ARGS --pack-factor $PACK_FACTOR"
-fi
+EXTRA_ARGS="$EXTRA_ARGS --pack-samples"
+[[ -n "$PACK_FACTOR" ]] && EXTRA_ARGS="$EXTRA_ARGS --pack-factor $PACK_FACTOR"
+[ "$USE_CCE_SIMPO" = true ] && EXTRA_ARGS="$EXTRA_ARGS --use-cce-simpo"
 
 # Dataset visibility flags (passed through to dataset classes via args namespace)
 [ "$DEBUG_DATASET"    = true ] && EXTRA_ARGS="$EXTRA_ARGS --debug-dataset"

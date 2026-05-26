@@ -42,19 +42,44 @@ def simpo_forward_step(data_iterator, model: torch.nn.Module, return_schedule_pl
         tokens, labels, loss_mask, attention_mask, position_ids, packed_seq_params = get_batch(data_iterator, vp_stage)
     timers('batch-generator').stop()
 
-    with stimer:
-        output_tensor = model(
-            tokens, position_ids, attention_mask, labels=None, loss_mask=loss_mask, packed_seq_params=packed_seq_params
-        )
+    use_cce = getattr(args, 'use_cce_simpo', False)
 
-    def simpo_loss_func(loss_mask_tensor, labels_tensor, cu_seqlens_tensor, output_tensor_logits):
-        loss, metrics = calculate_simpo_loss(
-            logits=output_tensor_logits,
-            labels=labels_tensor,
-            loss_mask=loss_mask_tensor,
-            cu_seqlens=cu_seqlens_tensor,
-            args=args
-        )
+    if use_cce:
+        # Avoid materializing the logits: return the transformer hidden states instead
+        def simpo_output_processor(hidden_states, **kwargs):
+            return hidden_states
+
+        with stimer:
+            output_tensor = model(
+                tokens, position_ids, attention_mask, labels=None, loss_mask=loss_mask, 
+                packed_seq_params=packed_seq_params, output_processor=simpo_output_processor
+            )
+    else:
+        with stimer:
+            output_tensor = model(
+                tokens, position_ids, attention_mask, labels=None, loss_mask=loss_mask, packed_seq_params=packed_seq_params
+            )
+
+    def simpo_loss_func(loss_mask_tensor, labels_tensor, cu_seqlens_tensor, output_tensor_or_logits):
+        if use_cce:
+            # output_tensor_or_logits is the hidden states! Fetch output layer weights for CCE.
+            output_layer_weight = get_attr_wrapped_model(model, "output_layer").weight
+            loss, metrics = calculate_simpo_loss(
+                logits=output_tensor_or_logits,
+                labels=labels_tensor,
+                loss_mask=loss_mask_tensor,
+                cu_seqlens=cu_seqlens_tensor,
+                args=args,
+                output_layer_weight=output_layer_weight
+            )
+        else:
+            loss, metrics = calculate_simpo_loss(
+                logits=output_tensor_or_logits,
+                labels=labels_tensor,
+                loss_mask=loss_mask_tensor,
+                cu_seqlens=cu_seqlens_tensor,
+                args=args
+            )
         
         num_tokens = loss_mask_tensor.sum().clone().detach().to(torch.int)
         
@@ -154,6 +179,13 @@ try:
 except ImportError:
     has_nvidia_modelopt = False
 
+def add_cce_simpo_args(parser):
+    group = parser.add_argument_group(title='SimPO CCE Options')
+    group.add_argument('--use-cce-simpo', action='store_true', help='Use Apple Cut Cross-Entropy for memory-efficient SimPO.')
+    if has_nvidia_modelopt:
+        parser = add_modelopt_args(parser)
+    return parser
+
 def gemma3_model_builder(args, pre_process, post_process, vp_stage=None, config=None, pg_collection=None):
     """Gemma3 model builder that relies on Megatron-Bridge for the model implementation."""
     print_rank_0('building Gemma3 model via Megatron-Bridge ...')
@@ -213,7 +245,7 @@ if __name__ == "__main__":
     set_startup_timestamps(program_start=_PROGRAM_START_TIME, main_entry=_MAIN_ENTRY_TIME)
     
     args = parse_and_validate_args(
-        extra_args_provider=add_modelopt_args if has_nvidia_modelopt else None,
+        extra_args_provider=add_cce_simpo_args,
         args_defaults={'tokenizer_type': 'GPT2BPETokenizer'},
     )
     

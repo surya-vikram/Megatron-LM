@@ -368,6 +368,7 @@ if [[ $EVAL_INTERVAL -eq 0 && -n "$VALID_DATA_PATH" ]]; then
     EVAL_INTERVAL=$(( SAVE_INTERVAL / 2 ))
     [[ $EVAL_INTERVAL -eq 0 ]] && EVAL_INTERVAL=5
 fi
+[[ $EVAL_INTERVAL -eq 0 ]] && EVAL_INTERVAL=999999
 
 # ============================================================================
 # TIER 6: WandB cleanup

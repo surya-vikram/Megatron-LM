@@ -477,7 +477,7 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 EXTRA_LAUNCH_ARGS=()
-if [[ "$MODE" == "sft" ]]; then
+if [[ "$MODE" == "sft" || "$MODE" == "simpo" ]]; then
     TEMPLATE_PATH="$SCRIPT_DIR/utils/gemma3_chat_template.jinja"
     if [[ -f "$TEMPLATE_PATH" ]]; then
         # Read template and strip newlines to safely pass as single string argument

@@ -182,6 +182,9 @@ except ImportError:
 def add_cce_simpo_args(parser):
     group = parser.add_argument_group(title='SimPO CCE Options')
     group.add_argument('--use-cce-simpo', action='store_true', help='Use Apple Cut Cross-Entropy for memory-efficient SimPO.')
+    group.add_argument('--debug-dataset', action='store_true', help='Print step-by-step token packing trace.')
+    group.add_argument('--log-dataset-stats', action='store_true', help='Dumps aggregate packing density every 100 steps.')
+    group.add_argument('--warn-oversized-samples', action='store_true', help='Flags any samples that exceed sequence length.')
     if has_nvidia_modelopt:
         parser = add_modelopt_args(parser)
     return parser

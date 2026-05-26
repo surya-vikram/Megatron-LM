@@ -148,6 +148,8 @@ class SimPODataset(MegatronDataset):
         loss_mask[shifted_targets == IGNORE_INDEX] = 0.0
         
         if pack_samples:
+            if cu_seqlens:
+                cu_seqlens[-1] = min(cu_seqlens[-1], pack_length)
             cu_seqlens = torch.tensor(cu_seqlens, dtype=torch.int32)
             max_seqlen = (cu_seqlens[1:] - cu_seqlens[:-1]).max().item()
         else:

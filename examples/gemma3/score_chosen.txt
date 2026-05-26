@@ -1,0 +1,4 @@
+<bos><start_of_turn>user
+What is the primary function of the heart?<end_of_turn>
+<start_of_turn>model
+The primary function of the heart is to pump blood throughout the body's circulatory system, delivering oxygen and vital nutrients to tissues and carrying metabolic waste products away.<end_of_turn>

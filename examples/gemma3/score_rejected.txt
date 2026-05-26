@@ -1,0 +1,4 @@
+<bos><start_of_turn>user
+What is the primary function of the heart?<end_of_turn>
+<start_of_turn>model
+The heart is just an organ that sits in your chest and does not do much besides making noise.<end_of_turn>

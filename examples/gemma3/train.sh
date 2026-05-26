@@ -6,22 +6,29 @@ set -o pipefail
 # Optimized for single-node training on NVIDIA H200/H100/A100 GPUs.
 #
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# TIER 1 — IDENTITY        (must pass for every run)
+# TIER 1 — IDENTITY & CHECKPOINTING (must pass/configure for every run)
 #   --mode          cpt | sft | simpo
 #   --model-size    1b  | 4b  | 12b
 #   --mcore-path    checkpoint to load from
 #   --data-path     training data (Megatron binary prefix for CPT, JSONL for SFT/SimPO)
+#   --save-path     directory to save checkpoint outputs
+#   --resume-from-checkpoint      flag to resume a crashed/preempted run
 #
-# TIER 2 — TRAINING BUDGET (one arg per mode; --iters overrides everything)
+# TIER 2 — TRAINING BUDGET & EVAL (one arg per mode; --iters overrides everything)
 #   CPT:       --token-budget   tokens to train on  (default: 500M)
 #   SFT/SimPO: --epochs         epochs to train for (default: 1.0)
 #   All:       --iters          hard step count override (skips auto-calculation)
+#   All:       --save-interval, --eval-interval, --eval-iters
 #
-# TIER 3 — LEARNING RATE   (auto-set per mode, overridable)
+# TIER 3 — LR & OPTIMIZER    (auto-set per mode, overridable)
 #   --lr            CPT: 1e-5 | SFT: 5e-6 | SimPO: 1e-6
 #   --min-lr        default: lr × 0.1
 #   --warmup-prct   CPT: 2% | SFT/SimPO: 5%
 #   --decay-prct    all: 90%
+#   --lr-decay-style default: cosine
+#   --weight-decay  default: 0.1
+#   --clip-grad     gradient clipping limit (default: 1.0)
+#   --adam-beta1, --adam-beta2
 #
 # TIER 4 — BATCH & SEQUENCE (auto per mode, overridable)
 #   --global-batch-size   CPT: 64 | SFT/SimPO: 32
@@ -31,16 +38,15 @@ set -o pipefail
 # TIER 5 — ALGORITHM PARAMS (SimPO only)
 #   --simpo-beta, --simpo-gamma, --simpo-loss-type, --simpo-sft-weight
 #
-# TIER 6 — INFRA            (expert overrides, all have sensible defaults)
+# TIER 6 — INFRA & CLUSTER   (expert overrides, all have sensible defaults)
 #   --valid-data-path     if not passed → no validation at all
-#   --save-path, --save-interval, --eval-interval, --log-interval
 #   --wandb-project, --wandb-exp-name, --tensorboard-dir
 #   --tp-size, --nnodes, --node-rank, --master-addr, --master-port
 #   --recompute-granularity, --recompute-method, --recompute-num-layers
+#   --num-workers         CPU dataloader workers count
 #   --pack-factor         expert cap on samples per packed step (default: unlimited)
 #   --split               CPT expert override (default: 100,0,0)
-#   --tokenizer-type, --tokenizer-model, --sft-prompt-format
-#   --weight-decay, --attention-backend
+#   --tokenizer-type, --tokenizer-model, --sft-prompt-format, --attention-backend
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 echo "--- Gemma 3 Production Training Engine ---"
@@ -57,24 +63,34 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 #    CLI flags always win over what's written below.
 # ════════════════════════════════════════════════════════════════════════════
 
-# ── Identity (REQUIRED) ─────────────────────────────────────────────────────
+# ── Identity & Checkpointing ────────────────────────────────────────────────
 MODE="cpt"              # cpt | sft | simpo
 MODEL_SIZE="4b"         # 1b  | 4b  | 12b
 MCORE_PATH=""           # checkpoint to load from (HF-converted MCore format)
 DATA_PATH=""            # training data: Megatron binary prefix (CPT), JSONL (SFT/SimPO)
 VALID_DATA_PATH=""      # validation data — leave empty to disable validation entirely
+SAVE_PATH=""            # output directory for checkpoints (leave empty for auto path)
+RESUME_FROM_CHECKPOINT=false  # set to true to resume crashed/preempted run with optim/rng state
 
-# ── Training Budget ──────────────────────────────────────────────────────────
+# ── Training Budget & Evaluation ─────────────────────────────────────────────
 TOKEN_BUDGET=500000000  # CPT:       tokens to train on        (default: 500M)
 EPOCHS=1.0              # SFT/SimPO: epochs to train for       (default: 1 epoch)
 ITERS=0                 # All modes: hard step override — set > 0 to skip auto-calc
+SAVE_INTERVAL=0         # checkpoint frequency (steps). 0 = auto-calculate (every 20%)
+EVAL_INTERVAL=0         # validation frequency (steps). 0 = auto-calculate (half of save interval)
+EVAL_ITERS=2            # number of validation steps/batches to run during evaluation
 
-# ── Learning Rate  (0 = auto-set per mode) ───────────────────────────────────
+# ── Learning Rate & Optimizer ────────────────────────────────────────────────
 #    Auto defaults: CPT → 1e-5 | SFT → 5e-6 | SimPO → 1e-6
 LR=0                    # peak learning rate
 MIN_LR=0                # decay floor  (0 = LR × 0.1)
 WARMUP_PRCT="auto"      # warmup % of total iters  (auto: CPT→2%, SFT/SimPO→5%)
 DECAY_PRCT=90           # cosine decay over this % of total iters
+LR_DECAY_STYLE="cosine" # cosine | linear | constant
+WEIGHT_DECAY=0.1        # optimizer weight decay coefficient
+CLIP_GRAD="1.0"         # gradient clipping limit
+ADAM_BETA1="0.9"        # Adam beta1 optimizer parameter
+ADAM_BETA2="0.95"       # Adam beta2 optimizer parameter
 
 # ── Batch & Sequence  (0 = auto-set per mode) ────────────────────────────────
 #    Auto defaults: CPT GBS→64 | SFT/SimPO GBS→32
@@ -88,7 +104,7 @@ SIMPO_GAMMA="0.5"       # target margin between chosen and rejected
 SIMPO_LOSS_TYPE="sigmoid"  # loss function: sigmoid | hinge
 SIMPO_SFT_WEIGHT="0.0"  # SFT regularization weight (0 = disabled)
 
-# ── Parallelism ──────────────────────────────────────────────────────────────
+# ── Compute, Parallelism & Performance ──────────────────────────────────────
 #    Auto defaults: 1b/4b → TP=1 PP=1 | 12b → TP=2 PP=1
 #    DP is always auto = NUM_GPUS / (TP × PP)
 TP_OVERRIDE=0           # Tensor Parallel degree  (0 = auto per model size)
@@ -96,6 +112,12 @@ NNODES=1                # number of nodes in cluster
 NODE_RANK=0             # rank of THIS node  (0 = master)
 MASTER_ADDR="localhost" # master node IP  (change for multi-node)
 MASTER_PORT=6789        # distributed rendezvous port
+RECOMPUTE_GRANULARITY="auto" # auto (none for <=8k, selective for >8k) | none | selective | full
+NUM_WORKERS=4           # number of dataloader CPU workers per GPU
+
+# ── Telemetry & Experiment Tracking (WandB) ──────────────────────────────────
+WANDB_PROJECT="AUTO"    # Weights & Biases project name ("AUTO" = automatic based on mode)
+WANDB_EXP_NAME=""       # Weights & Biases experiment run name (leave empty for auto)
 
 # ── Dataset Visibility / Debug ───────────────────────────────────────────────
 DEBUG_DATASET=false     # per-step packing trace → stdout rank-0 (very verbose)
@@ -105,19 +127,12 @@ WARN_OVERSIZED=false    # one-time warning when samples are skipped or malformed
 # ════════════════════════════════════════════════════════════════════════════
 # ✦  INTERNAL DEFAULTS  —  rarely need changing
 # ════════════════════════════════════════════════════════════════════════════
-SAVE_PATH=""
-SAVE_INTERVAL=0
-EVAL_INTERVAL=0
 LOG_INTERVAL=1
-EVAL_ITERS=2
-WANDB_PROJECT="AUTO"
-WANDB_EXP_NAME=""
 TENSORBOARD_DIR=""
 TOKENIZER_TYPE=""
-TOKENIZER_MODEL=""
+TOKENIZER_MODEL=""      # HF path for tokenizer fallback if needed (will default based on model size)
 SFT_PROMPT_FORMAT="gemma3"
 ATTENTION_BACKEND="flash"
-RECOMPUTE_GRANULARITY="auto"
 RECOMPUTE_METHOD="auto"
 RECOMPUTE_NUM_LAYERS="auto"
 FUSED_LINEAR_CROSS_ENTROPY=true
@@ -127,7 +142,6 @@ LINEAR_CE_FILTER_EPS="0.0"
 LOG_THROUGHPUT=true
 PACK_FACTOR=""          # expert: cap samples per packed step (default: unlimited)
 SPLIT="auto"            # CPT expert override (default: 100,0,0 when no valid-data-path)
-WEIGHT_DECAY=0.1
 
 
 # ============================================================================
@@ -140,15 +154,26 @@ while [[ $# -gt 0 ]]; do
     --model-size)         MODEL_SIZE="$2";   shift 2 ;;
     --mcore-path)         MCORE_PATH="$2";   shift 2 ;;
     --data-path)          DATA_PATH="$2";    shift 2 ;;
+    --save-path)          SAVE_PATH="$2";    shift 2 ;;
+    --resume-from-checkpoint) RESUME_FROM_CHECKPOINT=true; shift 1 ;;
+    --no-resume-from-checkpoint) RESUME_FROM_CHECKPOINT=false; shift 1 ;;
     # TIER 2
     --token-budget)       TOKEN_BUDGET="$2"; shift 2 ;;
     --epochs)             EPOCHS="$2";       shift 2 ;;
     --iters)              ITERS="$2";        shift 2 ;;
+    --save-interval)      SAVE_INTERVAL="$2";shift 2 ;;
+    --eval-interval)      EVAL_INTERVAL="$2";shift 2 ;;
+    --eval-iters)         EVAL_ITERS="$2";   shift 2 ;;
     # TIER 3
     --lr)                 LR="$2";           shift 2 ;;
     --min-lr)             MIN_LR="$2";       shift 2 ;;
     --warmup-prct)        WARMUP_PRCT="$2";  shift 2 ;;
     --decay-prct)         DECAY_PRCT="$2";   shift 2 ;;
+    --lr-decay-style)     LR_DECAY_STYLE="$2";shift 2 ;;
+    --weight-decay)       WEIGHT_DECAY="$2"; shift 2 ;;
+    --clip-grad)          CLIP_GRAD="$2";    shift 2 ;;
+    --adam-beta1)         ADAM_BETA1="$2";   shift 2 ;;
+    --adam-beta2)         ADAM_BETA2="$2";   shift 2 ;;
     # TIER 4
     --global-batch-size)  GBS="$2";          shift 2 ;;
     --micro-batch-size)   MBS="$2";          shift 2 ;;
@@ -160,11 +185,6 @@ while [[ $# -gt 0 ]]; do
     --simpo-sft-weight)   SIMPO_SFT_WEIGHT="$2";  shift 2 ;;
     # TIER 6
     --valid-data-path)    VALID_DATA_PATH="$2";       shift 2 ;;
-    --save-path)          SAVE_PATH="$2";             shift 2 ;;
-    --save-interval)      SAVE_INTERVAL="$2";         shift 2 ;;
-    --eval-interval)      EVAL_INTERVAL="$2";         shift 2 ;;
-    --log-interval)       LOG_INTERVAL="$2";          shift 2 ;;
-    --eval-iters)         EVAL_ITERS="$2";            shift 2 ;;
     --wandb-project)      WANDB_PROJECT="$2";         shift 2 ;;
     --wandb-exp-name)     WANDB_EXP_NAME="$2";        shift 2 ;;
     --tensorboard-dir)    TENSORBOARD_DIR="$2";       shift 2 ;;
@@ -177,12 +197,12 @@ while [[ $# -gt 0 ]]; do
     --recompute-num-layers)   RECOMPUTE_NUM_LAYERS="$2";  shift 2 ;;
     --pack-factor)        PACK_FACTOR="$2";           shift 2 ;;
     --split)              SPLIT="$2";                 shift 2 ;;
-    --weight-decay)       WEIGHT_DECAY="$2";          shift 2 ;;
     --tp-size)            TP_OVERRIDE="$2";           shift 2 ;;
     --nnodes)             NNODES="$2";                shift 2 ;;
     --node-rank)          NODE_RANK="$2";             shift 2 ;;
     --master-addr)        MASTER_ADDR="$2";           shift 2 ;;
     --master-port)        MASTER_PORT="$2";           shift 2 ;;
+    --num-workers)        NUM_WORKERS="$2";           shift 2 ;;
     --fused-linear-cross-entropy)    FUSED_LINEAR_CROSS_ENTROPY=true;  shift 1 ;;
     --no-fused-linear-cross-entropy) FUSED_LINEAR_CROSS_ENTROPY=false; shift 1 ;;
     --linear-ce-filter-e-grad)       LINEAR_CE_FILTER_E_GRAD=true;     shift 1 ;;
@@ -451,14 +471,14 @@ MODEL_ARGS="
 OPTIM_ARGS="
     --lr $LR
     --min-lr $MIN_LR
-    --lr-decay-style cosine
+    --lr-decay-style $LR_DECAY_STYLE
     --lr-decay-iters $DECAY_ITERS
     --lr-warmup-iters $WARMUP_ITERS
     --weight-decay $WEIGHT_DECAY
-    --clip-grad 1.0
+    --clip-grad $CLIP_GRAD
 
-    --adam-beta1 0.9 \
-    --adam-beta2 0.95 \
+    --adam-beta1 $ADAM_BETA1 \
+    --adam-beta2 $ADAM_BETA2 \
     --init-method-std 0.01 \
     --use-distributed-optimizer \
     --use-precision-aware-optimizer \
@@ -477,7 +497,7 @@ TRAIN_ARGS="
     --global-batch-size $GBS \
     --train-iters $ITERS \
     $RECOMPUTE_ARGS \
-    --num-workers 4 \
+    --num-workers $NUM_WORKERS \
     --manual-gc \
     --manual-gc-interval 5 \
     --overlap-grad-reduce \
@@ -485,7 +505,7 @@ TRAIN_ARGS="
 "
 
 # ============================================================================
-# Logging Args
+# Logging & Checkpointing Args (Dynamic Resume support)
 # ============================================================================
 LOG_ARGS="
     --load $MCORE_PATH \
@@ -494,11 +514,11 @@ LOG_ARGS="
     --save-interval $SAVE_INTERVAL \
     --eval-interval $EVAL_INTERVAL \
     --log-interval $LOG_INTERVAL \
-    --eval-iters $EVAL_ITERS \
-    --no-load-optim \
-    --no-load-rng \
-    --finetune
+    --eval-iters $EVAL_ITERS
 "
+if [ "$RESUME_FROM_CHECKPOINT" = false ]; then
+    LOG_ARGS="$LOG_ARGS --no-load-optim --no-load-rng --finetune"
+fi
 
 # ============================================================================
 # Data Args

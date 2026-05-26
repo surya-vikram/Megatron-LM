@@ -142,24 +142,36 @@ bash examples/gemma3/train.sh \
 | **No-validation split** | `100,0,0` | eval disabled | eval disabled |
 | **Fused CCE loss** | ✅ | ✅ | ❌ (needs full logits) |
 
-### Common Overrides (Tier 2–4)
+### Common Overrides & Expert Tuning (Tiers 2–4)
 
-```bash
-# Train for a specific number of steps (hard override, skips budget calc)
---iters 2000
+You can tune any aspect of your training run either by editing the `★ USER CONFIGURATION` block at the top of `train.sh` or by passing them as CLI overrides (CLI flags always win).
 
-# Train for 3 epochs instead of 1 (SFT/SimPO)
---epochs 3.0
+#### 1. Identity & Checkpoint Resumption
+* **`--save-path`** (or `SAVE_PATH`): Specifies the directory to save training checkpoint outputs.
+* **`--resume-from-checkpoint`** (or `RESUME_FROM_CHECKPOINT=true`): **Crucial for production.** When set to `true`, it tells Megatron-LM to load the full optimizer state and RNG seeds to seamlessly resume a crashed or preempted run from the exact iteration step it left off, rather than starting a clean fine-tune.
 
-# Use a 500M token budget (CPT only, this is already the default)
---token-budget 500000000
+#### 2. Durations, Budgets & Evaluation frequency
+* **`--iters`** (or `ITERS`): Hard step count override (skips token/epoch auto-calculations).
+* **`--epochs`** (or `EPOCHS`): Controls SFT/SimPO duration (default: `1.0`).
+* **`--token-budget`** (or `TOKEN_BUDGET`): Controls CPT duration (default: `500000000`).
+* **`--save-interval`** (or `SAVE_INTERVAL`): Checkpoint frequency in steps.
+* **`--eval-interval`** (or `EVAL_INTERVAL`): Validation frequency in steps.
+* **`--eval-iters`** (or `EVAL_ITERS`): Number of validation steps to run to compute validation loss (default: `2`).
 
-# Change batch size and context length
---global-batch-size 16 --seq-len 4096
+#### 3. Optimizer & Hyperparameter Tuning
+* **`--lr`** (or `LR`): Peak learning rate.
+* **`--min-lr`** (or `MIN_LR`): Floor to decay the learning rate to.
+* **`--lr-decay-style`** (or `LR_DECAY_STYLE`): Decay schedule shape (e.g. `cosine`, `linear`, `constant`).
+* **`--weight-decay`** (or `WEIGHT_DECAY`): Optimizer L2 regularization coefficient (default: `0.1`).
+* **`--clip-grad`** (or `CLIP_GRAD`): Gradient norm clipping limit to prevent exploding gradients (default: `1.0`).
+* **`--adam-beta1`** & **`--adam-beta2`**: Adam optimizer beta moments (default: `0.9` / `0.95`).
 
-# Override learning rate
---lr 2e-6 --min-lr 2e-7
-```
+#### 4. Hardware Scaling & VRAM footprint Optimization
+* **`--global-batch-size`** (or `GBS`): Global batch size.
+* **`--micro-batch-size`** (or `MBS`): Micro-batch size (shrink this to `1` if you hit OOMs).
+* **`--seq-len`** (or `SEQ_LEN`): Model sequence/context length (default: `8192`).
+* **`--recompute-granularity`** (or `RECOMPUTE_GRANULARITY`): Memory saving activation recomputation settings (`auto | none | selective | full`). Set to `full` to fit larger batches at long sequence lengths.
+* **`--num-workers`** (or `NUM_WORKERS`): Number of CPU dataloader threads per GPU (default: `4`). Adjust if dataloading is a bottleneck or memory is tight.
 
 ### SimPO Algorithm Knobs (Tier 5)
 

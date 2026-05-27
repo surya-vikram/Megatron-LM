@@ -12,7 +12,6 @@ FROM ${BASE_IMAGE}
 # Globally unsetting PIP_CONSTRAINT in the container allows custom package installation
 ENV PIP_CONSTRAINT=""
 ENV DEBIAN_FRONTEND=noninteractive
-ENV PATH="/root/.local/bin:/workspace/.local/bin:$PATH"
 
 # 3. System Packages Installation
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -30,8 +29,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 
 # 5. Establish the Standard "5-Pillar" Workspace Structure
-# Defines clean directory semantics for cloud and local execution
 ENV WORKSPACE=/workspace
+ENV VIRTUAL_ENV=${WORKSPACE}/venv
+ENV PATH="${VIRTUAL_ENV}/bin:/root/.local/bin:/workspace/.local/bin:$PATH"
+
 RUN mkdir -p ${WORKSPACE}/models \
              ${WORKSPACE}/data \
              ${WORKSPACE}/logs \
@@ -40,8 +41,6 @@ RUN mkdir -p ${WORKSPACE}/models \
 WORKDIR ${WORKSPACE}/repos
 
 # 6. Copy Source Codes into the Container for a Self-Contained Image
-# By baking in the exact Megatron-LM and Megatron-Bridge versions,
-# the image becomes perfectly reproducible and independent of external clones.
 COPY . ${WORKSPACE}/repos/Megatron-LM
 
 # Clone Megatron-Bridge directly during build or copy if present locally
@@ -52,20 +51,20 @@ RUN if [ -d "${WORKSPACE}/repos/Megatron-LM/Megatron-Bridge" ]; then \
     fi
 
 # 7. Install Megatron-Core, Megatron-Bridge, & Advanced Hopper Kernels
-# Running installation inside a virtual environment linked to the system python
+# Running installation inside the virtual environment activated globally via PATH
 RUN bash -c " \
     uv venv ${WORKSPACE}/venv --system-site-packages && \
     \
     echo '--- Installing Megatron Core Training/Dev Dependencies ---' && \
     cd ${WORKSPACE}/repos/Megatron-LM && \
-    uv pip install --venv ${WORKSPACE}/venv -e .[training,dev] && \
+    uv pip install -e .[training,dev] && \
     \
     echo '--- Installing Advanced Flash Attention & FlashInfer Kernels ---' && \
-    ${WORKSPACE}/venv/bin/pip install 'flashinfer-python==0.6.8.post1' 'flashinfer-cubin==0.6.8.post1' --no-deps && \
-    ${WORKSPACE}/venv/bin/pip install 'https://huggingface.co/datasets/surya-vikram/hopper-wheels/resolve/main/flash_attn_3-3.0.0-cp39-abi3-linux_x86_64.whl' --no-deps && \
+    pip install 'flashinfer-python==0.6.8.post1' 'flashinfer-cubin==0.6.8.post1' --no-deps && \
+    pip install 'https://huggingface.co/datasets/surya-vikram/hopper-wheels/resolve/main/flash_attn_3-3.0.0-cp39-abi3-linux_x86_64.whl' --no-deps && \
     \
     echo '--- Patching Transformer Engine dot product attention for FlashAttention-3 ---' && \
-    TE_PATH=\$(\${WORKSPACE}/venv/bin/python -c 'import transformer_engine; import os; print(os.path.dirname(transformer_engine.__file__))' 2>/dev/null || echo '') && \
+    TE_PATH=\$(python3 -c 'import transformer_engine; import os; print(os.path.dirname(transformer_engine.__file__))' 2>/dev/null || echo '') && \
     if [ -n '\$TE_PATH' ]; then \
         BACKEND_FILE='\$TE_PATH/pytorch/attention/dot_product_attention/backends.py'; \
         if [ -f '\$BACKEND_FILE' ]; then \
@@ -75,14 +74,14 @@ RUN bash -c " \
     fi && \
     \
     echo '--- Installing Megatron-Bridge ---' && \
-    \${WORKSPACE}/venv/bin/pip install 'nvidia-resiliency-ext==0.6.0' && \
+    pip install 'nvidia-resiliency-ext==0.6.0' && \
     cd \${WORKSPACE}/repos/Megatron-Bridge && \
     git checkout main && \
-    \${WORKSPACE}/venv/bin/pip install -e . --no-deps && \
+    pip install -e . --no-deps && \
     \
     echo '--- Installing Production Data Ingestion & CCE tools ---' && \
-    \${WORKSPACE}/venv/bin/pip install datasets tqdm wandb --quiet && \
-    \${WORKSPACE}/venv/bin/pip install 'cut-cross-entropy @ git+https://github.com/apple/ml-cross-entropy.git' --quiet \
+    pip install datasets tqdm wandb --quiet && \
+    pip install 'cut-cross-entropy @ git+https://github.com/apple/ml-cross-entropy.git' --quiet \
 "
 
 # 8. Configure Persistence Symlinks inside the image

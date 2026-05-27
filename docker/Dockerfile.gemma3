@@ -58,7 +58,7 @@ RUN bash -c " \
     \
     echo '--- Installing Megatron Core Training/Dev Dependencies ---' && \
     cd ${WORKSPACE}/repos/Megatron-LM && \
-    ${WORKSPACE}/venv/bin/uv pip install -e .[training,dev] && \
+    uv pip install --venv ${WORKSPACE}/venv -e .[training,dev] && \
     \
     echo '--- Installing Advanced Flash Attention & FlashInfer Kernels ---' && \
     ${WORKSPACE}/venv/bin/pip install 'flashinfer-python==0.6.8.post1' 'flashinfer-cubin==0.6.8.post1' --no-deps && \

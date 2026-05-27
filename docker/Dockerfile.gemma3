@@ -1,0 +1,101 @@
+# ==============================================================================
+# Gemma 3 Production-Ready Self-Contained Dockerfile
+# Based on NVIDIA NGC PyTorch Container & Megatron-LM Workflow
+# ==============================================================================
+
+# 1. Base Image - NVIDIA PyTorch NGC Container
+# Contains pre-configured PyTorch, CUDA, cuDNN, NCCL, and Transformer Engine
+ARG BASE_IMAGE=nvcr.io/nvidia/pytorch:26.01-py3
+FROM ${BASE_IMAGE}
+
+# 2. Environment Variables & Python Constraints Bypass
+# Globally unsetting PIP_CONSTRAINT in the container allows custom package installation
+ENV PIP_CONSTRAINT=""
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PATH="/root/.local/bin:/workspace/.local/bin:$PATH"
+
+# 3. System Packages Installation
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
+    wget \
+    curl \
+    psmisc \
+    uuid-runtime \
+    python3-venv \
+    gettext \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# 4. Install UV for ultra-fast, robust package management
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# 5. Establish the Standard "5-Pillar" Workspace Structure
+# Defines clean directory semantics for cloud and local execution
+ENV WORKSPACE=/workspace
+RUN mkdir -p ${WORKSPACE}/models \
+             ${WORKSPACE}/data \
+             ${WORKSPACE}/logs \
+             ${WORKSPACE}/repos
+
+WORKDIR ${WORKSPACE}/repos
+
+# 6. Copy Source Codes into the Container for a Self-Contained Image
+# By baking in the exact Megatron-LM and Megatron-Bridge versions,
+# the image becomes perfectly reproducible and independent of external clones.
+COPY ./Megatron-LM ${WORKSPACE}/repos/Megatron-LM
+
+# Clone Megatron-Bridge directly during build or copy if present locally
+RUN if [ -d "${WORKSPACE}/repos/Megatron-LM/Megatron-Bridge" ]; then \
+        mv ${WORKSPACE}/repos/Megatron-LM/Megatron-Bridge ${WORKSPACE}/repos/Megatron-Bridge; \
+    else \
+        git clone https://github.com/surya-vikram/Megatron-Bridge.git ${WORKSPACE}/repos/Megatron-Bridge; \
+    fi
+
+# 7. Install Megatron-Core, Megatron-Bridge, & Advanced Hopper Kernels
+# Running installation inside a virtual environment linked to the system python
+RUN bash -c " \
+    uv venv ${WORKSPACE}/venv --system-site-packages && \
+    source ${WORKSPACE}/venv/bin/activate && \
+    \
+    echo '--- Installing Megatron Core Training/Dev Dependencies ---' && \
+    cd ${WORKSPACE}/repos/Megatron-LM && \
+    uv pip install --system -e .[training,dev] && \
+    \
+    echo '--- Installing Advanced Flash Attention & FlashInfer Kernels ---' && \
+    pip install 'flashinfer-python==0.6.8.post1' 'flashinfer-cubin==0.6.8.post1' --no-deps && \
+    pip install 'https://huggingface.co/datasets/surya-vikram/hopper-wheels/resolve/main/flash_attn_3-3.0.0-cp39-abi3-linux_x86_64.whl' --no-deps && \
+    \
+    echo '--- Patching Transformer Engine dot product attention for FlashAttention-3 ---' && \
+    TE_PATH=\$(python3 -c 'import transformer_engine; import os; print(os.path.dirname(transformer_engine.__file__))' 2>/dev/null || echo '') && \
+    if [ -n '\$TE_PATH' ]; then \
+        BACKEND_FILE='\$TE_PATH/pytorch/attention/dot_product_attention/backends.py'; \
+        if [ -f '\$BACKEND_FILE' ]; then \
+            sed -i 's/from flash_attn_3.flash_attn_interface/from flash_attn_interface/g' '\$BACKEND_FILE' && \
+            echo 'TE FlashAttn-3 patch applied successfully.'; \
+        fi \
+    fi && \
+    \
+    echo '--- Installing Megatron-Bridge ---' && \
+    pip install 'nvidia-resiliency-ext==0.6.0' && \
+    cd ${WORKSPACE}/repos/Megatron-Bridge && \
+    git checkout main && \
+    pip install -e . --no-deps && \
+    \
+    echo '--- Installing Production Data Ingestion & CCE tools ---' && \
+    pip install datasets tqdm wandb --quiet && \
+    pip install 'cut-cross-entropy @ git+https://github.com/apple/ml-cross-entropy.git' --quiet \
+"
+
+# 8. Configure Persistence Symlinks inside the image
+RUN mkdir -p ${WORKSPACE}/repos/Megatron-Bridge/3rdparty && \
+    ln -sf ${WORKSPACE}/repos/Megatron-LM ${WORKSPACE}/repos/Megatron-Bridge/3rdparty/Megatron-LM
+
+# 9. Create Environment Activation Script
+RUN echo 'export HF_HOME=/workspace/models/.cache' > ${WORKSPACE}/load_env.sh && \
+    echo 'export PYTHONPATH=\"/workspace/repos/Megatron-LM:/workspace/repos/Megatron-Bridge/src:\$PYTHONPATH\"' >> ${WORKSPACE}/load_env.sh && \
+    echo 'if [ -d \"/workspace/venv\" ]; then source /workspace/venv/bin/activate; fi' >> ${WORKSPACE}/load_env.sh && \
+    chmod +x ${WORKSPACE}/load_env.sh
+
+# 10. Final setup: Set workdir to workspace and default shell entrypoint
+WORKDIR ${WORKSPACE}
+CMD ["/bin/bash", "--rcfile", "/workspace/load_env.sh"]

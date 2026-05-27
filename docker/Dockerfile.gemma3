@@ -42,7 +42,7 @@ WORKDIR ${WORKSPACE}/repos
 # 6. Copy Source Codes into the Container for a Self-Contained Image
 # By baking in the exact Megatron-LM and Megatron-Bridge versions,
 # the image becomes perfectly reproducible and independent of external clones.
-COPY ./Megatron-LM ${WORKSPACE}/repos/Megatron-LM
+COPY . ${WORKSPACE}/repos/Megatron-LM
 
 # Clone Megatron-Bridge directly during build or copy if present locally
 RUN if [ -d "${WORKSPACE}/repos/Megatron-LM/Megatron-Bridge" ]; then \

@@ -221,6 +221,11 @@ class SFTDataset(MegatronDataset):
         assert not self.config.create_attention_mask and not self.config.reset_attention_mask
 
         assert len(cu_seqlens) >= 2
+        if pack_samples and cu_seqlens:
+            # Exact-fit packed conversations can leave the terminal boundary at
+            # pack_length + 1 even though the model consumes pack_tokens[:-1].
+            # Clamp the tail so cu_seqlens always sums to the actual input len.
+            cu_seqlens[-1] = min(cu_seqlens[-1], pack_length)
         cu_seqlens = torch.tensor(cu_seqlens, dtype=torch.int32)
         adjacent_diffs = cu_seqlens[1:] - cu_seqlens[:-1]
         max_seqlen = adjacent_diffs.max()

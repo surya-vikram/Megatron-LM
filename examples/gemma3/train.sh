@@ -619,7 +619,7 @@ echo "================================================================="
 # ============================================================================
 # Launch
 # ============================================================================
-torchrun $DISTRIBUTED_ARGS \
+python3 -m torch.distributed.run $DISTRIBUTED_ARGS \
     "$SCRIPT_DIR/utils/pretrain_gemma3_mcore.py" \
     $MODEL_ARGS \
     $OPTIM_ARGS \

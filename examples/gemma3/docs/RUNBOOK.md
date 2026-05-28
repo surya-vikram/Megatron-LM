@@ -6,7 +6,58 @@ This runbook describes the end-to-end workflow for importing, training (CPT → 
 
 ## 1. Environment Setup
 
-Bootstrap the node with all dependencies (FlashAttn, TE, Bridge) and persistent symlinks.
+You can choose between a standard bare-metal VM bootstrap or the highly recommended container-based setup for production/multi-node clusters.
+
+### Option A: Self-Contained Container Setup (Recommended for Production & Slurm)
+
+For a fully isolated, pre-compiled, and self-contained environment containing all dependencies (Megatron Core, FlashAttention-3, FlashInfer, Cut-Cross-Entropy, and Megatron-Bridge), use our optimized Docker workflow.
+
+#### 1. Network MTU Pre-requisite (If experiencing SSL/Handshake Timeouts)
+In virtualized cloud environments (overlay networks), large cryptographic packets during `git clone` or SSL handshakes can be dropped. To fix this, set your host network interface's MTU to `1400` before building:
+```bash
+sudo ip link set dev enp3s0 mtu 1400 # Replace enp3s0 with your primary interface
+```
+
+#### 2. Build the self-contained image
+Run the build from the repository root using `--network=host` to inherit the MTU fix:
+```bash
+docker build --network=host -f docker/Dockerfile.gemma3 -t suryavikram6/megatron-gemma:latest .
+```
+
+#### 3. Run the container locally (with dynamic repository hot-reloading)
+Keep the virtual environment outside `/workspace/repos` so that mounting local folders at runtime does not mask your compiled libraries. Any edits to Python files on the host are immediately reflected inside the container:
+```bash
+docker run --gpus all -it --rm \
+  -v /path/to/dataset:/workspace/data \
+  -v /path/to/checkpoints:/workspace/models \
+  -v /path/to/logs:/workspace/logs \
+  -v /path/to/repos:/workspace/repos \
+  suryavikram6/megatron-gemma:latest
+```
+
+#### 4. Run Multi-Node Multi-GPU Training under Slurm
+Slurm clusters typically use **Pyxis + Enroot** or **Apptainer/Singularity**. No Dockerfile modifications are needed—simply use the following Slurm launch commands:
+
+* **Pyxis/Enroot**:
+  ```bash
+  srun --container-image="suryavikram6/megatron-gemma:latest" \
+       --container-mounts="/path/to/dataset:/workspace/data,/path/to/checkpoints:/workspace/models,/path/to/logs:/workspace/logs" \
+       bash -c "source /workspace/load_env.sh && python3 /workspace/repos/Megatron-LM/pretrain_gpt.py [YOUR_ARGS]"
+  ```
+* **Apptainer (Singularity)**:
+  ```bash
+  srun apptainer exec --nv \
+    --bind /path/to/dataset:/workspace/data \
+    --bind /path/to/checkpoints:/workspace/models \
+    docker://suryavikram6/megatron-gemma:latest \
+    bash -c "source /workspace/load_env.sh && python3 /workspace/repos/Megatron-LM/pretrain_gpt.py [YOUR_ARGS]"
+  ```
+
+---
+
+### Option B: Bare-Metal VM Setup (Standard Bootstrap)
+
+Bootstrap the node dynamically with all dependencies and persistent symlinks on a standard Ubuntu/JupyterHub cloud instance.
 ```bash
 bash examples/gemma3/setup.sh
 source /home/jovyan/load_env.sh

@@ -5,7 +5,7 @@ This guide details the end-to-end pipeline for preparing a high-fidelity medical
 ## 1. Environment Setup
 Ensure your production environment is active.
 ```bash
-source /home/jovyan/load_env.sh
+source /datasets/megadata/load_env.sh
 ```
 
 ## 2. Data Ingestion & Splitting
@@ -17,13 +17,13 @@ The `ingest_pubmed.py` utility streams the official `ncbi/pubmed` baseline, clea
 # Use --limit 1000000 for a quick verification run.
 python3 examples/gemma3/utils/ingest_pubmed.py \
     --limit 0 \
-    --output-prefix /home/jovyan/data/pubmed \
+    --output-prefix /datasets/megadata/cpt/pubmed \
     --val-ratio 0.01
 ```
 
 ### Outputs:
-- `/home/jovyan/data/pubmed_train.jsonl` (99% of data)
-- `/home/jovyan/data/pubmed_val.jsonl` (1% of data)
+- `/datasets/megadata/cpt/pubmed_train.jsonl` (99% of data)
+- `/datasets/megadata/cpt/pubmed_val.jsonl` (1% of data)
 
 ---
 
@@ -34,19 +34,9 @@ Megatron-LM requires data in a high-speed binary format (`.bin` and `.idx`). You
 ```bash
 bash examples/gemma3/preprocess.sh \
     --mode cpt \
-    --input /home/jovyan/data/pubmed_train.jsonl \
-    --output-prefix /home/jovyan/data/pubmed_train \
-    --hf-tokenizer /home/jovyan/models/gemma-3-4b-pt \
-    --workers 32
-```
-
-### B. Preprocess Validation Set
-```bash
-bash examples/gemma3/preprocess.sh \
-    --mode cpt \
-    --input /home/jovyan/data/pubmed_val.jsonl \
-    --output-prefix /home/jovyan/data/pubmed_val \
-    --hf-tokenizer /home/jovyan/models/gemma-3-4b-pt \
+    --input /datasets/megadata/cpt/pubmed_train.jsonl \
+    --output-prefix /datasets/megadata/cpt/pubmed_train \
+    --hf-tokenizer /datasets/megadata/hf_models/gemma-3-4b-pt \
     --workers 32
 ```
 
@@ -55,34 +45,20 @@ bash examples/gemma3/preprocess.sh \
 ## 4. Verification
 Verify that the binary files exist and have non-zero sizes.
 ```bash
-ls -lh /home/jovyan/data/pubmed_train_text_document.bin
-ls -lh /home/jovyan/data/pubmed_val_text_document.bin
+ls -lh /datasets/megadata/cpt/pubmed_train_text_document.bin
 ```
 
 ---
 
 ## 5. Launch Training
 
-With the binary data ready, launch CPT. Pass `--valid-data-path` to enable validation; omit it to train without validation.
+Launch CPT with the preprocessed binary data. Both `--mcore-path` and `--tokenizer-model` are mandatory.
 
-**With validation (recommended for long runs):**
 ```bash
 bash examples/gemma3/train.sh \
     --mode cpt \
     --model-size 4b \
-    --mcore-path /home/jovyan/models/gemma-3-4b-pt-mcore \
-    --data-path /home/jovyan/data/pubmed_train_text_document \
-    --valid-data-path /home/jovyan/data/pubmed_val_text_document
+    --mcore-path /datasets/megadata/mcore_models/gemma-3-4b-pt-mcore \
+    --tokenizer-model /datasets/megadata/hf_models/gemma-3-4b-pt \
+    --data-path /datasets/megadata/cpt/pubmed_train_text_document
 ```
-
-**Without validation (fastest, no split needed):**
-```bash
-bash examples/gemma3/train.sh \
-    --mode cpt \
-    --model-size 4b \
-    --mcore-path /home/jovyan/models/gemma-3-4b-pt-mcore \
-    --data-path /home/jovyan/data/pubmed_train_text_document
-```
-
-> **Token budget:** Default is 500M tokens. Override with `--token-budget 2000000000` (2B tokens).
-> **LR:** Default is `1e-5` for CPT. Override with `--lr`.

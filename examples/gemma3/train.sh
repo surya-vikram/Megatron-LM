@@ -117,7 +117,7 @@ RECOMPUTE_GRANULARITY="auto" # auto (none for <=8k, selective for >8k) | none | 
 NUM_WORKERS=4           # number of dataloader CPU workers per GPU
 
 # ── Telemetry & Experiment Tracking (WandB) ──────────────────────────────────
-WANDB_PROJECT="AUTO"    # Weights & Biases project name ("AUTO" = automatic based on mode)
+WANDB_PROJECT="NONE"    # Weights & Biases project name ("NONE" = disabled; "AUTO" = auto per mode)
 WANDB_EXP_NAME=""       # Weights & Biases experiment run name (leave empty for auto)
 
 # ── Dataset Visibility / Debug ───────────────────────────────────────────────

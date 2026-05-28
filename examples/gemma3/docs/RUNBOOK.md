@@ -24,7 +24,14 @@ Run the build from the repository root using `--network=host` to inherit the MTU
 docker build --network=host -f docker/Dockerfile.gemma3 -t suryavikram6/megatron-gemma:latest .
 ```
 
-#### 3. Run the container locally (with dynamic repository hot-reloading)
+#### 3. Push the image to Docker Hub
+Authenticate to Docker Hub and push the built image to your registry:
+```bash
+docker login # Enter your username and password/PAT
+docker push suryavikram6/megatron-gemma:latest
+```
+
+#### 4. Run the container locally (with dynamic repository hot-reloading)
 Keep the virtual environment outside `/workspace/repos` so that mounting local folders at runtime does not mask your compiled libraries. Any edits to Python files on the host are immediately reflected inside the container:
 ```bash
 docker run --gpus all -it --rm \

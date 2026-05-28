@@ -2,6 +2,11 @@
 set -eu
 set -o pipefail
 
+# ============================================================================
+# ★  GLOBAL PATH CONFIGURATION
+# ============================================================================
+MEGADATA_ROOT="/datasets/megadata"
+
 # train.sh: Production Training Engine for Gemma 3 CPT/SFT/SimPO (1B/4B/12B)
 # Optimized for single-node training on NVIDIA H200/H100/A100 GPUs.
 #
@@ -226,6 +231,7 @@ done
 # TIER 1: Validate required args
 # ============================================================================
 [[ -z "$MCORE_PATH" ]] && echo "ERROR: --mcore-path is required." && exit 1
+[[ -z "$TOKENIZER_MODEL" ]] && echo "ERROR: --tokenizer-model is required." && exit 1
 [[ -z "$DATA_PATH" ]]  && echo "ERROR: --data-path is required."  && exit 1
 
 if [[ "$MODE" != "cpt" && "$MODE" != "sft" && "$MODE" != "simpo" ]]; then
@@ -234,13 +240,15 @@ if [[ "$MODE" != "cpt" && "$MODE" != "sft" && "$MODE" != "simpo" ]]; then
 fi
 
 # ============================================================================
-# TIER 6: Tensorboard timestamp
+# 2. Execution Workspace (Timestamped)
 # ============================================================================
-if [[ -z "$TENSORBOARD_DIR" ]]; then
-    IST_DATE=$(TZ='Asia/Kolkata' date +%Y%m%d_%H%M%S)
-    TENSORBOARD_DIR="/home/jovyan/logs/tb/${MODE}_${IST_DATE}"
-fi
-mkdir -p "$TENSORBOARD_DIR"
+IST_DATE=$(TZ='Asia/Kolkata' date +%Y%m%d_%H%M%S)
+RUN_DIR="$MEGADATA_ROOT/training_runs/$IST_DATE"
+
+[[ -z "$SAVE_PATH" ]] && SAVE_PATH="$RUN_DIR/checkpoints"
+[[ -z "$TENSORBOARD_DIR" ]] && TENSORBOARD_DIR="$RUN_DIR/logs/tb"
+
+mkdir -p "$SAVE_PATH" "$TENSORBOARD_DIR"
 
 # ============================================================================
 # TIER 6: Default tokenizer per mode
@@ -252,20 +260,6 @@ if [[ -z "$TOKENIZER_TYPE" ]]; then
         TOKENIZER_TYPE="SFTTokenizer"
     fi
 fi
-
-if [[ -z "$TOKENIZER_MODEL" ]]; then
-    TOKENIZER_MODEL="/home/jovyan/models/gemma-3-${MODEL_SIZE}-pt"
-    echo "INFO: No --tokenizer-model specified. Using default: $TOKENIZER_MODEL"
-fi
-
-# ============================================================================
-# TIER 6: Default save path
-# ============================================================================
-if [[ -z "$SAVE_PATH" ]]; then
-    SAVE_PATH="/home/jovyan/data/checkpoints/gemma3-${MODEL_SIZE}-${MODE}"
-    echo "INFO: No --save-path specified. Using default: $SAVE_PATH"
-fi
-mkdir -p "$SAVE_PATH"
 
 # ============================================================================
 # TIER 4: Default GBS per mode
@@ -309,8 +303,7 @@ elif [[ "$MODE" == "sft" ]]; then
     # Packing is always on. ITERS from token scanner (unless --iters override).
     if [[ $ITERS -eq 0 ]]; then
         echo "INFO: Calculating exact training iterations via token scanner..."
-        ITERS=$(python3 examples/gemma3/utils/get_sft_tokens.py \
-            "$DATA_PATH" "$TOKENIZER_MODEL" "$EPOCHS" "$GBS" "$SEQ_LEN")
+        ITERS=$(python3 examples/gemma3/utils/get_sft_tokens.py             "$DATA_PATH" "$TOKENIZER_MODEL" "$EPOCHS" "$GBS" "$SEQ_LEN")
         echo "INFO: Token scanner → $ITERS iterations for $EPOCHS epoch(s)."
     fi
 
@@ -330,8 +323,7 @@ elif [[ "$MODE" == "simpo" ]]; then
     # Packing always on. ITERS from token scanner (unless --iters override).
     if [[ $ITERS -eq 0 ]]; then
         echo "INFO: Calculating exact training iterations via token scanner..."
-        ITERS=$(python3 examples/gemma3/utils/get_sft_tokens.py \
-            "$DATA_PATH" "$TOKENIZER_MODEL" "$EPOCHS" "$GBS" "$SEQ_LEN")
+        ITERS=$(python3 examples/gemma3/utils/get_sft_tokens.py             "$DATA_PATH" "$TOKENIZER_MODEL" "$EPOCHS" "$GBS" "$SEQ_LEN")
         echo "INFO: Token scanner → $ITERS iterations for $EPOCHS epoch(s)."
     fi
 
@@ -473,14 +465,13 @@ MODEL_ARGS="
 # Optimizer Args
 # ============================================================================
 OPTIM_ARGS="
-    --lr $LR
-    --min-lr $MIN_LR
-    --lr-decay-style $LR_DECAY_STYLE
-    --lr-decay-iters $DECAY_ITERS
-    --lr-warmup-iters $WARMUP_ITERS
-    --weight-decay $WEIGHT_DECAY
-    --clip-grad $CLIP_GRAD
-
+    --lr $LR \
+    --min-lr $MIN_LR \
+    --lr-decay-style $LR_DECAY_STYLE \
+    --lr-decay-iters $DECAY_ITERS \
+    --lr-warmup-iters $WARMUP_ITERS \
+    --weight-decay $WEIGHT_DECAY \
+    --clip-grad $CLIP_GRAD \
     --adam-beta1 $ADAM_BETA1 \
     --adam-beta2 $ADAM_BETA2 \
     --init-method-std 0.01 \

@@ -73,7 +73,7 @@ if __name__ == "__main__":
         
         megatron_model = provider.provide_distributed_model(
             wrap_with_ddp=False, 
-            use_cpu_initialization=True
+            use_cpu_initialization=False
         )
         
         sharded_sd = _generate_model_state_dict(megatron_model, {})

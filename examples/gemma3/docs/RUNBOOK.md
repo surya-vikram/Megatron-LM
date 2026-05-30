@@ -105,13 +105,16 @@ Checkpoints and logs are automatically isolated per run:
 *   **Logs**: `/datasets/megadata/training_runs/YYYYMMDD_HHMMSS/logs/tb`
 
 ---
-
 ## 6. Export: Megatron → HuggingFace
 
 ```bash
+# Standard export (TP=1)
 bash examples/gemma3/export.sh \
     --target text \
+    --tp-size 1 \
     --mcore-path /datasets/megadata/training_runs/YOUR_TIMESTAMP/checkpoints \
     --hf-reference /datasets/megadata/hf_models/gemma-3-4b-pt \
     --save-path /datasets/megadata/hf_models/gemma-3-4b-sft-hf
+
+# For TP=2 (e.g., 12B models), pass --tp-size 2
 ```

@@ -30,8 +30,6 @@ from megatron.core.datasets.gpt_dataset import GPTDatasetConfig
 from megatron.training.datasets.simpo_dataset import SimPODataset
 
 def simpo_forward_step(data_iterator, model: torch.nn.Module, return_schedule_plan: bool = False):
-    if data_iterator is None:
-        return torch.tensor(0.0, device=torch.cuda.current_device()), lambda x: (torch.tensor(0.0, device=torch.cuda.current_device()), {})
     args = get_args()
     timers = get_timers()
 

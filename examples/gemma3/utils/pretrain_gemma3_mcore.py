@@ -254,6 +254,10 @@ if __name__ == "__main__":
     
     full_config = pretrain_cfg_container_from_args(args)
     
+    # Ensure datasets are built in a distributed-aware way across all ranks to prevent deadlocks
+    setattr(train_valid_test_datasets_provider, "is_distributed", True)
+    setattr(simpo_train_valid_test_datasets_provider, "is_distributed", True)
+
     if getattr(args, 'simpo', False):
         assert args.context_parallel_size == 1, "SimPO training does not support Context Parallelism (CP > 1) because sequence-level length-normalization requires sequence boundaries to be local to the rank."
         active_dataset_provider = simpo_train_valid_test_datasets_provider

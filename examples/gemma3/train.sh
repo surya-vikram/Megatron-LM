@@ -76,6 +76,7 @@ DATA_PATH=""            # training data: Megatron binary prefix (CPT), JSONL (SF
 VALID_DATA_PATH=""      # validation data — leave empty to disable validation entirely
 SAVE_PATH=""            # output directory for checkpoints (leave empty for auto path)
 RESUME_FROM_CHECKPOINT=false  # set to true to resume crashed/preempted run with optim/rng state
+SAVE_WEIGHTS_ONLY=false # set to true to only save model weights and omit optimizer/RNG states (makes checkpoints lean)
 
 # ── Training Budget & Evaluation ─────────────────────────────────────────────
 TOKEN_BUDGET=500000000  # CPT:       tokens to train on        (default: 500M)
@@ -163,6 +164,8 @@ while [[ $# -gt 0 ]]; do
     --save-path)          SAVE_PATH="$2";    shift 2 ;;
     --resume-from-checkpoint) RESUME_FROM_CHECKPOINT=true; shift 1 ;;
     --no-resume-from-checkpoint) RESUME_FROM_CHECKPOINT=false; shift 1 ;;
+    --save-weights-only)   SAVE_WEIGHTS_ONLY=true;  shift 1 ;;
+    --no-save-weights-only) SAVE_WEIGHTS_ONLY=false; shift 1 ;;
     # TIER 2
     --token-budget)       TOKEN_BUDGET="$2"; shift 2 ;;
     --epochs)             EPOCHS="$2";       shift 2 ;;
@@ -513,6 +516,9 @@ LOG_ARGS="
 "
 if [ "$RESUME_FROM_CHECKPOINT" = false ]; then
     LOG_ARGS="$LOG_ARGS --no-load-optim --no-load-rng --finetune"
+fi
+if [ "$SAVE_WEIGHTS_ONLY" = true ]; then
+    LOG_ARGS="$LOG_ARGS --no-save-optim --no-save-rng"
 fi
 
 # ============================================================================

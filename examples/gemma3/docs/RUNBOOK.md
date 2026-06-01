@@ -17,6 +17,15 @@ docker run --gpus all -it --rm \
   suryavikram6/megatron-gemma:latest
 ```
 
+#### For incompatible older host drivers (e.g., Driver 550):
+```bash
+docker run --gpus all -it --rm \
+  -e LD_LIBRARY_PATH="/usr/local/cuda-13.1/compat:\$LD_LIBRARY_PATH" \
+  -v /path/to/dataset:/datasets/megadata \
+  -v /path/to/repos:/workspace/repos \
+  suryavikram6/megatron-gemma:latest
+```
+
 ---
 
 ### Option B: Bare-Metal VM Setup

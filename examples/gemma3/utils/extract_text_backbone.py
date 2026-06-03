@@ -51,40 +51,49 @@ if __name__ == "__main__":
             if hasattr(full_config, attr) and not hasattr(text_config, attr):
                 setattr(text_config, attr, getattr(full_config, attr))
 
-    # Load full multimodal model
-    print("Loading full multimodal model (weights only)...")
-    vlm_model = Gemma3ForConditionalGeneration.from_pretrained(
-        HF_MODEL,
-        torch_dtype=torch.bfloat16,
-        device_map="cpu",
-        trust_remote_code=True
-    )
-    
-    # Create a standalone CausalLM model with the text config
-    causal_model = Gemma3ForCausalLM(text_config)
-    
-    print("Mapping multimodal weights to text-only model...")
-    # Map model.language_model -> model
-    # and lm_head -> lm_head
-    if hasattr(vlm_model, "model") and hasattr(vlm_model.model, "language_model"):
-        causal_model.model.load_state_dict(vlm_model.model.language_model.state_dict())
-    elif hasattr(vlm_model, "language_model"):
-        causal_model.model.load_state_dict(vlm_model.language_model.state_dict())
+    if not hasattr(full_config, "text_config"):
+        print("Model is already a standalone CausalLM. Loading directly...")
+        text_model = Gemma3ForCausalLM.from_pretrained(
+            HF_MODEL,
+            torch_dtype=torch.bfloat16,
+            device_map="cpu",
+            trust_remote_code=True
+        )
     else:
-        raise AttributeError("Could not find language model component in VLM. Checked .model.language_model and .language_model")
+        # Load full multimodal model
+        print("Loading full multimodal model (weights only)...")
+        vlm_model = Gemma3ForConditionalGeneration.from_pretrained(
+            HF_MODEL,
+            torch_dtype=torch.bfloat16,
+            device_map="cpu",
+            trust_remote_code=True
+        )
         
-    if hasattr(vlm_model, "lm_head"):
-        causal_model.lm_head.load_state_dict(vlm_model.lm_head.state_dict())
-    
-    text_model = causal_model
-    text_model.config = text_config # Ensure config is correctly attached
-    
-    # Explicitly clear VLM model from memory before initializing Megatron model
-    del vlm_model
-    import gc
-    gc.collect()
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
+        # Create a standalone CausalLM model with the text config
+        causal_model = Gemma3ForCausalLM(text_config)
+        
+        print("Mapping multimodal weights to text-only model...")
+        # Map model.language_model -> model
+        # and lm_head -> lm_head
+        if hasattr(vlm_model, "model") and hasattr(vlm_model.model, "language_model"):
+            causal_model.model.load_state_dict(vlm_model.model.language_model.state_dict())
+        elif hasattr(vlm_model, "language_model"):
+            causal_model.model.load_state_dict(vlm_model.language_model.state_dict())
+        else:
+            raise AttributeError("Could not find language model component in VLM. Checked .model.language_model and .language_model")
+            
+        if hasattr(vlm_model, "lm_head"):
+            causal_model.lm_head.load_state_dict(vlm_model.lm_head.state_dict())
+        
+        text_model = causal_model
+        text_model.config = text_config # Ensure config is correctly attached
+        
+        # Explicitly clear VLM model from memory before initializing Megatron model
+        del vlm_model
+        import gc
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
     # Wrap for bridge
     pretrained = PreTrainedCausalLM(HF_MODEL, trust_remote_code=True)

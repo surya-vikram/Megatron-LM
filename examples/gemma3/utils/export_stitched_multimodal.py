@@ -87,7 +87,8 @@ if __name__ == "__main__":
         # Get HF-format state dict
         hf_text_state_dict = {}
         # Using the correct public API of AutoBridge
-        for exported_weight in bridge.export_hf_weights(megatron_model, cpu=True):
+        cpu_export = not torch.cuda.is_available()
+        for exported_weight in bridge.export_hf_weights(megatron_model, cpu=cpu_export):
             hf_text_state_dict[exported_weight.param_name] = exported_weight.weight
 
     # 2. Stitch into VLM

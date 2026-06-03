@@ -92,10 +92,12 @@ if __name__ == "__main__":
 
     # 2. Stitch into VLM
     print(f"Loading original multimodal model from {args.vlm_hf_path}...")
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"Using device: {device}")
     vlm_model = Gemma3ForConditionalGeneration.from_pretrained(
         args.vlm_hf_path,
         torch_dtype=torch.bfloat16,
-        device_map="cpu",
+        device_map=device,
         trust_remote_code=True
     )
     

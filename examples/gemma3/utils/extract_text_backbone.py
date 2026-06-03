@@ -51,12 +51,17 @@ if __name__ == "__main__":
             if hasattr(full_config, attr) and not hasattr(text_config, attr):
                 setattr(text_config, attr, getattr(full_config, attr))
 
-    if not hasattr(full_config, "text_config"):
+    is_multimodal = hasattr(full_config, "text_config")
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"Using device: {device}")
+
+    if not is_multimodal:
         print("Model is already a standalone CausalLM. Loading directly...")
         text_model = Gemma3ForCausalLM.from_pretrained(
             HF_MODEL,
             torch_dtype=torch.bfloat16,
-            device_map="cpu",
+            device_map=device,
             trust_remote_code=True
         )
     else:
@@ -65,12 +70,12 @@ if __name__ == "__main__":
         vlm_model = Gemma3ForConditionalGeneration.from_pretrained(
             HF_MODEL,
             torch_dtype=torch.bfloat16,
-            device_map="cpu",
+            device_map=device,
             trust_remote_code=True
         )
         
         # Create a standalone CausalLM model with the text config
-        causal_model = Gemma3ForCausalLM(text_config)
+        causal_model = Gemma3ForCausalLM(text_config).to(device)
         
         print("Mapping multimodal weights to text-only model...")
         # Map model.language_model -> model
@@ -94,6 +99,7 @@ if __name__ == "__main__":
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+
 
     # Wrap for bridge
     pretrained = PreTrainedCausalLM(HF_MODEL, trust_remote_code=True)

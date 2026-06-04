@@ -2,6 +2,9 @@
 
 This runbook describes the end-to-end workflow for importing, training (CPT → SFT → SimPO), and exporting Gemma 3 models using Megatron-LM.
 
+> [!NOTE]
+> For executing training across multi-node GPU clusters, please refer to the complete [Gemma 3 Multi-Node Cluster Training Guide](file:///C:/Users/surya/Documents/antigravity/quirky-bell/Megatron-LM/examples/gemma3/docs/MULTI_NODE_GUIDE.md).
+
 ---
 
 ## 1. Environment Setup
@@ -103,6 +106,20 @@ bash examples/gemma3/train.sh \
     --mcore-path /datasets/megadata/mcore_models/gemma-3-4b-pt-mcore \
     --tokenizer-model /datasets/megadata/hf_models/gemma-3-4b-pt \
     --data-path /datasets/megadata/preference/mock_simpo.jsonl
+```
+
+#### Multi-Node Training (Slurm)
+To train across a multi-node cluster, use the production Slurm batch submission script located at `examples/gemma3/submit_multinode.sbatch`.
+
+You can submit jobs by dynamically passing the environment configuration variables:
+```bash
+sbatch --nodes=5 --gres=gpu:8 \
+    --export=ALL,MODE=sft,MODEL_SIZE=12b,DATA_PATH=/datasets/megadata/sft/mock_sft.jsonl,MCORE_PATH=/datasets/megadata/mcore_models/gemma-3-12b-pt-mcore,TOKENIZER_MODEL=/datasets/megadata/hf_models/gemma-3-12b-pt \
+    examples/gemma3/submit_multinode.sbatch
+```
+Or you can edit the configuration header directly inside the `submit_multinode.sbatch` file and execute:
+```bash
+sbatch examples/gemma3/submit_multinode.sbatch
 ```
 
 ---

@@ -1,6 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=gemma3-multinode
 #SBATCH --nodes=2                   # Default to 2 nodes, override via CLI if needed
+#SBATCH --nodelist=node3,node5      # Target specific cluster nodes (remove or change as needed)
 #SBATCH --ntasks-per-node=1         # Run exactly 1 task per node (torchrun handles per-node GPU spawning)
 #SBATCH --gres=gpu:8                # 8 GPUs per node (assuming H200/H100/A100 nodes)
 #SBATCH --cpus-per-task=32          # Standard CPU allocation per task

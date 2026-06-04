@@ -35,6 +35,15 @@ sbatch --nodes=5 --gres=gpu:8 \
     examples/gemma3/submit_multinode.sbatch
 ```
 
+### Targeting Specific Nodes (`--nodelist`):
+To train on a specific set of nodes rather than arbitrary cluster allocations (e.g., training only on `node3` and `node5`), use Slurm's `--nodelist` (or `-w`) parameter. Set `--nodes` to the number of nodes specified:
+```bash
+sbatch --nodes=2 --nodelist=node3,node5 \
+    --export=ALL,MODE=sft,MODEL_SIZE=12b,DATA_PATH=/datasets/megadata/sft/mock_sft.jsonl,MCORE_PATH=/datasets/megadata/mcore_models/gemma-3-12b-pt-mcore,TOKENIZER_MODEL=/datasets/megadata/hf_models/gemma-3-12b-pt \
+    examples/gemma3/submit_multinode.sbatch
+```
+*Note: The script automatically handles this. The first node listed (`node3` in this case) becomes the master (`node-rank=0` & `MASTER_ADDR`), and subsequent nodes become workers.*
+
 ### Specific Mode Workflows:
 
 #### Continual Pre-Training (CPT) on 5 Nodes:

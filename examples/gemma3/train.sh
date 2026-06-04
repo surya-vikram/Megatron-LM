@@ -464,6 +464,11 @@ MODEL_ARGS="
     --sft-tokenizer-prompt-format $SFT_PROMPT_FORMAT
 "
 
+if [[ $TP -gt 1 ]]; then
+    echo "INFO: TP=$TP > 1, dynamically enabling sequence parallelism and TP communication overlap."
+    MODEL_ARGS="$MODEL_ARGS --sequence-parallel --tp-comm-overlap"
+fi
+
 # ============================================================================
 # Optimizer Args
 # ============================================================================

@@ -137,9 +137,16 @@ def get_batch(data_iterator, vp_stage: Optional[int] = None):
     if cu_seqlens is not None:
         assert (
             cu_seqlens.dim() == 2 and cu_seqlens.shape[0] == 1
-        ), "micro-batch-size must be 1 for packing"
+        ), "cu_seqlens must have shape [1, N]"
         cu_seqlens = cu_seqlens[0]
         assert max_seqlen.dim() == 1
+
+        # Flatten batch dimension if MBS > 1 for pack_samples
+        mbs = batch['tokens'].shape[0] if batch.get('tokens') is not None else 1
+        if mbs > 1:
+            for key in ['tokens', 'labels', 'loss_mask', 'position_ids']:
+                if batch.get(key) is not None:
+                    batch[key] = batch[key].view(1, -1)
 
     # For middle pipeline stages with packed sequences, only cu_seqlens and
     # max_seqlen are needed (for attention masking); skip the full batch.

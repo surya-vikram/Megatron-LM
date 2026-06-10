@@ -18,6 +18,36 @@ _warned_oversized  = set()
 _warned_malformed  = set()
 
 
+class PackSamplesCollator:
+    def __call__(self, batch):
+        tokens = torch.stack([item['tokens'] for item in batch])
+        labels = torch.stack([item['labels'] for item in batch])
+        loss_mask = torch.stack([item['loss_mask'] for item in batch])
+        position_ids = torch.stack([item['position_ids'] for item in batch])
+        
+        seq_len = tokens.shape[1]
+        cu_seqlens_list = []
+        for i, item in enumerate(batch):
+            cu_seqlens = item['cu_seqlens']
+            if i > 0:
+                shifted = cu_seqlens[1:] + i * seq_len
+                cu_seqlens_list.append(shifted)
+            else:
+                cu_seqlens_list.append(cu_seqlens)
+                
+        batched_cu_seqlens = torch.cat(cu_seqlens_list).unsqueeze(0)
+        max_seqlen = torch.stack([torch.as_tensor(item['max_seqlen']) for item in batch]).max().unsqueeze(0)
+        
+        return {
+            'tokens': tokens,
+            'labels': labels,
+            'loss_mask': loss_mask,
+            'position_ids': position_ids,
+            'cu_seqlens': batched_cu_seqlens,
+            'max_seqlen': max_seqlen
+        }
+
+
 class JsonlLowLevelDataset:
     """A simple low-level dataset for JSONL files."""
     def __init__(self, dataset_path: str):
@@ -58,6 +88,10 @@ class SimPODataset(MegatronDataset):
             "skipped_oversized":  0,   # pairs skipped for exceeding seq_len
             "skipped_malformed":  0,   # rows skipped for wrong format
         }
+
+        args = get_args()
+        if getattr(args, "pack_samples", False):
+            self.collate_fn = PackSamplesCollator()
 
     @staticmethod
     def numel_low_level_dataset(low_level_dataset: Any) -> int:

@@ -671,7 +671,7 @@ def get_batch_on_this_tp_rank(data_iterator, mtp_on_this_rank: bool = False):
             if n == 0:
                 cu_seqlens = torch.empty(0, dtype=torch.int32, device=dev)
             else:
-                cu_seqlens = torch.empty((args.micro_batch_size, n), dtype=torch.int32, device=dev)
+                cu_seqlens = torch.empty((1, n), dtype=torch.int32, device=dev)
             _broadcast(cu_seqlens)
 
             return cu_seqlens if n > 0 else None

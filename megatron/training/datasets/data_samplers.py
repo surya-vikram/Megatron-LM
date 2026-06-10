@@ -102,6 +102,9 @@ def build_pretraining_data_loader(dataset, consumed_samples):
         extra_kwargs = {"collate_fn": lambda x: x,}
     else:
         extra_kwargs = {}
+        
+    if getattr(args, "pack_samples", False) and hasattr(dataset, "collate_fn"):
+        extra_kwargs["collate_fn"] = dataset.collate_fn
     return torch.utils.data.DataLoader(
         dataset,
         batch_sampler=batch_sampler,

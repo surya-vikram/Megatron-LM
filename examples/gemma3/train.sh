@@ -80,6 +80,7 @@ SAVE_WEIGHTS_ONLY=false # set to true to only save model weights and omit optimi
 
 # ── Training Budget & Evaluation ─────────────────────────────────────────────
 TOKEN_BUDGET=500000000  # CPT:       tokens to train on        (default: 500M)
+EPOCHS_PROVIDED=false
 EPOCHS=1.0              # SFT/SimPO: epochs to train for       (default: 1 epoch)
 ITERS=0                 # All modes: hard step override — set > 0 to skip auto-calc
 SAVE_INTERVAL=0         # checkpoint frequency (steps). 0 = auto-calculate (every 20%)
@@ -103,6 +104,7 @@ ADAM_BETA2="0.95"       # Adam beta2 optimizer parameter
 GBS=0                   # global batch size  (tokens/step = GBS × SEQ_LEN)
 MBS=1                   # micro-batch size   (reduce if OOM)
 SEQ_LEN=8192            # sequence / context length
+DISABLE_PACKING=false   # set to true to disable sequence packing
 
 # ── SimPO Algorithm Params ───────────────────────────────────────────────────
 SIMPO_BETA="2.0"        # reward scaling factor
@@ -154,6 +156,7 @@ SPLIT="auto"            # CPT expert override (default: 100,0,0 when no valid-da
 # ============================================================================
 # Argument Parsing
 # ============================================================================
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 while [[ $# -gt 0 ]]; do
   case $1 in
     # TIER 1
@@ -168,7 +171,7 @@ while [[ $# -gt 0 ]]; do
     --no-save-weights-only) SAVE_WEIGHTS_ONLY=false; shift 1 ;;
     # TIER 2
     --token-budget)       TOKEN_BUDGET="$2"; shift 2 ;;
-    --epochs)             EPOCHS="$2";       shift 2 ;;
+    --epochs)             EPOCHS="$2"; EPOCHS_PROVIDED="true"; shift 2 ;;
     --iters)              ITERS="$2";        shift 2 ;;
     --save-interval)      SAVE_INTERVAL="$2";shift 2 ;;
     --eval-interval)      EVAL_INTERVAL="$2";shift 2 ;;
@@ -282,6 +285,13 @@ if [[ "$MODE" == "cpt" ]]; then
 
     # ── CPT ──────────────────────────────────────────────────────────────────
     # ITERS from token budget (unless --iters hard override is set)
+    if [[ "$EPOCHS_PROVIDED" == "true" && $ITERS -eq 0 ]]; then
+        echo "INFO: Calculating total dataset tokens for CPT Epoch conversion..."
+        TOTAL_TOKENS=$(python3 $SCRIPT_DIR/utils/get_cpt_tokens.py "$DATA_PATH")
+        TOKEN_BUDGET=$(python3 -c "print(int($TOTAL_TOKENS * $EPOCHS))")
+        echo "INFO: $EPOCHS epoch(s) of CPT dataset = $TOKEN_BUDGET tokens."
+    fi
+
     if [[ $ITERS -eq 0 ]]; then
         ITERS=$(( TOKEN_BUDGET / (SEQ_LEN * GBS) ))
         [[ $(( TOKEN_BUDGET % (SEQ_LEN * GBS) )) -ne 0 ]] && ITERS=$(( ITERS + 1 ))
@@ -306,7 +316,7 @@ elif [[ "$MODE" == "sft" ]]; then
     # Packing is always on. ITERS from token scanner (unless --iters override).
     if [[ $ITERS -eq 0 ]]; then
         echo "INFO: Calculating exact training iterations via token scanner..."
-        ITERS=$(python3 examples/gemma3/utils/get_sft_tokens.py             "$DATA_PATH" "$TOKENIZER_MODEL" "$EPOCHS" "$GBS" "$SEQ_LEN")
+        ITERS=$(python3 $SCRIPT_DIR/utils/get_sft_tokens.py             "$DATA_PATH" "$TOKENIZER_MODEL" "$EPOCHS" "$GBS" "$SEQ_LEN")
         echo "INFO: Token scanner → $ITERS iterations for $EPOCHS epoch(s)."
     fi
 
@@ -326,7 +336,7 @@ elif [[ "$MODE" == "simpo" ]]; then
     # Packing always on. ITERS from token scanner (unless --iters override).
     if [[ $ITERS -eq 0 ]]; then
         echo "INFO: Calculating exact training iterations via token scanner..."
-        ITERS=$(python3 examples/gemma3/utils/get_sft_tokens.py             "$DATA_PATH" "$TOKENIZER_MODEL" "$EPOCHS" "$GBS" "$SEQ_LEN")
+        ITERS=$(python3 $SCRIPT_DIR/utils/get_sft_tokens.py             "$DATA_PATH" "$TOKENIZER_MODEL" "$EPOCHS" "$GBS" "$SEQ_LEN")
         echo "INFO: Token scanner → $ITERS iterations for $EPOCHS epoch(s)."
     fi
 
@@ -588,7 +598,7 @@ fi
 # ============================================================================
 # Chat Template (SFT + SimPO both use SFTTokenizer with tokenize_conversation)
 # ============================================================================
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# ============================================================================
 EXTRA_LAUNCH_ARGS=()
 if [[ "$MODE" == "sft" || "$MODE" == "simpo" ]]; then
     TEMPLATE_PATH="$SCRIPT_DIR/utils/gemma3_chat_template.jinja"
@@ -623,6 +633,7 @@ echo "================================================================="
 # ============================================================================
 # Launch
 # ============================================================================
+exit 0
 python3 -m torch.distributed.run $DISTRIBUTED_ARGS \
     "$SCRIPT_DIR/utils/pretrain_gemma3_mcore.py" \
     $MODEL_ARGS \

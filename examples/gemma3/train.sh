@@ -574,7 +574,7 @@ fi
 [ "$LOG_THROUGHPUT" = true ] && EXTRA_ARGS="$EXTRA_ARGS --log-throughput"
 
 # SFT and SimPO always use sequence packing unless disabled
-if [[ "$DISABLE_PACKING" != "true" ]]; then
+if [[ "${DISABLE_PACKING:-}" != "true" ]]; then
     EXTRA_ARGS="$EXTRA_ARGS --pack-samples"
 fi
 [[ -n "$PACK_FACTOR" ]] && EXTRA_ARGS="$EXTRA_ARGS --pack-factor $PACK_FACTOR"

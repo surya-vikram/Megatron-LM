@@ -64,6 +64,21 @@ bash examples/gemma3/preprocess.sh \
 > **Note:** Pass `--data-path` to `train.sh` **without** the `.bin`/`.idx` extension.  
 > Correct: `--data-path /datasets/megadata/cpt/corpus_bin_text_document`
 
+### SFT and SimPO — JSONL Validation
+Unlike CPT, SFT and SimPO datasets are passed as raw `.jsonl` files directly to `train.sh` rather than being converted to binaries. However, they **must** pass strict schema validation first to prevent dataloader crashes:
+
+```bash
+# For SFT (requires strict 'messages' schema)
+bash examples/gemma3/preprocess.sh \
+    --mode sft \
+    --input /datasets/megadata/sft/mock_sft.jsonl
+
+# For SimPO (requires strict 'chosen' and 'rejected' lists)
+bash examples/gemma3/preprocess.sh \
+    --mode simpo \
+    --input /datasets/megadata/preference/mock_simpo.jsonl
+```
+
 ---
 
 ## 4. Train
@@ -95,7 +110,8 @@ bash examples/gemma3/train.sh \
     --model-size 4b \
     --mcore-path /datasets/megadata/mcore_models/gemma-3-4b-pt-mcore \
     --tokenizer-model /datasets/megadata/hf_models/gemma-3-4b-pt \
-    --data-path /datasets/megadata/sft/mock_sft.jsonl
+    --data-path /datasets/megadata/sft/mock_sft_train.jsonl \
+    --valid-data-path /datasets/megadata/sft/mock_sft_val.jsonl # (Optional)
 ```
 
 #### Preference Optimization (SimPO)
@@ -105,7 +121,8 @@ bash examples/gemma3/train.sh \
     --model-size 4b \
     --mcore-path /datasets/megadata/mcore_models/gemma-3-4b-pt-mcore \
     --tokenizer-model /datasets/megadata/hf_models/gemma-3-4b-pt \
-    --data-path /datasets/megadata/preference/mock_simpo.jsonl
+    --data-path /datasets/megadata/preference/mock_simpo_train.jsonl \
+    --valid-data-path /datasets/megadata/preference/mock_simpo_val.jsonl # (Optional)
 ```
 
 #### Multi-Node Training (Slurm)

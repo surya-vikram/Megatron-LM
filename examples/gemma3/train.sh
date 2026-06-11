@@ -565,7 +565,7 @@ fi
 # ============================================================================
 if [[ -n "$VALID_DATA_PATH" ]]; then
     # Explicit validation file → works for all modes
-    DATA_ARGS="--train-data-path 1.0 $DATA_PATH --valid-data-path 1.0 $VALID_DATA_PATH"
+    DATA_ARGS="--train-data-path 1.0 $DATA_PATH --valid-data-path 1.0 $VALID_DATA_PATH --warn-oversized-samples"
 else
     DATA_ARGS="--data-path 1.0 $DATA_PATH --split $SPLIT"
 fi

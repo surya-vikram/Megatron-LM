@@ -4,7 +4,7 @@ set -euo pipefail
 # preprocess.sh: Data Preparation for Gemma 3 (CPT and SFT)
 
 usage() {
-    echo "Usage: ./preprocess.sh --mode <cpt|sft> --input <path> [options]"
+    echo "Usage: ./preprocess.sh --mode <cpt|sft|simpo> --input <path> [options]"
     echo "Options for CPT:"
     echo "  --output-prefix <path>  Output prefix for .bin and .idx files"
     echo "  --hf-tokenizer <path>   Path to Gemma 3 HF tokenizer"
@@ -45,6 +45,9 @@ if [[ "$MODE" == "cpt" ]]; then
 elif [[ "$MODE" == "sft" ]]; then
     echo "--- Validating SFT Instruction Data --- "
     python3 examples/gemma3/utils/validate_sft.py "$INPUT"
+elif [[ "$MODE" == "simpo" ]]; then
+    echo "--- Validating SimPO Preference Data --- "
+    python3 examples/gemma3/utils/validate_simpo.py "$INPUT"
 else
     usage
 fi

@@ -14,6 +14,7 @@ seq_len = int(sys.argv[5])
 
 try:
     total_tokens = 0
+    total_samples = 0
     # Try importing tokenizer
     try:
         from transformers import AutoTokenizer
@@ -26,24 +27,40 @@ try:
             line = line.strip()
             if not line:
                 continue
-            messages = json.loads(line)["messages"]
             
-            if tokenizer is not None:
-                try:
-                    formatted = tokenizer.apply_chat_template(messages, tokenize=False)
-                    total_tokens += len(tokenizer.encode(formatted))
+            data = json.loads(line)
+            if "chosen" in data and "rejected" in data:
+                # SimPO preference pairs: calculate based on pure sample counts, not token mass.
+                total_samples += 1
+            else:
+                messages = data.get("messages", [])
+                if not messages:
                     continue
-                except Exception:
-                    pass
-            
-            # Fast, robust character-to-token fallback estimate (~3.8 characters per token + template overhead)
-            text = " ".join([m["content"] for m in messages])
-            total_tokens += int(len(text) / 3.8) + 20
+                
+                if tokenizer is not None:
+                    try:
+                        formatted = tokenizer.apply_chat_template(messages, tokenize=False)
+                        total_tokens += len(tokenizer.encode(formatted))
+                        continue
+                    except Exception:
+                        pass
+                
+                # Fast, robust character-to-token fallback estimate (~3.8 characters per token + template overhead)
+                text = " ".join([m["content"] for m in messages])
+                total_tokens += int(len(text) / 3.8) + 20
 
-    # Calculate ceiling division for exact iterations
-    iters = math.ceil((total_tokens * epochs) / (gbs * seq_len))
+    if total_samples > 0:
+        # SimPO Iterations = int(total_samples * epochs / gbs) to prevent AssertionError (iters * gbs <= len(dataset))
+        iters = int((total_samples * epochs) / gbs)
+    else:
+        # SFT Iterations = int(total_tokens * epochs / (gbs * seq_len))
+        iters = int((total_tokens * epochs) / (gbs * seq_len))
+        
     # Make sure we run at least 1 iteration
     print(max(1, iters))
 except Exception as e:
-    # Absolute default safe fallback (corresponds to standard 1 epoch SFT baseline)
+    import traceback
+    sys.stderr.write(f"Error calculating tokens: {e}\n")
+    traceback.print_exc(file=sys.stderr)
+    # Absolute default safe fallback
     print(37)

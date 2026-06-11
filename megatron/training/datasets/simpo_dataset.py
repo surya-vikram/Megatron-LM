@@ -141,18 +141,15 @@ class SimPODataset(MegatronDataset):
             row = self.dataset[sample_idx]
 
             # ── Malformed row detection ──
-            if "conversations" in row:
-                conversations_pair = row["conversations"]
-            elif "messages" in row:
-                conversations_pair = row["messages"]
+            if "chosen" in row and "rejected" in row:
+                conversations_pair = [row["chosen"], row["rejected"]]
             else:
                 self._stats["skipped_malformed"] += 1
                 step_malformed += 1
                 if warn_oversized and sample_idx not in _warned_malformed:
                     _warned_malformed.add(sample_idx)
                     print(
-                        f"[SimPODataset][WARN] Sample idx={sample_idx} has no "
-                        f"'conversations' or 'messages' key. Skipping."
+                        f"[SimPODataset][WARN] Sample idx={sample_idx} is missing 'chosen' or 'rejected'. Skipping."
                     )
                 curr_idx_offset += 1
                 continue
@@ -163,9 +160,7 @@ class SimPODataset(MegatronDataset):
                 if warn_oversized and sample_idx not in _warned_malformed:
                     _warned_malformed.add(sample_idx)
                     print(
-                        f"[SimPODataset][WARN] Sample idx={sample_idx} has "
-                        f"{len(conversations_pair) if isinstance(conversations_pair, list) else 'non-list'} "
-                        f"conversation(s); expected exactly 2 (chosen + rejected). Skipping."
+                        f"[SimPODataset][WARN] Sample idx={sample_idx} has malformed 'chosen'/'rejected' lists. Skipping."
                     )
                 curr_idx_offset += 1
                 continue

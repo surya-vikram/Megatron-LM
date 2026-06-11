@@ -304,11 +304,13 @@ class SFTDataset(MegatronDataset):
                 f"total_skipped_oversized={s['skipped_oversized']}"
             )
 
-        return {
+        ret = {
             'tokens':      input_ids,
             'labels':      labels,
             'loss_mask':   loss_mask,
             'position_ids': position_ids,
-            'cu_seqlens':  cu_seqlens,
-            'max_seqlen':  max_seqlen,
         }
+        if pack_samples:
+            ret['cu_seqlens'] = cu_seqlens
+            ret['max_seqlen'] = max_seqlen
+        return ret

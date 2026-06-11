@@ -136,6 +136,9 @@ class SimPODataset(MegatronDataset):
         if len(self.indices) == 0:
             return {}  # Should not happen with correct split
 
+        consecutive_skips = 0
+        max_consecutive_skips = 1000
+
         while len(pack_tokens) < pack_length + 1:
             sample_idx = int(self.indices[(base_sample_idx + curr_idx_offset) % len(self.indices)])
             row = self.dataset[sample_idx]
@@ -143,9 +146,15 @@ class SimPODataset(MegatronDataset):
             # ── Malformed row detection ──
             if "chosen" in row and "rejected" in row:
                 conversations_pair = [row["chosen"], row["rejected"]]
+                consecutive_skips = 0
+                conversations_pair = [row["chosen"], row["rejected"]]
+                consecutive_skips = 0
             else:
                 self._stats["skipped_malformed"] += 1
                 step_malformed += 1
+                consecutive_skips += 1
+                if consecutive_skips > max_consecutive_skips:
+                    raise RuntimeError(f"[SimPODataset] Detected {max_consecutive_skips} consecutive invalid samples. Last sample_idx={sample_idx} had keys: {list(row.keys())}.")
                 if warn_oversized and sample_idx not in _warned_malformed:
                     _warned_malformed.add(sample_idx)
                     print(

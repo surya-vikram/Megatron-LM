@@ -24,13 +24,17 @@ sample = {
 }
 
 out_path = os.path.join(out_dir, "1_sample.jsonl")
+# Write 200 copies — Megatron's sampler requires dataset size > iters
+# (mid_level_dataset_surplus check). 200 copies >> 100 iters, safe margin.
+N_COPIES = 200
 with open(out_path, "w") as f:
-    json.dump(sample, f)
-    f.write("\n")
+    for _ in range(N_COPIES):
+        json.dump(sample, f)
+        f.write("\n")
 
-# Validate
+# Validate first line
 with open(out_path) as f:
-    parsed = json.loads(f.read().strip())
+    parsed = json.loads(f.readline().strip())
 
 print(f"Written and validated: {out_path}")
 print(f"Chosen  : {parsed['messages'][0][1]['content']}")

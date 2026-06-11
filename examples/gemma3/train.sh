@@ -80,12 +80,11 @@ SAVE_WEIGHTS_ONLY=false # set to true to only save model weights and omit optimi
 
 # ── Training Budget & Evaluation ─────────────────────────────────────────────
 TOKEN_BUDGET=500000000  # CPT:       tokens to train on        (default: 500M)
-EPOCHS_PROVIDED=false
 EPOCHS=1.0              # SFT/SimPO: epochs to train for       (default: 1 epoch)
 ITERS=0                 # All modes: hard step override — set > 0 to skip auto-calc
 SAVE_INTERVAL=0         # checkpoint frequency (steps). 0 = auto-calculate (every 20%)
 EVAL_INTERVAL=0         # validation frequency (steps). 0 = auto-calculate (half of save interval)
-EVAL_ITERS=0            # number of validation steps/batches. 0 = auto-calculate full val set
+EVAL_ITERS=2            # number of validation steps/batches to run during evaluation
 
 # ── Learning Rate & Optimizer ────────────────────────────────────────────────
 #    Auto defaults: CPT → 1e-5 | SFT → 5e-6 | SimPO → 1e-6
@@ -104,7 +103,6 @@ ADAM_BETA2="0.95"       # Adam beta2 optimizer parameter
 GBS=0                   # global batch size  (tokens/step = GBS × SEQ_LEN)
 MBS=1                   # micro-batch size   (reduce if OOM)
 SEQ_LEN=8192            # sequence / context length
-DISABLE_PACKING=false   # set to true to disable sequence packing
 
 # ── SimPO Algorithm Params ───────────────────────────────────────────────────
 SIMPO_BETA="2.0"        # reward scaling factor
@@ -156,7 +154,6 @@ SPLIT="auto"            # CPT expert override (default: 100,0,0 when no valid-da
 # ============================================================================
 # Argument Parsing
 # ============================================================================
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 while [[ $# -gt 0 ]]; do
   case $1 in
     # TIER 1
@@ -171,7 +168,7 @@ while [[ $# -gt 0 ]]; do
     --no-save-weights-only) SAVE_WEIGHTS_ONLY=false; shift 1 ;;
     # TIER 2
     --token-budget)       TOKEN_BUDGET="$2"; shift 2 ;;
-    --epochs)             EPOCHS="$2"; EPOCHS_PROVIDED="true"; shift 2 ;;
+    --epochs)             EPOCHS="$2";       shift 2 ;;
     --iters)              ITERS="$2";        shift 2 ;;
     --save-interval)      SAVE_INTERVAL="$2";shift 2 ;;
     --eval-interval)      EVAL_INTERVAL="$2";shift 2 ;;
@@ -285,13 +282,6 @@ if [[ "$MODE" == "cpt" ]]; then
 
     # ── CPT ──────────────────────────────────────────────────────────────────
     # ITERS from token budget (unless --iters hard override is set)
-    if [[ "$EPOCHS_PROVIDED" == "true" && $ITERS -eq 0 ]]; then
-        echo "INFO: Calculating total dataset tokens for CPT Epoch conversion..."
-        TOTAL_TOKENS=$(python3 $SCRIPT_DIR/utils/get_cpt_tokens.py "$DATA_PATH")
-        TOKEN_BUDGET=$(python3 -c "print(int($TOTAL_TOKENS * $EPOCHS))")
-        echo "INFO: $EPOCHS epoch(s) of CPT dataset = $TOKEN_BUDGET tokens."
-    fi
-
     if [[ $ITERS -eq 0 ]]; then
         ITERS=$(( TOKEN_BUDGET / (SEQ_LEN * GBS) ))
         [[ $(( TOKEN_BUDGET % (SEQ_LEN * GBS) )) -ne 0 ]] && ITERS=$(( ITERS + 1 ))
@@ -306,12 +296,6 @@ if [[ "$MODE" == "cpt" ]]; then
     if [[ -z "$VALID_DATA_PATH" ]]; then
         [[ "$SPLIT" == "auto" ]] && SPLIT="100,0,0"
         EVAL_INTERVAL=0
-    elif [[ $EVAL_ITERS -eq 0 ]]; then
-        echo "INFO: Calculating full validation coverage for CPT..."
-        TOTAL_VAL_TOKENS=$(python3 $SCRIPT_DIR/utils/get_cpt_tokens.py "$VALID_DATA_PATH")
-        EVAL_ITERS=$(( TOTAL_VAL_TOKENS / (SEQ_LEN * GBS) ))
-        [[ $(( TOTAL_VAL_TOKENS % (SEQ_LEN * GBS) )) -ne 0 ]] && EVAL_ITERS=$(( EVAL_ITERS + 1 ))
-        echo "INFO: Validation coverage requires $EVAL_ITERS exact iteration(s)."
     fi
 
     [[ "$WANDB_PROJECT" == "AUTO" ]] && WANDB_PROJECT="gemma3-medical-cpt"
@@ -322,7 +306,7 @@ elif [[ "$MODE" == "sft" ]]; then
     # Packing is always on. ITERS from token scanner (unless --iters override).
     if [[ $ITERS -eq 0 ]]; then
         echo "INFO: Calculating exact training iterations via token scanner..."
-        ITERS=$(python3 $SCRIPT_DIR/utils/get_sft_tokens.py             "$DATA_PATH" "$TOKENIZER_MODEL" "$EPOCHS" "$GBS" "$SEQ_LEN")
+        ITERS=$(python3 examples/gemma3/utils/get_sft_tokens.py             "$DATA_PATH" "$TOKENIZER_MODEL" "$EPOCHS" "$GBS" "$SEQ_LEN")
         echo "INFO: Token scanner → $ITERS iterations for $EPOCHS epoch(s)."
     fi
 
@@ -332,13 +316,7 @@ elif [[ "$MODE" == "sft" ]]; then
     [[ "$WARMUP_PRCT" == "auto" ]] && WARMUP_PRCT=5
 
     # No valid-data-path → no eval
-    if [[ -z "$VALID_DATA_PATH" ]]; then
-        EVAL_INTERVAL=0
-    elif [[ $EVAL_ITERS -eq 0 ]]; then
-        echo "INFO: Calculating exact validation iterations via token scanner..."
-        EVAL_ITERS=$(python3 $SCRIPT_DIR/utils/get_sft_tokens.py "$VALID_DATA_PATH" "$TOKENIZER_MODEL" "1.0" "$GBS" "$SEQ_LEN")
-        echo "INFO: Token scanner → $EVAL_ITERS exact iteration(s) for validation coverage."
-    fi
+    [[ -z "$VALID_DATA_PATH" ]] && EVAL_INTERVAL=0
 
     [[ "$WANDB_PROJECT" == "AUTO" ]] && WANDB_PROJECT="gemma3-medical-sft"
 
@@ -348,7 +326,7 @@ elif [[ "$MODE" == "simpo" ]]; then
     # Packing always on. ITERS from token scanner (unless --iters override).
     if [[ $ITERS -eq 0 ]]; then
         echo "INFO: Calculating exact training iterations via token scanner..."
-        ITERS=$(python3 $SCRIPT_DIR/utils/get_sft_tokens.py             "$DATA_PATH" "$TOKENIZER_MODEL" "$EPOCHS" "$GBS" "$SEQ_LEN")
+        ITERS=$(python3 examples/gemma3/utils/get_sft_tokens.py             "$DATA_PATH" "$TOKENIZER_MODEL" "$EPOCHS" "$GBS" "$SEQ_LEN")
         echo "INFO: Token scanner → $ITERS iterations for $EPOCHS epoch(s)."
     fi
 
@@ -358,13 +336,7 @@ elif [[ "$MODE" == "simpo" ]]; then
     [[ "$WARMUP_PRCT" == "auto" ]] && WARMUP_PRCT=5
 
     # No valid-data-path → no eval
-    if [[ -z "$VALID_DATA_PATH" ]]; then
-        EVAL_INTERVAL=0
-    elif [[ $EVAL_ITERS -eq 0 ]]; then
-        echo "INFO: Calculating exact validation iterations via token scanner..."
-        EVAL_ITERS=$(python3 $SCRIPT_DIR/utils/get_sft_tokens.py "$VALID_DATA_PATH" "$TOKENIZER_MODEL" "1.0" "$GBS" "$SEQ_LEN")
-        echo "INFO: Token scanner → $EVAL_ITERS exact iteration(s) for validation coverage."
-    fi
+    [[ -z "$VALID_DATA_PATH" ]] && EVAL_INTERVAL=0
 
     # SimPO cannot use fused linear cross-entropy (needs full logits for log-probs)
     FUSED_LINEAR_CROSS_ENTROPY=false
@@ -392,12 +364,6 @@ if [[ $EVAL_INTERVAL -eq 0 && -n "$VALID_DATA_PATH" ]]; then
     [[ $EVAL_INTERVAL -eq 0 ]] && EVAL_INTERVAL=5
 fi
 [[ $EVAL_INTERVAL -eq 0 ]] && EVAL_INTERVAL=999999
-
-# If no validation path is provided, forcefully disable all eval/test iterations
-if [[ -z "$VALID_DATA_PATH" ]]; then
-    EVAL_ITERS=0
-    [[ "$SPLIT" == "auto" ]] && SPLIT="100,0,0"
-fi
 
 # ============================================================================
 # TIER 6: WandB cleanup
@@ -567,7 +533,11 @@ if [[ -n "$VALID_DATA_PATH" ]]; then
     # Explicit validation file → works for all modes
     DATA_ARGS="--train-data-path 1.0 $DATA_PATH --valid-data-path 1.0 $VALID_DATA_PATH --warn-oversized-samples"
 else
-    DATA_ARGS="--data-path 1.0 $DATA_PATH --split $SPLIT"
+    DATA_ARGS="--data-path 1.0 $DATA_PATH"
+    # CPT only: pass split (default 100,0,0; expert can override with --split)
+    if [[ "$MODE" == "cpt" && "$SPLIT" != "auto" ]]; then
+        DATA_ARGS="$DATA_ARGS --split $SPLIT"
+    fi
 fi
 
 # Mode-specific data flags
@@ -618,7 +588,7 @@ fi
 # ============================================================================
 # Chat Template (SFT + SimPO both use SFTTokenizer with tokenize_conversation)
 # ============================================================================
-# ============================================================================
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 EXTRA_LAUNCH_ARGS=()
 if [[ "$MODE" == "sft" || "$MODE" == "simpo" ]]; then
     TEMPLATE_PATH="$SCRIPT_DIR/utils/gemma3_chat_template.jinja"
@@ -653,8 +623,6 @@ echo "================================================================="
 # ============================================================================
 # Launch
 # ============================================================================
-exit 0
-exit 0
 python3 -m torch.distributed.run $DISTRIBUTED_ARGS \
     "$SCRIPT_DIR/utils/pretrain_gemma3_mcore.py" \
     $MODEL_ARGS \

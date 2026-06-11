@@ -573,8 +573,10 @@ if [ "$FUSED_LINEAR_CROSS_ENTROPY" = true ]; then
 fi
 [ "$LOG_THROUGHPUT" = true ] && EXTRA_ARGS="$EXTRA_ARGS --log-throughput"
 
-# SFT and SimPO always use sequence packing
-EXTRA_ARGS="$EXTRA_ARGS --pack-samples"
+# SFT and SimPO always use sequence packing unless disabled
+if [[ "$DISABLE_PACKING" != "true" ]]; then
+    EXTRA_ARGS="$EXTRA_ARGS --pack-samples"
+fi
 [[ -n "$PACK_FACTOR" ]] && EXTRA_ARGS="$EXTRA_ARGS --pack-factor $PACK_FACTOR"
 [ "$USE_CCE_SIMPO" = true ] && EXTRA_ARGS="$EXTRA_ARGS --use-cce-simpo"
 

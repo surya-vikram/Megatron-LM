@@ -201,6 +201,9 @@ TRAINING_ARGS=(
     --manual-gc-interval 5
     --use-distributed-optimizer
     --use-precision-aware-optimizer
+    --optimizer-cpu-offload
+    --optimizer-offload-fraction 1.0
+    --use-torch-optimizer-for-cpu-offload
     --main-params-dtype fp16
     --main-grads-dtype bf16
     --grad-reduce-in-bf16

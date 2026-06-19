@@ -17,7 +17,7 @@ EVAL_INTERVAL=1000000
 EVAL_ITERS=0
 SEQ_LENGTH=512
 MICRO_BATCH_SIZE=1
-GLOBAL_BATCH_SIZE=1
+GLOBAL_BATCH_SIZE=0
 LR="2e-4"
 MIN_LR="2e-5"
 LR_WARMUP_ITERS=0
@@ -105,6 +105,9 @@ fi
 
 if [[ -z "$GPUS_PER_NODE" ]]; then
     GPUS_PER_NODE=$(nvidia-smi -L | wc -l)
+fi
+if [[ "$GLOBAL_BATCH_SIZE" -eq 0 ]]; then
+    GLOBAL_BATCH_SIZE=$((GPUS_PER_NODE * NNODES))
 fi
 
 [[ -d "$MCORE_PATH" ]] || { echo "Missing MCore checkpoint: $MCORE_PATH"; exit 1; }

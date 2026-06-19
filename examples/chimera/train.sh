@@ -194,7 +194,6 @@ TRAINING_ARGS=(
     --adam-beta1 0.9
     --adam-beta2 0.95
     --attention-softmax-in-fp32
-    --accumulate-allreduce-grads-in-fp32
     --manual-gc
     --manual-gc-interval 5
     --use-distributed-optimizer

@@ -2,6 +2,7 @@
 set -euo pipefail
 
 export PYTORCH_CUDA_ALLOC_CONF=${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}
+export CUDA_DEVICE_MAX_CONNECTIONS=${CUDA_DEVICE_MAX_CONNECTIONS:-1}
 
 MCORE_PATH="/datasets/megadata/chimera_bridge_validation/megatron_import"
 DATA_PATH="/datasets/megadata/chimera/overfit_doc_text_document"

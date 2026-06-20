@@ -16,9 +16,9 @@ TRAIN_ITERS=100
 SAVE_INTERVAL=50
 EVAL_INTERVAL=1000000
 EVAL_ITERS=0
-SEQ_LENGTH=512
-MICRO_BATCH_SIZE=1
-GLOBAL_BATCH_SIZE=0
+SEQ_LENGTH=8192
+MICRO_BATCH_SIZE=2
+GLOBAL_BATCH_SIZE=4
 LR="2e-4"
 MIN_LR="2e-5"
 LR_WARMUP_ITERS=0
@@ -27,7 +27,7 @@ CLIP_GRAD="1.0"
 
 TP_SIZE=1
 PP_SIZE=1
-EP_SIZE=1
+EP_SIZE=2
 ETP_SIZE=1
 CP_SIZE=1
 NNODES=1
@@ -36,6 +36,12 @@ MASTER_ADDR="localhost"
 MASTER_PORT=29591
 GPUS_PER_NODE=""
 CPU_OFFLOAD=false
+FUSED_LINEAR_CROSS_ENTROPY=false
+USE_FLASH_ATTN=false
+ATTENTION_BACKEND="fused"
+RECOMPUTE_GRANULARITY="full"
+RECOMPUTE_METHOD="uniform"
+RECOMPUTE_NUM_LAYERS=4
 
 usage() {
     cat <<'USAGE'
@@ -62,6 +68,15 @@ Options:
   --cp-size N                Context parallel size.
   --gpus-per-node N          Number of visible GPUs for torchrun.
   --cpu-offload              Offload optimizer state to CPU for single-GPU fallback.
+  --fused-linear-cross-entropy
+                             Use cut-cross-entropy without materializing logits.
+  --no-use-flash-attn        Disable the external flash-attn path in the model args.
+  --use-flash-attn           Enable the external flash-attn path in the model args.
+  --attention-backend NAME   Megatron/Transformer Engine attention backend: auto, flash, fused, unfused, local.
+  --recompute-granularity VALUE
+                             Activation recompute granularity. Use "none" to disable.
+  --recompute-method VALUE   Activation recompute method.
+  --recompute-num-layers N   Layers per recompute region.
   --nnodes N                 Number of nodes.
   --node-rank N              Node rank.
   --master-addr HOST         Distributed master address.
@@ -92,6 +107,13 @@ while [[ $# -gt 0 ]]; do
         --cp-size) CP_SIZE="$2"; shift 2 ;;
         --gpus-per-node) GPUS_PER_NODE="$2"; shift 2 ;;
         --cpu-offload) CPU_OFFLOAD=true; shift 1 ;;
+        --fused-linear-cross-entropy) FUSED_LINEAR_CROSS_ENTROPY=true; shift 1 ;;
+        --no-use-flash-attn) USE_FLASH_ATTN=false; shift 1 ;;
+        --use-flash-attn) USE_FLASH_ATTN=true; shift 1 ;;
+        --attention-backend) ATTENTION_BACKEND="$2"; shift 2 ;;
+        --recompute-granularity) RECOMPUTE_GRANULARITY="$2"; shift 2 ;;
+        --recompute-method) RECOMPUTE_METHOD="$2"; shift 2 ;;
+        --recompute-num-layers) RECOMPUTE_NUM_LAYERS="$2"; shift 2 ;;
         --nnodes) NNODES="$2"; shift 2 ;;
         --node-rank) NODE_RANK="$2"; shift 2 ;;
         --master-addr) MASTER_ADDR="$2"; shift 2 ;;
@@ -154,13 +176,16 @@ MODEL_ARGS=(
     --make-vocab-size-divisible-by 128
     --vocab-size 50176
     --bf16
-    --use-flash-attn
+    --attention-backend "$ATTENTION_BACKEND"
     --attention-dropout 0.0
     --hidden-dropout 0.0
     --no-masked-softmax-fusion
     --tokenizer-type HuggingFaceTokenizer
     --tokenizer-model "$TOKENIZER_MODEL"
 )
+if [[ "$USE_FLASH_ATTN" == true ]]; then
+    MODEL_ARGS+=(--use-flash-attn)
+fi
 
 MOE_ARGS=(
     --num-experts 96
@@ -234,6 +259,16 @@ if [[ "$CPU_OFFLOAD" == true ]]; then
         --use-torch-optimizer-for-cpu-offload
     )
 fi
+if [[ "$FUSED_LINEAR_CROSS_ENTROPY" == true ]]; then
+    TRAINING_ARGS+=(--fused-linear-cross-entropy)
+fi
+if [[ "$RECOMPUTE_GRANULARITY" != "none" ]]; then
+    TRAINING_ARGS+=(
+        --recompute-granularity "$RECOMPUTE_GRANULARITY"
+        --recompute-method "$RECOMPUTE_METHOD"
+        --recompute-num-layers "$RECOMPUTE_NUM_LAYERS"
+    )
+fi
 
 LOGGING_ARGS=(
     --load "$MCORE_PATH"
@@ -258,6 +293,10 @@ echo "  Save path:        $SAVE_PATH"
 echo "  GPUs per node:    $GPUS_PER_NODE"
 echo "  Parallelism:      TP=$TP_SIZE PP=$PP_SIZE EP=$EP_SIZE ETP=$ETP_SIZE CP=$CP_SIZE"
 echo "  CPU offload:      $CPU_OFFLOAD"
+echo "  CCE loss:         $FUSED_LINEAR_CROSS_ENTROPY"
+echo "  Use flash-attn:   $USE_FLASH_ATTN"
+echo "  Attention backend:$ATTENTION_BACKEND"
+echo "  Recompute:        granularity=$RECOMPUTE_GRANULARITY method=$RECOMPUTE_METHOD num_layers=$RECOMPUTE_NUM_LAYERS"
 echo "  Seq length:       $SEQ_LENGTH"
 echo "  Train iters:      $TRAIN_ITERS"
 

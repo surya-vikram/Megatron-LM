@@ -61,13 +61,19 @@ Recommended two-GPU overfit run:
 ```bash
 CUDA_VISIBLE_DEVICES=0,1 bash examples/chimera/train.sh \
   --gpus-per-node 2 \
-  --tp-size 2 \
+  --tp-size 1 \
   --ep-size 2 \
   --expert-tp-size 1 \
-  --global-batch-size 1 \
+  --micro-batch-size 2 \
+  --global-batch-size 4 \
   --train-iters 20 \
   --save-interval 20 \
-  --seq-length 128 \
+  --seq-length 8192 \
+  --attention-backend fused \
+  --no-use-flash-attn \
+  --recompute-granularity full \
+  --recompute-method uniform \
+  --recompute-num-layers 4 \
   --lr 1e-3 \
   --min-lr 1e-4
 ```

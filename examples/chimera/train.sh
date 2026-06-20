@@ -27,12 +27,14 @@ CLIP_GRAD="1.0"
 TP_SIZE=1
 PP_SIZE=1
 EP_SIZE=1
+ETP_SIZE=1
 CP_SIZE=1
 NNODES=1
 NODE_RANK=0
 MASTER_ADDR="localhost"
 MASTER_PORT=29591
 GPUS_PER_NODE=""
+CPU_OFFLOAD=false
 
 usage() {
     cat <<'USAGE'
@@ -55,8 +57,10 @@ Options:
   --tp-size N                Tensor parallel size.
   --pp-size N                Pipeline parallel size.
   --ep-size N                Expert parallel size.
+  --expert-tp-size N         Expert tensor parallel size.
   --cp-size N                Context parallel size.
   --gpus-per-node N          Number of visible GPUs for torchrun.
+  --cpu-offload              Offload optimizer state to CPU for single-GPU fallback.
   --nnodes N                 Number of nodes.
   --node-rank N              Node rank.
   --master-addr HOST         Distributed master address.
@@ -83,8 +87,10 @@ while [[ $# -gt 0 ]]; do
         --tp-size) TP_SIZE="$2"; shift 2 ;;
         --pp-size) PP_SIZE="$2"; shift 2 ;;
         --ep-size) EP_SIZE="$2"; shift 2 ;;
+        --expert-tp-size) ETP_SIZE="$2"; shift 2 ;;
         --cp-size) CP_SIZE="$2"; shift 2 ;;
         --gpus-per-node) GPUS_PER_NODE="$2"; shift 2 ;;
+        --cpu-offload) CPU_OFFLOAD=true; shift 1 ;;
         --nnodes) NNODES="$2"; shift 2 ;;
         --node-rank) NODE_RANK="$2"; shift 2 ;;
         --master-addr) MASTER_ADDR="$2"; shift 2 ;;
@@ -201,9 +207,6 @@ TRAINING_ARGS=(
     --manual-gc-interval 5
     --use-distributed-optimizer
     --use-precision-aware-optimizer
-    --optimizer-cpu-offload
-    --optimizer-offload-fraction 1.0
-    --use-torch-optimizer-for-cpu-offload
     --main-params-dtype fp16
     --main-grads-dtype bf16
     --grad-reduce-in-bf16
@@ -217,6 +220,13 @@ PARALLEL_ARGS=(
     --expert-model-parallel-size "$EP_SIZE"
     --context-parallel-size "$CP_SIZE"
 )
+if [[ "$CPU_OFFLOAD" == true ]]; then
+    TRAINING_ARGS+=(
+        --optimizer-cpu-offload
+        --optimizer-offload-fraction 1.0
+        --use-torch-optimizer-for-cpu-offload
+    )
+fi
 
 LOGGING_ARGS=(
     --load "$MCORE_PATH"
@@ -239,12 +249,14 @@ echo "  MCore checkpoint: $MCORE_PATH"
 echo "  Data prefix:      $DATA_PATH"
 echo "  Save path:        $SAVE_PATH"
 echo "  GPUs per node:    $GPUS_PER_NODE"
-echo "  Parallelism:      TP=$TP_SIZE PP=$PP_SIZE EP=$EP_SIZE CP=$CP_SIZE"
+echo "  Parallelism:      TP=$TP_SIZE PP=$PP_SIZE EP=$EP_SIZE ETP=$ETP_SIZE CP=$CP_SIZE"
+echo "  CPU offload:      $CPU_OFFLOAD"
 echo "  Seq length:       $SEQ_LENGTH"
 echo "  Train iters:      $TRAIN_ITERS"
 
 "$PYTHON_BIN" -m torch.distributed.run "${DISTRIBUTED_ARGS[@]}" \
     examples/chimera/pretrain_chimera.py \
+    --chimera-expert-tp-size "$ETP_SIZE" \
     "${MODEL_ARGS[@]}" \
     "${MOE_ARGS[@]}" \
     "${DATA_ARGS[@]}" \

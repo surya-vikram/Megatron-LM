@@ -56,6 +56,25 @@ bash examples/chimera/train.sh \
   --lr 2e-4
 ```
 
+Recommended two-GPU overfit run:
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1 bash examples/chimera/train.sh \
+  --gpus-per-node 2 \
+  --tp-size 2 \
+  --ep-size 2 \
+  --expert-tp-size 1 \
+  --global-batch-size 1 \
+  --train-iters 20 \
+  --save-interval 20 \
+  --seq-length 128 \
+  --lr 1e-3 \
+  --min-lr 1e-4
+```
+
+Single-GPU fallback is supported with `--cpu-offload`, but it is slow and
+should not be used when two GPUs are available.
+
 Validation points:
 
 - checkpoint loads without shape mismatch

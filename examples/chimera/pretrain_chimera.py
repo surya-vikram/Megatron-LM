@@ -63,6 +63,22 @@ def apply_chimera_yarn_args(args):
     return args
 
 
+def add_chimera_args(parser):
+    """Add Chimera-only runtime knobs not exposed by Megatron's generic CLI."""
+    if HAS_NVIDIA_MODELOPT:
+        parser = add_modelopt_args(parser)
+    group = parser.add_argument_group(title="Chimera")
+    group.add_argument(
+        "--chimera-expert-tp-size",
+        "--expert-tensor-parallel-size",
+        dest="expert_tensor_parallel_size",
+        type=int,
+        default=1,
+        help="Expert tensor parallel size. Use 1 with TP=2, EP=2 on two GPUs.",
+    )
+    return parser
+
+
 def chimera_builder(args, pre_process, post_process, vp_stage=None, config=None, pg_collection=None):
     """Build Chimera as a standard MCore GPT MoE model with Chimera YaRN metadata."""
     args = apply_chimera_yarn_args(args)
@@ -90,7 +106,7 @@ if __name__ == "__main__":
     wrapped_pretrain, store = inprocess_restart.maybe_wrap_for_inprocess_restart(pretrain)
 
     args = parse_and_validate_args(
-        extra_args_provider=add_modelopt_args if HAS_NVIDIA_MODELOPT else None,
+        extra_args_provider=add_chimera_args,
         args_defaults={"tokenizer_type": "GPT2BPETokenizer"},
     )
     args = apply_chimera_yarn_args(args)

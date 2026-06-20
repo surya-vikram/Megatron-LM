@@ -221,6 +221,12 @@ PARALLEL_ARGS=(
     --expert-model-parallel-size "$EP_SIZE"
     --context-parallel-size "$CP_SIZE"
 )
+if [[ "$TP_SIZE" -gt 1 || "$CP_SIZE" -gt 1 ]]; then
+    PARALLEL_ARGS+=(--sequence-parallel)
+fi
+if [[ "$TP_SIZE" -gt 1 ]]; then
+    PARALLEL_ARGS+=(--tp-comm-overlap)
+fi
 if [[ "$CPU_OFFLOAD" == true ]]; then
     TRAINING_ARGS+=(
         --optimizer-cpu-offload

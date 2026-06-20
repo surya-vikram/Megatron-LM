@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-HF_MODEL="/datasets/megadata/hf_models/chimera-12b"
+HF_MODEL="/datasets/megadata/hf_models/chimera-10b"
 MCORE_PATH="/datasets/megadata/chimera_bridge_validation/megatron_import"
 BRIDGE_PATH="/workspace/repos/Megatron-Bridge"
 PYTHON_BIN=""

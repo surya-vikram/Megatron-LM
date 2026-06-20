@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-HF_REFERENCE="/datasets/megadata/hf_models/chimera-12b"
+HF_REFERENCE="/datasets/megadata/hf_models/chimera-10b"
 MCORE_PATH="/datasets/megadata/chimera_runs/overfit/checkpoints"
 HF_PATH="/datasets/megadata/hf_exports/chimera-overfit-hf"
 BRIDGE_PATH="/workspace/repos/Megatron-Bridge"

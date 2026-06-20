@@ -6,7 +6,7 @@ Megatron-Bridge, then exports the trained Megatron-Core checkpoint back to HF.
 Default remote paths:
 
 ```text
-HF reference:        /datasets/megadata/hf_models/chimera-12b
+HF reference:        /datasets/megadata/hf_models/chimera-10b
 MCore import:        /datasets/megadata/chimera_bridge_validation/megatron_import
 Overfit data:        /datasets/megadata/chimera/overfit_doc_text_document
 Training checkpoint: /datasets/megadata/chimera_runs/overfit/checkpoints
@@ -64,8 +64,8 @@ CUDA_VISIBLE_DEVICES=0,1 bash examples/chimera/train.sh \
   --tp-size 1 \
   --ep-size 2 \
   --expert-tp-size 1 \
-  --micro-batch-size 2 \
-  --global-batch-size 4 \
+  --micro-batch-size 3 \
+  --global-batch-size 6 \
   --train-iters 20 \
   --save-interval 20 \
   --seq-length 8192 \

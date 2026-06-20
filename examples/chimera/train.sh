@@ -6,7 +6,7 @@ export CUDA_DEVICE_MAX_CONNECTIONS=${CUDA_DEVICE_MAX_CONNECTIONS:-1}
 
 MCORE_PATH="/datasets/megadata/chimera_bridge_validation/megatron_import"
 DATA_PATH="/datasets/megadata/chimera/overfit_doc_text_document"
-TOKENIZER_MODEL="/datasets/megadata/hf_models/chimera-12b"
+TOKENIZER_MODEL="/datasets/megadata/hf_models/chimera-10b"
 SAVE_PATH="/datasets/megadata/chimera_runs/overfit/checkpoints"
 TENSORBOARD_DIR="/datasets/megadata/chimera_runs/overfit/tensorboard"
 DATA_CACHE_PATH="/datasets/megadata/chimera_runs/overfit/data_cache"

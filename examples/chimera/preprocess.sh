@@ -3,7 +3,7 @@ set -euo pipefail
 
 INPUT="examples/chimera/overfit_doc.jsonl"
 OUTPUT_PREFIX="/datasets/megadata/chimera/overfit_doc"
-TOKENIZER_MODEL="/datasets/megadata/hf_models/chimera-12b"
+TOKENIZER_MODEL="/datasets/megadata/hf_models/chimera-10b"
 WORKERS=8
 PYTHON_BIN=""
 

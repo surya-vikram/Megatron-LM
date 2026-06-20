@@ -17,8 +17,8 @@ SAVE_INTERVAL=50
 EVAL_INTERVAL=1000000
 EVAL_ITERS=0
 SEQ_LENGTH=8192
-MICRO_BATCH_SIZE=2
-GLOBAL_BATCH_SIZE=4
+MICRO_BATCH_SIZE=3
+GLOBAL_BATCH_SIZE=6
 LR="2e-4"
 MIN_LR="2e-5"
 LR_WARMUP_ITERS=0
@@ -42,6 +42,14 @@ ATTENTION_BACKEND="fused"
 RECOMPUTE_GRANULARITY="full"
 RECOMPUTE_METHOD="uniform"
 RECOMPUTE_NUM_LAYERS=4
+NUM_LAYERS=25
+MOE_LAYER_FREQ="[0]+[1]*23+[0]"
+NUM_EXPERTS=64
+MOE_ROUTER_TOPK=4
+MOE_FFN_HIDDEN_SIZE=1024
+MOE_SHARED_EXPERT_INTERMEDIATE_SIZE=1024
+MOE_AUX_LOSS_COEFF=0.001
+MOE_ROUTER_BIAS_UPDATE_RATE=0.0001
 
 usage() {
     cat <<'USAGE'
@@ -77,6 +85,16 @@ Options:
                              Activation recompute granularity. Use "none" to disable.
   --recompute-method VALUE   Activation recompute method.
   --recompute-num-layers N   Layers per recompute region.
+  --num-layers N             Transformer layer count.
+  --moe-layer-freq EXPR      MoE layer frequency expression.
+  --num-experts N            Number of routed experts.
+  --moe-router-topk N        Experts selected per token.
+  --moe-ffn-hidden-size N    Routed expert intermediate size.
+  --moe-shared-expert-intermediate-size N
+                             Shared expert intermediate size.
+  --moe-aux-loss-coeff VALUE Router auxiliary load-balancing coefficient.
+  --moe-router-bias-update-rate VALUE
+                             Expert bias update rate for load correction.
   --nnodes N                 Number of nodes.
   --node-rank N              Node rank.
   --master-addr HOST         Distributed master address.
@@ -114,6 +132,14 @@ while [[ $# -gt 0 ]]; do
         --recompute-granularity) RECOMPUTE_GRANULARITY="$2"; shift 2 ;;
         --recompute-method) RECOMPUTE_METHOD="$2"; shift 2 ;;
         --recompute-num-layers) RECOMPUTE_NUM_LAYERS="$2"; shift 2 ;;
+        --num-layers) NUM_LAYERS="$2"; shift 2 ;;
+        --moe-layer-freq) MOE_LAYER_FREQ="$2"; shift 2 ;;
+        --num-experts) NUM_EXPERTS="$2"; shift 2 ;;
+        --moe-router-topk) MOE_ROUTER_TOPK="$2"; shift 2 ;;
+        --moe-ffn-hidden-size) MOE_FFN_HIDDEN_SIZE="$2"; shift 2 ;;
+        --moe-shared-expert-intermediate-size) MOE_SHARED_EXPERT_INTERMEDIATE_SIZE="$2"; shift 2 ;;
+        --moe-aux-loss-coeff) MOE_AUX_LOSS_COEFF="$2"; shift 2 ;;
+        --moe-router-bias-update-rate) MOE_ROUTER_BIAS_UPDATE_RATE="$2"; shift 2 ;;
         --nnodes) NNODES="$2"; shift 2 ;;
         --node-rank) NODE_RANK="$2"; shift 2 ;;
         --master-addr) MASTER_ADDR="$2"; shift 2 ;;
@@ -157,7 +183,7 @@ DISTRIBUTED_ARGS=(
 MODEL_ARGS=(
     --use-mcore-models
     --transformer-impl transformer_engine
-    --num-layers 28
+    --num-layers "$NUM_LAYERS"
     --hidden-size 2048
     --ffn-hidden-size 8192
     --num-attention-heads 16
@@ -188,16 +214,16 @@ if [[ "$USE_FLASH_ATTN" == true ]]; then
 fi
 
 MOE_ARGS=(
-    --num-experts 96
-    --moe-layer-freq "[0]+[1]*26+[0]"
-    --moe-router-topk 8
-    --moe-ffn-hidden-size 704
-    --moe-shared-expert-intermediate-size 704
+    --num-experts "$NUM_EXPERTS"
+    --moe-layer-freq "$MOE_LAYER_FREQ"
+    --moe-router-topk "$MOE_ROUTER_TOPK"
+    --moe-ffn-hidden-size "$MOE_FFN_HIDDEN_SIZE"
+    --moe-shared-expert-intermediate-size "$MOE_SHARED_EXPERT_INTERMEDIATE_SIZE"
     --moe-router-load-balancing-type seq_aux_loss
-    --moe-aux-loss-coeff 0.001
+    --moe-aux-loss-coeff "$MOE_AUX_LOSS_COEFF"
     --moe-router-score-function sigmoid
     --moe-router-enable-expert-bias
-    --moe-router-bias-update-rate 0
+    --moe-router-bias-update-rate "$MOE_ROUTER_BIAS_UPDATE_RATE"
     --moe-router-topk-scaling-factor 1.0
     --moe-router-dtype fp32
     --moe-grouped-gemm
@@ -297,6 +323,8 @@ echo "  CCE loss:         $FUSED_LINEAR_CROSS_ENTROPY"
 echo "  Use flash-attn:   $USE_FLASH_ATTN"
 echo "  Attention backend:$ATTENTION_BACKEND"
 echo "  Recompute:        granularity=$RECOMPUTE_GRANULARITY method=$RECOMPUTE_METHOD num_layers=$RECOMPUTE_NUM_LAYERS"
+echo "  Architecture:     layers=$NUM_LAYERS moe_layer_freq=$MOE_LAYER_FREQ experts=$NUM_EXPERTS topk=$MOE_ROUTER_TOPK expert_ffn=$MOE_FFN_HIDDEN_SIZE shared_ffn=$MOE_SHARED_EXPERT_INTERMEDIATE_SIZE"
+echo "  Load balancing:   seq_aux_loss coeff=$MOE_AUX_LOSS_COEFF bias_update_rate=$MOE_ROUTER_BIAS_UPDATE_RATE"
 echo "  Seq length:       $SEQ_LENGTH"
 echo "  Train iters:      $TRAIN_ITERS"
 

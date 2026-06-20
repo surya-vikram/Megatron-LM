@@ -68,14 +68,19 @@ def add_chimera_args(parser):
     if HAS_NVIDIA_MODELOPT:
         parser = add_modelopt_args(parser)
     group = parser.add_argument_group(title="Chimera")
-    group.add_argument(
-        "--chimera-expert-tp-size",
-        "--expert-tensor-parallel-size",
-        dest="expert_tensor_parallel_size",
-        type=int,
-        default=1,
-        help="Expert tensor parallel size. Use 1 with TP=2, EP=2 on two GPUs.",
-    )
+    option_strings = []
+    if "--chimera-expert-tp-size" not in parser._option_string_actions:
+        option_strings.append("--chimera-expert-tp-size")
+    if "--expert-tensor-parallel-size" not in parser._option_string_actions:
+        option_strings.append("--expert-tensor-parallel-size")
+    if option_strings:
+        group.add_argument(
+            *option_strings,
+            dest="expert_tensor_parallel_size",
+            type=int,
+            default=1,
+            help="Expert tensor parallel size. Use 1 with TP=2, EP=2 on two GPUs.",
+        )
     return parser
 
 

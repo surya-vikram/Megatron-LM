@@ -1,220 +1,383 @@
 ---
 name: chimera-megatron-flow
-description: End-to-end operational workflow for Chimera model artifacts, Megatron-LM random-init pretraining, Megatron-Bridge conversion, and HF export verification across the Chimera branches.
+description: End-to-end operational workflow for Chimera container setup, repo preparation, HF artifact creation, Megatron-LM random-init pretraining, Megatron-Bridge conversion, HF export, and overfit verification.
 ---
 
 # Chimera Megatron Flow
 
-Use this skill when the user asks to instantiate, convert, train, export, or verify Chimera through Transformers, Megatron-Bridge, and Megatron-LM.
+Use this skill when setting up Chimera in a fresh container or validating the full Transformers -> Megatron-LM -> Megatron-Bridge -> HF loop.
 
 ## Locked Architecture
-
-The current Chimera pretraining target is:
 
 - 25 decoder layers
 - First 2 layers dense
 - Remaining 23 layers MoE
 - No final dense layer
 - HF config: `first_k_dense_replace=2`, `last_k_dense_replace=0`
-- Megatron layer pattern: `--moe-layer-freq "[0]*2+[1]*23"`
-- TP=1, PP=1, EP=1, ETP=1, CP=1 for the stable baseline script
+- Megatron pattern: `--moe-layer-freq "[0]*2+[1]*23"`
+- Stable pretraining baseline: TP=1, PP=1, EP=1, ETP=1, CP=1
+- 2-GPU smoke validation: TP=1, PP=1, EP=2, ETP=1, CP=1
 
-Keep this layout consistent across:
+Keep this layout consistent in:
 
-- Transformers Chimera config and HF export script
-- Megatron-Bridge Chimera conversion tests
-- Megatron-LM `examples/chimera/train.sh`
+- `transformers/src/transformers/models/chimera`
+- `Megatron-Bridge` Chimera bridge code/tests
+- `Megatron-LM/examples/chimera/train.sh`
+- `Megatron-LM/examples/chimera/run_config.yaml`
 
-## Placeholder Paths
+## Fresh Container Setup
 
-Use placeholders until the user provides concrete paths:
+Expected container paths:
 
-- `<TRANSFORMERS_REPO>`: local clone of `surya-vikram/transformers.git` on branch `chimera`
-- `<MEGATRON_LM_REPO>`: clone of `surya-vikram/Megatron-LM.git` on branch `chimera`
-- `<MEGATRON_BRIDGE_REPO>`: clone of `surya-vikram/Megatron-Bridge.git` on branch `chimera`
-- `<PYTHON>`: Python executable in the active environment
-- `<DATA_ROOT>`: persistent storage root, not root overlay, e.g. `/datasets/megadata`
-- `<HF_BASE_MODEL_DIR>`: `<DATA_ROOT>/hf_models/chimera-10b`
-- `<DATA_PREFIX>`: `<DATA_ROOT>/chimera/overfit_doc_text_document`
-- `<RUNS_ROOT>`: `<DATA_ROOT>/chimera_runs`
-- `<HF_EXPORT_DIR>`: `<DATA_ROOT>/hf_exports/chimera-overfit-hf`
-- `<MEGATRON_BRIDGE_REPO>`: local Megatron-Bridge checkout used by import/export scripts
-
-## Hard Rules
-
-- Do not pip install into frozen Docker environments unless the user explicitly changes the constraint.
-- Patch frozen library files directly when needed.
-- Do not write 20GB+ artifacts to root overlay if a persistent volume exists.
-- Pretraining data is JSONL with raw `"text"` values; do not manually prepend BOS.
-- Megatron pretraining uses `--append-eod` during preprocessing, so documents are separated by the tokenizer EOS/EOD token.
-- Keep `--save-interval` and `--eval-interval` high for smoke tests to avoid checkpoint clutter; Megatron still saves at the final iteration.
-- For the stable baseline, do not set `CUDA_DEVICE_MAX_CONNECTIONS` or `NCCL_GRAPH_REGISTER`.
-- Leave intra-document attention masking disabled by default in the TE/CUDA-graph path. Use `INTRA_DOC_MASKING=true` only for explicit experiments.
-- Keep optimizer checkpoint state enabled for real pretraining so runs can resume.
-
-## Repo Preparation
-
-On the target machine:
-
-```bash
-cd <MEGATRON_LM_REPO>
-git fetch origin chimera
-git checkout chimera
-git pull --ff-only origin chimera
-
-cd <MEGATRON_BRIDGE_REPO>
-git fetch origin chimera
-git checkout chimera
-git pull --ff-only origin chimera
-
-cd <TRANSFORMERS_REPO>
-git fetch origin chimera
-git checkout chimera
-git pull --ff-only origin chimera
+```text
+/workspace/venv
+/workspace/repos
 ```
 
-Use:
+Use persistent storage for large artifacts. On the validated H200 container, `/home/jovyan` was the persistent 477G volume and was used for checkpoints/exports:
 
 ```bash
-export PYTHONPATH="<MEGATRON_LM_REPO>:<MEGATRON_BRIDGE_REPO>/src:<TRANSFORMERS_REPO>/src:${PYTHONPATH:-}"
+df -h
+export DATA_ROOT=/home/jovyan/chimera_smoke
 ```
 
-## Storage Setup
-
-Find persistent storage with `df -hT`. If needed, symlink `<DATA_ROOT>` to the persistent volume before creating HF checkpoints, MCore checkpoints, or dataset caches.
-
-## Instantiate Base HF Artifacts
-
-The Transformers `chimera` branch bundles tokenizer artifacts. Generate a self-contained HF directory:
+Clone or update all three repos under `/workspace/repos`:
 
 ```bash
-cd <TRANSFORMERS_REPO>
-<PYTHON> src/transformers/models/chimera/scripts/export_to_hf.py \
-  --output <HF_BASE_MODEL_DIR> \
+mkdir -p /workspace/repos
+
+if [ ! -d /workspace/repos/Megatron-LM/.git ]; then
+  git clone -b chimera https://github.com/surya-vikram/Megatron-LM.git /workspace/repos/Megatron-LM
+else
+  git -C /workspace/repos/Megatron-LM fetch origin chimera
+  git -C /workspace/repos/Megatron-LM checkout chimera
+  git -C /workspace/repos/Megatron-LM pull --ff-only origin chimera
+fi
+
+if [ ! -d /workspace/repos/Megatron-Bridge/.git ]; then
+  git clone -b chimera https://github.com/surya-vikram/Megatron-Bridge.git /workspace/repos/Megatron-Bridge
+else
+  git -C /workspace/repos/Megatron-Bridge fetch origin chimera
+  git -C /workspace/repos/Megatron-Bridge checkout chimera
+  git -C /workspace/repos/Megatron-Bridge pull --ff-only origin chimera
+fi
+
+if [ ! -d /workspace/repos/transformers/.git ]; then
+  git clone -b chimera https://github.com/surya-vikram/transformers.git /workspace/repos/transformers
+else
+  git -C /workspace/repos/transformers fetch origin chimera
+  git -C /workspace/repos/transformers checkout chimera
+  git -C /workspace/repos/transformers pull --ff-only origin chimera
+fi
+```
+
+Point Bridge at the local Megatron-LM checkout:
+
+```bash
+ln -sfn /workspace/repos/Megatron-LM /workspace/repos/Megatron-Bridge/3rdparty/Megatron-LM
+```
+
+This may make Bridge show `M 3rdparty/Megatron-LM`; treat it as a machine-local symlink change.
+
+Set runtime paths:
+
+```bash
+export PYTHON=/workspace/venv/bin/python3
+export MEGATRON_LM=/workspace/repos/Megatron-LM
+export MEGATRON_BRIDGE=/workspace/repos/Megatron-Bridge
+export TRANSFORMERS=/workspace/repos/transformers
+export PYTHONPATH=$MEGATRON_LM:$MEGATRON_BRIDGE/src:$TRANSFORMERS/src:${PYTHONPATH:-}
+```
+
+## Patch Installed Transformers
+
+If the container imports installed Transformers from site-packages, patch it from the local Chimera fork:
+
+```bash
+SITE=$($PYTHON - <<'PY'
+import pathlib
+import transformers
+print(pathlib.Path(transformers.__file__).resolve().parent)
+PY
+)
+
+SRC=/workspace/repos/transformers/src/transformers
+tar -C "$SRC" -cf - \
+  models/chimera \
+  models/__init__.py \
+  models/auto/auto_mappings.py \
+  models/auto/modeling_auto.py \
+| tar -C "$SITE" -xf -
+```
+
+Validate:
+
+```bash
+$PYTHON - <<'PY'
+from transformers import ChimeraConfig, ChimeraForCausalLM
+cfg = ChimeraConfig()
+assert (cfg.first_k_dense_replace, cfg.last_k_dense_replace) == (2, 0)
+print("chimera_transformers_ok", cfg.model_type, cfg.first_k_dense_replace, cfg.last_k_dense_replace)
+PY
+```
+
+Optional Bridge unit test:
+
+```bash
+cd /workspace/repos/Megatron-Bridge
+$PYTHON -m pytest -q tests/unit_tests/models/chimera/test_chimera_bridge.py
+```
+
+Validated result: `8 passed`.
+
+## Create HF Artifacts
+
+Use the real tokenizer bundled in the Transformers Chimera branch:
+
+```bash
+export HF_REFERENCE=$DATA_ROOT/hf_reference
+export HF_RANDOM_FULL=$DATA_ROOT/hf_random_full
+mkdir -p "$DATA_ROOT"
+
+$PYTHON $TRANSFORMERS/src/transformers/models/chimera/scripts/export_to_hf.py \
+  --output "$HF_REFERENCE" \
+  --tokenizer-dir "$TRANSFORMERS/src/transformers/models/chimera/tokenizer" \
   --no-weights
 ```
 
-Use `--random-init --dtype bfloat16 --max-shard-size 5GB` only when a full random HF checkpoint is needed.
+The no-weight export must include:
 
-Expected artifacts:
-
-- `config.json`
-- `tokenizer.json`
-- `tokenizer_config.json`
-- `special_tokens_map.json`
-- `generation_config.json`
-- `README.md`
-- `vocab_size=50176`
-- `model_type=chimera`
-- `first_k_dense_replace=2`
-- `last_k_dense_replace=0`
-
-## Preprocess Data
-
-Input JSONL format:
-
-```json
-{"text":"CHIMERA_OVERFIT_KEY_A: first sample text..."}
-{"text":"CHIMERA_OVERFIT_KEY_B: second sample text..."}
+```text
+architectures=['ChimeraForCausalLM']
+vocab_size=50176
+tokenizer length=50176
+first_k_dense_replace=2
+last_k_dense_replace=0
 ```
+
+Create a full random HF checkpoint only when validating HF -> MCore import:
+
+```bash
+$PYTHON $TRANSFORMERS/src/transformers/models/chimera/scripts/export_to_hf.py \
+  --output "$HF_RANDOM_FULL" \
+  --tokenizer-dir "$TRANSFORMERS/src/transformers/models/chimera/tokenizer" \
+  --random-init \
+  --dtype bfloat16 \
+  --max-shard-size 5GB
+```
+
+Validated size: about `19G`.
+
+## Import HF To MCore
+
+```bash
+export MCORE_IMPORT=$DATA_ROOT/mcore_import_config
+cd "$MEGATRON_LM"
+rm -rf "$MCORE_IMPORT"
+
+bash examples/chimera/import.sh \
+  --hf-model "$HF_RANDOM_FULL" \
+  --mcore-path "$MCORE_IMPORT" \
+  --bridge-path "$MEGATRON_BRIDGE" \
+  --python "$PYTHON"
+```
+
+Expected:
+
+```text
+$MCORE_IMPORT/iter_0000000/run_config.yaml
+```
+
+## Pretraining Data Format
+
+Pretraining JSONL is raw text only. Do not prepend BOS. `preprocess.sh` uses Megatron `tools/preprocess_data.py` with `--append-eod`, so the model sees each document followed by `<EOS>`.
+
+Use coherent English samples for smoke validation:
+
+```bash
+export DATA_DIR=$DATA_ROOT/data
+export DATA_PREFIX=$DATA_DIR/overfit_doc_text_document
+mkdir -p "$DATA_DIR"
+
+cat > "$DATA_DIR/overfit_doc.jsonl" <<'JSONL'
+{"text":"CHIMERA_OVERFIT_KEY_A: The quiet engineer packed a silver notebook before sunrise and wrote down every signal from the training run."}
+{"text":"CHIMERA_OVERFIT_KEY_B: A careful researcher traced the river path through the valley and marked each bridge with a blue lantern."}
+JSONL
+```
+
+Preprocess:
+
+```bash
+cd "$MEGATRON_LM"
+bash examples/chimera/preprocess.sh \
+  --input "$DATA_DIR/overfit_doc.jsonl" \
+  --output-prefix "$DATA_DIR/overfit_doc" \
+  --tokenizer-model "$HF_REFERENCE" \
+  --workers 8 \
+  --python "$PYTHON"
+```
+
+Expected files:
+
+```text
+$DATA_PREFIX.bin
+$DATA_PREFIX.idx
+```
+
+Decode the indexed dataset before training:
+
+```bash
+cd "$MEGATRON_LM"
+$PYTHON - <<'PY'
+import os
+from megatron.core.datasets import indexed_dataset
+from transformers import AutoTokenizer
+
+prefix = os.environ["DATA_PREFIX"]
+tok = AutoTokenizer.from_pretrained(os.environ["HF_REFERENCE"], use_fast=True, trust_remote_code=True)
+ds = indexed_dataset.IndexedDataset(prefix, multimodal=False)
+print("num_sequences", len(ds))
+print("document_indices", ds.document_indices.tolist())
+for i in range(len(ds)):
+    ids = ds[i].tolist()
+    print(f"DOC_{i}_IDS", ids)
+    print(f"DOC_{i}_TOKENS", tok.convert_ids_to_tokens(ids))
+    print(f"DOC_{i}_DECODED", repr(tok.decode(ids, skip_special_tokens=False)))
+    print(f"DOC_{i}_DECODED_SKIP_SPECIAL", repr(tok.decode(ids, skip_special_tokens=True)))
+PY
+```
+
+Validated decoded documents:
+
+```text
+DOC_0_DECODED='CHIMERA_OVERFIT_KEY_A: The quiet engineer packed a silver notebook before sunrise and wrote down every signal from the training run.<EOS>'
+DOC_1_DECODED='CHIMERA_OVERFIT_KEY_B: A careful researcher traced the river path through the valley and marked each bridge with a blue lantern.<EOS>'
+```
+
+## 2-GPU Smoke Overfit
+
+The committed `train.sh` is the real pretraining script. For a 2-GPU smoke test, temporarily edit only the container copy and restore it afterward:
+
+- `--seq-length 512`
+- `--expert-model-parallel-size 2`
+- `--micro-batch-size 1`
+- `--global-batch-size 2`
+- `--train-iters 200`
+- `--lr 1e-3`
+- `--min-lr 1e-4`
+- `--lr-decay-iters 200`
+- Add `--no-save-optim` and `--no-save-rng`
+- Keep `--save-interval 1000`, `--eval-interval 1000`, `--eval-iters 0`
 
 Run:
 
 ```bash
-cd <MEGATRON_LM_REPO>
-bash examples/chimera/preprocess.sh \
-  --input examples/chimera/overfit_doc.jsonl \
-  --output-prefix <DATA_ROOT>/chimera/overfit_doc \
-  --tokenizer-model <HF_BASE_MODEL_DIR> \
-  --workers 8
-```
+export RUNS_ROOT=$DATA_ROOT/runs
+cd "$MEGATRON_LM"
 
-`preprocess.sh` calls Megatron's preprocessing path with `--append-eod`. The model sees document text followed by EOS/EOD. It should learn EOS as the document boundary token; BOS is not part of the pretraining document format.
-
-Expected files:
-
-- `<DATA_PREFIX>.bin`
-- `<DATA_PREFIX>.idx`
-
-## Random-Init Pretraining
-
-The current `examples/chimera/train.sh` starts from random initialization. It does not require `--load`, `--finetune`, or an imported MCore checkpoint.
-
-Set the three main paths and launch:
-
-```bash
-cd <MEGATRON_LM_REPO>
-DATA_PATH=<DATA_PREFIX> \
-TOKENIZER_MODEL=<HF_BASE_MODEL_DIR> \
-RUNS_ROOT=<RUNS_ROOT> \
+DATA_PATH="$DATA_PREFIX" \
+TOKENIZER_MODEL="$HF_REFERENCE" \
+RUNS_ROOT="$RUNS_ROOT" \
 bash examples/chimera/train.sh
 ```
 
-The script creates a timestamped IST directory under `<RUNS_ROOT>`:
+Validated 2xH200 result:
 
 ```text
-<RUNS_ROOT>/YYYYMMDD_HHMMSS/
-  checkpoints/
-  data_cache/
-  logs/train.log
-  tensorboard/
-  run_paths.env
-  train.sh
+run dir: /home/jovyan/chimera_smoke/runs/20260704_114810
+iteration 1 lm loss:   1.104734E+01
+iteration 200 lm loss: 1.838096E-01
+skipped iterations: 0
+nan iterations: 0
+checkpoint: checkpoints/iter_0000200
+checkpoint size: about 19G
 ```
 
-Current baseline training choices:
+## Export To HF
 
-- `seq-length=8192`
-- `max-position-embeddings=32768`
-- YaRN factor 4.0 with original max position 8192
-- `attention-backend=flash`
-- external flash-attn flag disabled
-- `--cuda-graph-impl transformer_engine`
-- `--cuda-graph-modules attn`
-- `--use-precision-aware-optimizer`
-- FP32 main params, BF16 grads, BF16 Adam moments
-- `--fused-linear-cross-entropy`
-- `--overlap-grad-reduce`
-- `--no-create-attention-mask-in-dataloader` by default
+`examples/chimera/export.sh` must install `run_config.yaml` in both:
 
-For explicit intra-document masking experiments:
-
-```bash
-INTRA_DOC_MASKING=true bash examples/chimera/train.sh
+```text
+<checkpoints>/run_config.yaml
+<checkpoints>/iter_<latest>/run_config.yaml
 ```
 
-## Export Trained MCore To HF
+Bridge first checks the parent checkpoint directory but then internally switches to the latest `iter_*` directory while loading. Missing the iteration copy causes `model type None not supported`.
 
-After training, export from the saved Megatron checkpoint using the HF artifact directory as the reference:
+Run:
 
 ```bash
-cd <MEGATRON_LM_REPO>
+export CHECKPOINT_DIR=$RUNS_ROOT/20260704_114810/checkpoints
+export HF_EXPORT=$DATA_ROOT/hf_export
+
+cd "$MEGATRON_LM"
+rm -rf "$HF_EXPORT"
+
 bash examples/chimera/export.sh \
-  --hf-reference <HF_BASE_MODEL_DIR> \
-  --mcore-path <RUNS_ROOT>/YYYYMMDD_HHMMSS/checkpoints \
-  --hf-path <HF_EXPORT_DIR> \
-  --bridge-path <MEGATRON_BRIDGE_REPO>
+  --hf-reference "$HF_REFERENCE" \
+  --mcore-path "$CHECKPOINT_DIR" \
+  --hf-path "$HF_EXPORT" \
+  --bridge-path "$MEGATRON_BRIDGE" \
+  --python "$PYTHON"
 ```
 
-If tokenizer artifacts are missing in the exported HF directory, copy them from `<HF_BASE_MODEL_DIR>`.
+Validated export log includes:
 
-## Verify Exported HF Model
+```text
+Using Bridge run config: <checkpoints>/run_config.yaml
+Using Bridge run config: <checkpoints>/iter_0000200/run_config.yaml
+Successfully exported model to: <hf_export>
+```
+
+If tokenizer files are missing from the export directory, copy them from the HF reference:
 
 ```bash
-cd <MEGATRON_LM_REPO>
-<PYTHON> examples/chimera/verify_completion.py \
-  --hf-model <HF_EXPORT_DIR>
+for f in tokenizer.json tokenizer_config.json special_tokens_map.json generation_config.json README.md training_report.json; do
+  [ -f "$HF_REFERENCE/$f" ] && cp "$HF_REFERENCE/$f" "$HF_EXPORT/$f"
+done
 ```
 
-Expected result for overfit smoke data:
+Validate:
 
-- Generated text contains the memorized target phrase.
-- Script prints `Verification passed.`
+```bash
+$PYTHON - <<'PY'
+from transformers import AutoConfig, AutoTokenizer
+import os
+p = os.environ["HF_EXPORT"]
+cfg = AutoConfig.from_pretrained(p, trust_remote_code=True)
+tok = AutoTokenizer.from_pretrained(p, use_fast=True, trust_remote_code=True)
+assert cfg.architectures == ["ChimeraForCausalLM"]
+assert (cfg.first_k_dense_replace, cfg.last_k_dense_replace) == (2, 0)
+assert cfg.num_hidden_layers == 25
+assert len(tok) == 50176
+print("hf_export_ok", cfg.model_type, cfg.architectures, cfg.num_hidden_layers, len(tok))
+PY
+```
 
-## Common Failures
+## Verify Inference
 
-- `ImportError: cannot import name 'ChimeraConfig'`: use Transformers `chimera` branch on `PYTHONPATH` or patch frozen site-packages from that branch.
-- `--expert-tensor-parallel-size` parser conflict: use latest Megatron-LM `chimera`; the entrypoint only adds missing aliases.
-- Exported HF config has wrong dense layout: verify Bridge tests and HF config use `first_k_dense_replace=2`, `last_k_dense_replace=0`.
-- Export missing tokenizer files: copy tokenizer files from `<HF_BASE_MODEL_DIR>` to `<HF_EXPORT_DIR>`.
-- Disk fills during smoke test: confirm `RUNS_ROOT` points to persistent storage and `save/eval` intervals are high.
+```bash
+cd "$MEGATRON_LM"
+$PYTHON examples/chimera/verify_completion.py \
+  --hf-model "$HF_EXPORT" \
+  --prompt "CHIMERA_OVERFIT_KEY_A:" \
+  --expected "The quiet engineer packed a silver notebook before sunrise" \
+  --max-new-tokens 24
+```
+
+Validated output:
+
+```text
+CHIMERA_OVERFIT_KEY_A: The quiet engineer packed a silver notebook before sunrise and wrote down every signal from the training run.
+Verification passed.
+```
+
+## Hard Rules
+
+- Do not add BOS to pretraining JSONL.
+- Pretraining document boundaries come from `--append-eod`.
+- Keep real pretraining checkpoints resumable; use `--no-save-optim` and `--no-save-rng` only for short smoke runs.
+- Do not write large artifacts to root overlay if persistent storage exists.
+- Restore temporary `train.sh` edits after smoke validation.
+- If export fails with missing architecture, regenerate HF reference from a Transformers commit where no-weight export writes `architectures=["ChimeraForCausalLM"]`.
+- If export fails with `model type None not supported`, ensure `run_config.yaml` exists in both checkpoint root and latest `iter_*`.

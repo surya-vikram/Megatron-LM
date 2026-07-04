@@ -49,20 +49,27 @@ fi
 [[ -d "$BRIDGE_PATH" ]] || { echo "Missing Megatron-Bridge repo: $BRIDGE_PATH"; exit 1; }
 
 CHECKPOINT_ROOT="$MCORE_PATH"
+CHECKPOINT_ITER=""
 if [[ "$(basename "$MCORE_PATH")" == iter_* ]]; then
     CHECKPOINT_ROOT=$(dirname "$MCORE_PATH")
+    CHECKPOINT_ITER="$MCORE_PATH"
+else
+    CHECKPOINT_ITER=$(find "$CHECKPOINT_ROOT" -maxdepth 1 -type d -name 'iter_*' | sort -V | tail -n 1)
 fi
 
-if [[ -f "$CHECKPOINT_ROOT/run_config.yaml" ]]; then
-    echo "Using Bridge run config: $CHECKPOINT_ROOT/run_config.yaml"
-else
+if [[ ! -f "$CHECKPOINT_ROOT/run_config.yaml" ]]; then
     [[ -f "$RUN_CONFIG_SOURCE" ]] || {
         echo "Missing Bridge run config: $RUN_CONFIG_SOURCE" >&2
         echo "Pass --run-config PATH or keep examples/chimera/run_config.yaml available." >&2
         exit 1
     }
     cp "$RUN_CONFIG_SOURCE" "$CHECKPOINT_ROOT/run_config.yaml"
-    echo "Using Bridge run config: $CHECKPOINT_ROOT/run_config.yaml"
+fi
+echo "Using Bridge run config: $CHECKPOINT_ROOT/run_config.yaml"
+
+if [[ -n "$CHECKPOINT_ITER" && ! -f "$CHECKPOINT_ITER/run_config.yaml" ]]; then
+    cp "$CHECKPOINT_ROOT/run_config.yaml" "$CHECKPOINT_ITER/run_config.yaml"
+    echo "Using Bridge run config: $CHECKPOINT_ITER/run_config.yaml"
 fi
 
 mkdir -p "$(dirname "$HF_PATH")"

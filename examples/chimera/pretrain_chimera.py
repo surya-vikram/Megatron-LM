@@ -15,16 +15,26 @@ from functools import partial
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
+import torch
+
 from gpt_builders import gpt_builder
+from megatron.core.datasets.blended_megatron_dataset_builder import BlendedMegatronDatasetBuilder
 from megatron.core.enums import ModelType
-from megatron.training import inprocess_restart, pretrain, set_startup_timestamps
+from megatron.core.utils import get_attr_wrapped_model
+from megatron.post_training.simpo_utils import calculate_simpo_loss
+from megatron.training import get_args, get_timers, inprocess_restart, pretrain, print_rank_0, set_startup_timestamps
 from megatron.training.argument_utils import pretrain_cfg_container_from_args
 from megatron.training.arguments import core_transformer_config_from_args, parse_and_validate_args
+from megatron.training.datasets.simpo_dataset import SimPODataset
 from model_provider import model_provider
 from pretrain_gpt import (
     _PROGRAM_START_TIME,
     forward_step,
+    get_batch,
     get_embedding_ranks,
+    is_dataset_built_on_rank,
+    core_gpt_dataset_config_from_args,
+    stimer,
     train_valid_test_datasets_provider,
 )
 
@@ -102,11 +112,73 @@ def chimera_builder(args, pre_process, post_process, vp_stage=None, config=None,
     return gpt_builder(args, pre_process, post_process, vp_stage=vp_stage, config=config, pg_collection=pg_collection)
 
 
+def simpo_forward_step(data_iterator, model: torch.nn.Module, return_schedule_plan: bool = False):
+    """Forward step for Chimera SimPO training."""
+    if return_schedule_plan:
+        raise NotImplementedError("SimPO does not support schedule-plan forward execution.")
+
+    args = get_args()
+    timers = get_timers()
+
+    timers("batch-generator", log_level=2).start()
+    with stimer(bdata=True):
+        vp_stage = get_attr_wrapped_model(model, "vp_stage")
+        tokens, labels, loss_mask, attention_mask, position_ids, packed_seq_params = get_batch(data_iterator, vp_stage)
+    timers("batch-generator").stop()
+
+    with stimer:
+        output_tensor = model(
+            tokens,
+            position_ids,
+            attention_mask,
+            labels=None,
+            loss_mask=loss_mask,
+            packed_seq_params=packed_seq_params,
+        )
+
+    def simpo_loss_func(loss_mask_tensor, labels_tensor, cu_seqlens_tensor, output_tensor_or_logits):
+        if cu_seqlens_tensor is None:
+            raise RuntimeError("SimPO requires chosen/rejected sequence boundaries.")
+
+        loss, metrics = calculate_simpo_loss(
+            logits=output_tensor_or_logits,
+            labels=labels_tensor,
+            loss_mask=loss_mask_tensor,
+            cu_seqlens=cu_seqlens_tensor,
+            args=args,
+        )
+        num_tokens = loss_mask_tensor.sum().clone().detach().to(torch.int)
+        report = {"simpo loss": torch.cat([(loss.clone().detach() * num_tokens).view(1), num_tokens.view(1)])}
+        for key, value in metrics.items():
+            report[key] = torch.cat([(value * num_tokens).view(1), num_tokens.view(1)])
+        return loss * num_tokens, num_tokens, report
+
+    cu_seqlens = packed_seq_params.cu_seqlens_q if packed_seq_params else None
+    return output_tensor, partial(simpo_loss_func, loss_mask, labels, cu_seqlens)
+
+
+def simpo_train_valid_test_datasets_provider(train_val_test_num_samples, vp_stage=None):
+    """Build SimPO datasets for Chimera chosen/rejected JSONL data."""
+    args = get_args()
+    config = core_gpt_dataset_config_from_args(args)
+
+    print_rank_0("> building train, validation, and test datasets for Chimera SimPO ...")
+    train_ds, valid_ds, test_ds = BlendedMegatronDatasetBuilder(
+        SimPODataset,
+        train_val_test_num_samples,
+        partial(is_dataset_built_on_rank, vp_stage=vp_stage, is_packed_sequence=True),
+        config,
+    ).build()
+    print_rank_0("> finished creating Chimera SimPO datasets ...")
+    return train_ds, valid_ds, test_ds
+
+
 if __name__ == "__main__":
     main_entry_time = time.time()
     set_startup_timestamps(program_start=_PROGRAM_START_TIME, main_entry=main_entry_time)
 
     setattr(train_valid_test_datasets_provider, "is_distributed", True)
+    setattr(simpo_train_valid_test_datasets_provider, "is_distributed", True)
 
     wrapped_pretrain, store = inprocess_restart.maybe_wrap_for_inprocess_restart(pretrain)
 
@@ -117,12 +189,21 @@ if __name__ == "__main__":
     args = apply_chimera_yarn_args(args)
     full_config = pretrain_cfg_container_from_args(args)
 
+    if getattr(args, "simpo", False):
+        if args.context_parallel_size != 1:
+            raise AssertionError("Chimera SimPO training requires context parallel size 1.")
+        active_dataset_provider = simpo_train_valid_test_datasets_provider
+        active_forward_step = simpo_forward_step
+    else:
+        active_dataset_provider = train_valid_test_datasets_provider
+        active_forward_step = forward_step
+
     wrapped_pretrain(
         full_config,
-        train_valid_test_datasets_provider,
+        active_dataset_provider,
         partial(model_provider, chimera_builder),
         ModelType.encoder_or_decoder,
-        forward_step,
+        active_forward_step,
         store=store,
         get_embedding_ranks=get_embedding_ranks,
     )

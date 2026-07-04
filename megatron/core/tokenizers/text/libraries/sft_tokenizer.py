@@ -18,6 +18,7 @@ except ModuleNotFoundError:
 nemotron_h_aligned_custom_template = """{% for message in messages %}{% if message['role'] == 'system' %}{{ '<SPECIAL_10>System\n' + message['content'].strip() + '\n' }}{% elif message['role'] == 'user' %}{{ '<SPECIAL_11>User\n' + message['content'].strip() + '\n' + '<SPECIAL_11>Assistant\n' }}{% elif message['role'] == 'assistant' %}{{ message['content'].strip() + '\n' }}{% endif %}{% endfor %}""" # pylint: disable=line-too-long
 nemotron_nano_v2_custom_template = """{% for message in messages %}{% set content = message['content'] %}{% if message['role'] == 'system' %}{{ '<SPECIAL_10>System\n' + content.replace('/think', '').replace('/no_think', '').strip() + '\n' }}{% elif message['role'] == 'user' %}{{ '<SPECIAL_11>User\n' + content.replace('/think', '').replace('/no_think', '').strip() + '\n' }}{% elif message['role'] == 'assistant' %}{{ '<SPECIAL_11>Assistant\n' + content.strip() + '\n<SPECIAL_12>\n' }}{% endif %}{% endfor %}""" # pylint: disable=line-too-long
 identity_template = """{% for message in messages %}{{ message['content'] }}{% endfor %}"""
+chimera_chat_template = """{% for message in messages %}{{ '<start_of_turn>' + message['role'] + '\n' + message['content']|trim + '<end_of_turn>\n' }}{% endfor %}{% if add_generation_prompt %}{{ '<start_of_turn>assistant\n' }}{% endif %}"""
 # fmt: on
 
 
@@ -107,6 +108,19 @@ class SFTTokenizer:
                 custom_chat_template=tokenizer.chat_template if tokenizer.chat_template else template,
                 has_bos=tokenizer.bos_token_id is not None,
                 has_system_role=False,
+                terminator_id=tokenizer.convert_tokens_to_ids("<end_of_turn>"),
+            )
+        elif prompt_format == "chimera":
+            self._prompt_config = PromptConfig(
+                assistant_prefix_len=0,
+                pad_token_id=(
+                    tokenizer.pad_token_id
+                    if tokenizer.pad_token_id is not None
+                    else tokenizer.eos_token_id
+                ),
+                custom_chat_template=tokenizer.chat_template if tokenizer.chat_template else chimera_chat_template,
+                has_bos=False,
+                has_system_role=True,
                 terminator_id=tokenizer.convert_tokens_to_ids("<end_of_turn>"),
             )
         elif prompt_format == "default":

@@ -112,6 +112,7 @@ class SimPODataset(MegatronDataset):
 
         # Feature flags
         pack_samples    = getattr(args, "pack_samples", False)
+        needs_cu_seqlens = pack_samples or getattr(args, "simpo", False)
         pack_factor     = getattr(args, "pack_factor", None)
         debug_dataset   = getattr(args, "debug_dataset", False)
         log_stats       = getattr(args, "log_dataset_stats", False)
@@ -197,7 +198,7 @@ class SimPODataset(MegatronDataset):
                 pack_tokens.extend(temp_tokens)
                 pack_targets.extend(temp_targets)
                 pack_positions.extend(temp_positions)
-                if pack_samples:
+                if needs_cu_seqlens:
                     cu_seqlens.extend(temp_cu_seqlens)
                 step_packed += 1
                 curr_idx_offset += 1
@@ -232,7 +233,7 @@ class SimPODataset(MegatronDataset):
             pack_tokens.extend([pad] * pad_len)
             pack_targets.extend([pad] * pad_len)
             pack_positions.extend(range(last_pos + 1, last_pos + 1 + pad_len))
-            if pack_samples:
+            if needs_cu_seqlens:
                 cu_seqlens.append(len(pack_tokens) - 1)
 
         input_ids    = torch.tensor(pack_tokens[:-1],  dtype=torch.int64)
@@ -244,7 +245,7 @@ class SimPODataset(MegatronDataset):
         loss_mask[shifted_targets == pad] = 0.0
         loss_mask[shifted_targets == IGNORE_INDEX] = 0.0
 
-        if pack_samples:
+        if needs_cu_seqlens:
             if cu_seqlens:
                 cu_seqlens[-1] = min(cu_seqlens[-1], pack_length)
             cu_seqlens = torch.tensor(cu_seqlens, dtype=torch.int32)

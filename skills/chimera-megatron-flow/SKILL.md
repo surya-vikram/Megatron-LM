@@ -1,6 +1,6 @@
 ---
 name: chimera-megatron-flow
-description: End-to-end operational workflow for Chimera container setup, repo preparation, HF artifact creation, Megatron-LM random-init pretraining, Megatron-Bridge conversion, HF export, and overfit verification.
+description: End-to-end operational workflow for Chimera container setup, repo preparation, HF artifact creation, Megatron-LM random-init pretraining, SFT/SimPO, Megatron-Bridge conversion, HF export, and overfit verification.
 ---
 
 # Chimera Megatron Flow
@@ -101,14 +101,10 @@ print(pathlib.Path(transformers.__file__).resolve().parent)
 PY
 )
 
-SRC=/workspace/repos/transformers/src/transformers
-tar -C "$SRC" -cf - \
-  models/chimera \
-  models/__init__.py \
-  models/auto/auto_mappings.py \
-  models/auto/modeling_auto.py \
-| tar -C "$SITE" -xf -
+cp -a /workspace/repos/transformers/src/transformers/. "$SITE/"
 ```
+
+Do not rely on `rsync` in this container; the validated image did not include it.
 
 Validate:
 
@@ -158,7 +154,11 @@ assert cfg.architectures == ["ChimeraForCausalLM"]
 assert cfg.vocab_size == 50176
 assert len(tok) == 50176
 assert (cfg.first_k_dense_replace, cfg.last_k_dense_replace) == (2, 0)
-print("hf_reference_ok", cfg.model_type, cfg.architectures, cfg.vocab_size, len(tok))
+assert tok.convert_tokens_to_ids("<start_of_turn>") == 50174
+assert tok.convert_tokens_to_ids("<end_of_turn>") == 50175
+assert tok.unk_token is None
+assert tok.chat_template
+print("hf_reference_ok", cfg.model_type, cfg.architectures, cfg.vocab_size, len(tok), bool(tok.chat_template))
 PY
 ```
 
@@ -170,6 +170,10 @@ vocab_size=50176
 tokenizer length=50176
 first_k_dense_replace=2
 last_k_dense_replace=0
+<start_of_turn> id=50174
+<end_of_turn> id=50175
+chat_template present
+unk_token=None
 ```
 
 Create a full random HF checkpoint only when validating HF -> MCore import:
@@ -392,7 +396,7 @@ Successfully exported model to: <hf_export>
 If tokenizer files are missing from the export directory, copy them from the HF reference:
 
 ```bash
-for f in tokenizer.json tokenizer_config.json special_tokens_map.json generation_config.json README.md training_report.json; do
+for f in tokenizer.json tokenizer_config.json special_tokens_map.json generation_config.json README.md training_report.json chat_template.jinja; do
   [ -f "$HF_REFERENCE/$f" ] && cp "$HF_REFERENCE/$f" "$HF_EXPORT/$f"
 done
 ```
@@ -410,7 +414,10 @@ assert cfg.architectures == ["ChimeraForCausalLM"]
 assert (cfg.first_k_dense_replace, cfg.last_k_dense_replace) == (2, 0)
 assert cfg.num_hidden_layers == 25
 assert len(tok) == 50176
-print("hf_export_ok", cfg.model_type, cfg.architectures, cfg.num_hidden_layers, len(tok))
+assert tok.convert_tokens_to_ids("<start_of_turn>") == 50174
+assert tok.convert_tokens_to_ids("<end_of_turn>") == 50175
+assert tok.chat_template
+print("hf_export_ok", cfg.model_type, cfg.architectures, cfg.num_hidden_layers, len(tok), bool(tok.chat_template))
 PY
 ```
 
@@ -430,6 +437,185 @@ Validated output:
 ```text
 CHIMERA_OVERFIT_KEY_A: The quiet engineer packed a silver notebook before sunrise and wrote down every signal from the training run.
 Verification passed.
+```
+
+## Chat Tokens And Template
+
+The Chimera tokenizer uses two non-reasoning, non-tool chat markers:
+
+```text
+<start_of_turn> id=50174
+<end_of_turn>   id=50175
+```
+
+They replace low-value tail vocab entries and keep tokenizer length exactly `50176`. There is no `<unk>` token.
+
+Chat template:
+
+```jinja
+{% for message in messages %}{{ '<start_of_turn>' + message['role'] + '\n' + message['content']|trim + '<end_of_turn>\n' }}{% endfor %}{% if add_generation_prompt %}{{ '<start_of_turn>assistant\n' }}{% endif %}
+```
+
+Validate raw rendering:
+
+```bash
+$PYTHON - <<'PY'
+from transformers import AutoTokenizer
+import os
+tok = AutoTokenizer.from_pretrained(os.environ["HF_REFERENCE"], trust_remote_code=True)
+print(tok.apply_chat_template(
+    [{"role": "system", "content": "S"}, {"role": "user", "content": "U"}],
+    tokenize=False,
+    add_generation_prompt=True,
+))
+PY
+```
+
+Expected:
+
+```text
+<start_of_turn>system
+S<end_of_turn>
+<start_of_turn>user
+U<end_of_turn>
+<start_of_turn>assistant
+```
+
+## SFT Smoke
+
+SFT JSONL rows use `messages`. Do not pass `--pack-samples`; the Chimera prompt format masks system, user, and assistant header tokens, and trains only assistant content plus `<end_of_turn>`.
+
+Create two samples:
+
+```bash
+export CHAT_ROOT=/home/jovyan/chimera_chat_smoke
+export SFT_DATA=$CHAT_ROOT/data/sft.jsonl
+mkdir -p "$CHAT_ROOT/data"
+
+cat > "$SFT_DATA" <<'JSONL'
+{"messages":[{"role":"system","content":"You answer with the exact requested phrase."},{"role":"user","content":"What is the Chimera SFT key A response?"},{"role":"assistant","content":"CHIMERA_SFT_RESPONSE_A: jade lanterns align under quiet stars."}]}
+{"messages":[{"role":"system","content":"You answer with the exact requested phrase."},{"role":"user","content":"What is the Chimera SFT key B response?"},{"role":"assistant","content":"CHIMERA_SFT_RESPONSE_B: silver rivers circle patient mountains."}]}
+JSONL
+```
+
+Run from an MCore checkpoint:
+
+```bash
+cd "$MEGATRON_LM"
+DATA_PATH="$SFT_DATA" \
+TOKENIZER_MODEL="$HF_REFERENCE" \
+MCORE_PATH="$CHECKPOINT_DIR" \
+RUNS_ROOT="$CHAT_ROOT/sft_runs" \
+SEQ_LENGTH=128 \
+MICRO_BATCH_SIZE=1 \
+GLOBAL_BATCH_SIZE=2 \
+TRAIN_ITERS=120 \
+LR=1e-3 \
+MIN_LR=1e-4 \
+LR_WARMUP_ITERS=0 \
+LR_DECAY_ITERS=120 \
+SAVE_INTERVAL=1000 \
+EVAL_INTERVAL=1000 \
+EVAL_ITERS=0 \
+SAVE_WEIGHTS_ONLY=true \
+bash examples/chimera/sft.sh
+```
+
+Validated result:
+
+```text
+sft_tokenizer_prompt_format chimera
+pack_samples False
+iteration 1 lm loss:   1.770898E+01
+iteration 120 lm loss: 6.497540E-04
+checkpoint: <sft_run>/checkpoints/iter_0000120
+```
+
+Export the SFT checkpoint exactly like pretraining export, then copy tokenizer artifacts including `chat_template.jinja` from `HF_REFERENCE`.
+
+Raw inference should keep special tokens visible:
+
+```text
+RAW_SFT_A= <start_of_turn>system
+You answer with the exact requested phrase.<end_of_turn>
+<start_of_turn>user
+What is the Chimera SFT key A response?<end_of_turn>
+<start_of_turn>assistant
+CHIMERA_SFT_RESPONSE_A: jade lanterns align under quiet stars.<end_of_turn>
+```
+
+## SimPO Smoke
+
+SimPO JSONL rows use `chosen` and `rejected`, each as a messages list. Do not pass `--pack-samples`.
+
+For tiny overfit smoke, the generic blended dataset builder must have at least as many rows as requested training samples. Keep two unique examples but repeat them in the JSONL when using many iterations.
+
+Create a repeated two-example dataset:
+
+```bash
+export SIMPO_DATA=$CHAT_ROOT/data/simpo_repeated.jsonl
+$PYTHON - <<'PY'
+import json
+import os
+from pathlib import Path
+
+examples = [
+    {"chosen":[{"role":"system","content":"You answer with the exact requested phrase."},{"role":"user","content":"What is the Chimera SimPO key C response?"},{"role":"assistant","content":"CHIMERA_SIMPO_CHOSEN_C: amber maps reward careful answers."}],"rejected":[{"role":"system","content":"You answer with the exact requested phrase."},{"role":"user","content":"What is the Chimera SimPO key C response?"},{"role":"assistant","content":"This is the rejected answer for C."}]},
+    {"chosen":[{"role":"system","content":"You answer with the exact requested phrase."},{"role":"user","content":"What is the Chimera SimPO key D response?"},{"role":"assistant","content":"CHIMERA_SIMPO_CHOSEN_D: violet signals favor steady choices."}],"rejected":[{"role":"system","content":"You answer with the exact requested phrase."},{"role":"user","content":"What is the Chimera SimPO key D response?"},{"role":"assistant","content":"This is the rejected answer for D."}]},
+]
+path = Path(os.environ["SIMPO_DATA"])
+path.parent.mkdir(parents=True, exist_ok=True)
+with path.open("w") as f:
+    for i in range(120):
+        f.write(json.dumps(examples[i % 2]) + "\n")
+PY
+```
+
+Run from the SFT MCore checkpoint:
+
+```bash
+cd "$MEGATRON_LM"
+DATA_PATH="$SIMPO_DATA" \
+TOKENIZER_MODEL="$HF_REFERENCE" \
+MCORE_PATH="$SFT_CHECKPOINT_DIR" \
+RUNS_ROOT="$CHAT_ROOT/simpo_runs" \
+SEQ_LENGTH=128 \
+MICRO_BATCH_SIZE=1 \
+GLOBAL_BATCH_SIZE=2 \
+TRAIN_ITERS=40 \
+LR=5e-4 \
+MIN_LR=5e-5 \
+LR_WARMUP_ITERS=0 \
+LR_DECAY_ITERS=40 \
+SAVE_INTERVAL=1000 \
+EVAL_INTERVAL=1000 \
+EVAL_ITERS=0 \
+SAVE_WEIGHTS_ONLY=true \
+SIMPO_SFT_WEIGHT=1.0 \
+bash examples/chimera/simpo.sh
+```
+
+Validated result:
+
+```text
+pack_samples False
+iteration 1 simpo loss:  1.970660E+01
+iteration 40 simpo loss: 4.444013E-02
+iteration 40 rewards/accuracies: 1.000000E+00
+checkpoint: <simpo_run>/checkpoints/iter_0000040
+```
+
+Export the SimPO checkpoint and copy tokenizer artifacts including `chat_template.jinja`.
+
+Raw inference should keep special tokens visible:
+
+```text
+RAW_SIMPO_C= <start_of_turn>system
+You answer with the exact requested phrase.<end_of_turn>
+<start_of_turn>user
+What is the Chimera SimPO key C response?<end_of_turn>
+<start_of_turn>assistant
+CHIMERA_SIMPO_CHOSEN_C: amber maps reward careful answers.<end_of_turn>
 ```
 
 Restore the committed training script after the smoke run:

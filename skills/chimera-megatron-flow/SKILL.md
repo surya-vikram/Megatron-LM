@@ -145,6 +145,23 @@ $PYTHON $TRANSFORMERS/src/transformers/models/chimera/scripts/export_to_hf.py \
   --no-weights
 ```
 
+Validate the no-weight export:
+
+```bash
+$PYTHON - <<'PY'
+from transformers import AutoConfig, AutoTokenizer
+import os
+p = os.environ["HF_REFERENCE"]
+cfg = AutoConfig.from_pretrained(p, trust_remote_code=True)
+tok = AutoTokenizer.from_pretrained(p, use_fast=True, trust_remote_code=True)
+assert cfg.architectures == ["ChimeraForCausalLM"]
+assert cfg.vocab_size == 50176
+assert len(tok) == 50176
+assert (cfg.first_k_dense_replace, cfg.last_k_dense_replace) == (2, 0)
+print("hf_reference_ok", cfg.model_type, cfg.architectures, cfg.vocab_size, len(tok))
+PY
+```
+
 The no-weight export must include:
 
 ```text
@@ -256,7 +273,43 @@ DOC_1_DECODED='CHIMERA_OVERFIT_KEY_B: A careful researcher traced the river path
 
 ## 2-GPU Smoke Overfit
 
-The committed `train.sh` is the real pretraining script. For a 2-GPU smoke test, temporarily edit only the container copy and restore it afterward:
+The committed `train.sh` is the real pretraining script. For a 2-GPU smoke test, temporarily edit only the container copy and restore it afterward.
+
+Apply the validated smoke edits:
+
+```bash
+cd "$MEGATRON_LM"
+cp examples/chimera/train.sh /tmp/chimera_train.sh.before_smoke
+
+$PYTHON - <<'PY'
+from pathlib import Path
+
+p = Path("examples/chimera/train.sh")
+s = p.read_text()
+repls = {
+    "--seq-length 8192": "--seq-length 512",
+    "--micro-batch-size 4": "--micro-batch-size 1",
+    "--global-batch-size 16": "--global-batch-size 2",
+    "--train-iters 10000": "--train-iters 200",
+    "--lr 2e-4": "--lr 1e-3",
+    "--min-lr 2e-5": "--min-lr 1e-4",
+    "--lr-decay-iters 10000": "--lr-decay-iters 200",
+    "--expert-model-parallel-size 1": "--expert-model-parallel-size 2",
+    "--eval-iters 0\n": "--eval-iters 0\n    --no-save-optim\n    --no-save-rng\n",
+    "TP=1 PP=1 EP=1 ETP=1 CP=1": "TP=1 PP=1 EP=2 ETP=1 CP=1",
+    "seq=8192 micro=4 global=16 iters=10000": "seq=512 micro=1 global=2 iters=200",
+}
+for old, new in repls.items():
+    if old not in s:
+        raise SystemExit(f"missing expected text in train.sh: {old}")
+    s = s.replace(old, new)
+p.write_text(s)
+PY
+
+bash -n examples/chimera/train.sh
+```
+
+The resulting temporary diff should contain:
 
 - `--seq-length 512`
 - `--expert-model-parallel-size 2`
@@ -279,6 +332,14 @@ DATA_PATH="$DATA_PREFIX" \
 TOKENIZER_MODEL="$HF_REFERENCE" \
 RUNS_ROOT="$RUNS_ROOT" \
 bash examples/chimera/train.sh
+```
+
+Capture the run paths dynamically:
+
+```bash
+export RUN_DIR=$(ls -td "$RUNS_ROOT"/* | head -n 1)
+export CHECKPOINT_DIR=$RUN_DIR/checkpoints
+echo "$RUN_DIR"
 ```
 
 Validated 2xH200 result:
@@ -307,7 +368,6 @@ Bridge first checks the parent checkpoint directory but then internally switches
 Run:
 
 ```bash
-export CHECKPOINT_DIR=$RUNS_ROOT/20260704_114810/checkpoints
 export HF_EXPORT=$DATA_ROOT/hf_export
 
 cd "$MEGATRON_LM"
@@ -370,6 +430,18 @@ Validated output:
 ```text
 CHIMERA_OVERFIT_KEY_A: The quiet engineer packed a silver notebook before sunrise and wrote down every signal from the training run.
 Verification passed.
+```
+
+Restore the committed training script after the smoke run:
+
+```bash
+cd "$MEGATRON_LM"
+if [ -f /tmp/chimera_train.sh.before_smoke ]; then
+  cp /tmp/chimera_train.sh.before_smoke examples/chimera/train.sh
+else
+  git restore examples/chimera/train.sh
+fi
+git status --short
 ```
 
 ## Hard Rules

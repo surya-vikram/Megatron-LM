@@ -271,6 +271,49 @@ DOC_0_DECODED='CHIMERA_OVERFIT_KEY_A: The quiet engineer packed a silver noteboo
 DOC_1_DECODED='CHIMERA_OVERFIT_KEY_B: A careful researcher traced the river path through the valley and marked each bridge with a blue lantern.<EOS>'
 ```
 
+Verify that EOS is a training target. Causal pretraining uses shifted labels, so
+the final content token should predict `<EOS>`:
+
+```bash
+cd "$MEGATRON_LM"
+$PYTHON - <<'PY'
+import os
+from megatron.core.datasets import indexed_dataset
+from transformers import AutoTokenizer
+
+prefix = os.environ["DATA_PREFIX"]
+tok = AutoTokenizer.from_pretrained(os.environ["HF_REFERENCE"], use_fast=True, trust_remote_code=True)
+ds = indexed_dataset.IndexedDataset(prefix, multimodal=False)
+print("eos", tok.eos_token, tok.eos_token_id)
+for i in range(len(ds)):
+    ids = ds[i].tolist()
+    assert ids[-1] == tok.eos_token_id
+    print(f"DOC_{i}_last_tokens", tok.convert_ids_to_tokens(ids[-8:]))
+    print(f"DOC_{i}_last_training_pairs")
+    for x, y in list(zip(ids[:-1], ids[1:]))[-8:]:
+        print(repr(tok.decode([x], skip_special_tokens=False)), "->", repr(tok.decode([y], skip_special_tokens=False)), y)
+PY
+```
+
+Expected evidence:
+
+```text
+eos <EOS> 1
+'.' -> '<EOS>' 1
+```
+
+The training log should also show that EOD loss masking is disabled:
+
+```bash
+grep -n "eod_mask_loss" "$RUN_DIR/logs/train.log" | head
+```
+
+Expected:
+
+```text
+eod_mask_loss ................................... False
+```
+
 ## 2-GPU Smoke Overfit
 
 The committed `train.sh` is the real pretraining script. For a 2-GPU smoke test, temporarily edit only the container copy and restore it afterward.

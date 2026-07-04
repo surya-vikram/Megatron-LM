@@ -1,11 +1,29 @@
 ---
 name: chimera-megatron-flow
-description: End-to-end operational workflow for Chimera model instantiation, frozen Transformers patching, HF random checkpoint export, HF to Megatron-Core conversion, Megatron-LM overfit training with TP/EP, MCore to HF export, and completion verification using placeholder paths.
+description: End-to-end operational workflow for Chimera model artifacts, Megatron-LM random-init pretraining, Megatron-Bridge conversion, and HF export verification across the Chimera branches.
 ---
 
 # Chimera Megatron Flow
 
 Use this skill when the user asks to instantiate, convert, train, export, or verify Chimera through Transformers, Megatron-Bridge, and Megatron-LM.
+
+## Locked Architecture
+
+The current Chimera pretraining target is:
+
+- 25 decoder layers
+- First 2 layers dense
+- Remaining 23 layers MoE
+- No final dense layer
+- HF config: `first_k_dense_replace=2`, `last_k_dense_replace=0`
+- Megatron layer pattern: `--moe-layer-freq "[0]*2+[1]*23"`
+- TP=1, PP=1, EP=1, ETP=1, CP=1 for the stable baseline script
+
+Keep this layout consistent across:
+
+- Transformers Chimera config and HF export script
+- Megatron-Bridge Chimera conversion tests
+- Megatron-LM `examples/chimera/train.sh`
 
 ## Placeholder Paths
 
@@ -14,27 +32,25 @@ Use placeholders until the user provides concrete paths:
 - `<TRANSFORMERS_REPO>`: local clone of `surya-vikram/transformers.git` on branch `chimera`
 - `<MEGATRON_LM_REPO>`: clone of `surya-vikram/Megatron-LM.git` on branch `chimera`
 - `<MEGATRON_BRIDGE_REPO>`: clone of `surya-vikram/Megatron-Bridge.git` on branch `chimera`
-- `<PYTHON>`: Python executable, usually `<VENV>/bin/python`
-- `<VENV_TRANSFORMERS_SITE_PACKAGES>`: frozen env package dir, e.g. `<VENV>/lib/python3.12/site-packages/transformers`
+- `<PYTHON>`: Python executable in the active environment
 - `<DATA_ROOT>`: persistent storage root, not root overlay, e.g. `/datasets/megadata`
-- `<HF_BASE_MODEL_DIR>`: `<DATA_ROOT>/hf_models/chimera-12b`
-- `<MCORE_IMPORT_DIR>`: `<DATA_ROOT>/chimera_bridge_validation/megatron_import`
+- `<HF_BASE_MODEL_DIR>`: `<DATA_ROOT>/hf_models/chimera-10b`
 - `<DATA_PREFIX>`: `<DATA_ROOT>/chimera/overfit_doc_text_document`
-- `<TRAIN_RUN_DIR>`: `<DATA_ROOT>/chimera_runs/overfit_tp2_ep2`
-- `<TRAIN_CKPT_DIR>`: `<TRAIN_RUN_DIR>/checkpoints`
+- `<RUNS_ROOT>`: `<DATA_ROOT>/chimera_runs`
 - `<HF_EXPORT_DIR>`: `<DATA_ROOT>/hf_exports/chimera-overfit-hf`
+- `<MEGATRON_BRIDGE_REPO>`: local Megatron-Bridge checkout used by import/export scripts
 
 ## Hard Rules
 
 - Do not pip install into frozen Docker environments unless the user explicitly changes the constraint.
 - Patch frozen library files directly when needed.
 - Do not write 20GB+ artifacts to root overlay if a persistent volume exists.
-- Keep overfit runs to one checkpoint by setting `--save-interval == --train-iters`.
-- For 2 GPU Chimera training use `TP=2`, `EP=2`, `ETP=1`, `PP=1`, `CP=1`, no CPU offload.
-- With TP enabled, set `CUDA_DEVICE_MAX_CONNECTIONS=1`.
-- With TP + MoE/EP enabled, enable `--sequence-parallel`.
-- `--tp-comm-overlap` is safe with TP and sequence parallelism.
-- Do not enable EP A2A overlap by default in this 2 GPU TP setup; Megatron MoE docs require `CUDA_DEVICE_MAX_CONNECTIONS > 1` for that, which conflicts with TP's `=1` requirement.
+- Pretraining data is JSONL with raw `"text"` values; do not manually prepend BOS.
+- Megatron pretraining uses `--append-eod` during preprocessing, so documents are separated by the tokenizer EOS/EOD token.
+- Keep `--save-interval` and `--eval-interval` high for smoke tests to avoid checkpoint clutter; Megatron still saves at the final iteration.
+- For the stable baseline, do not set `CUDA_DEVICE_MAX_CONNECTIONS` or `NCCL_GRAPH_REGISTER`.
+- Leave intra-document attention masking disabled by default in the TE/CUDA-graph path. Use `INTRA_DOC_MASKING=true` only for explicit experiments.
+- Keep optimizer checkpoint state enabled for real pretraining so runs can resume.
 
 ## Repo Preparation
 
@@ -50,117 +66,56 @@ cd <MEGATRON_BRIDGE_REPO>
 git fetch origin chimera
 git checkout chimera
 git pull --ff-only origin chimera
+
+cd <TRANSFORMERS_REPO>
+git fetch origin chimera
+git checkout chimera
+git pull --ff-only origin chimera
 ```
 
 Use:
 
 ```bash
-export PYTHONPATH="<MEGATRON_LM_REPO>:<MEGATRON_BRIDGE_REPO>/src:${PYTHONPATH:-}"
+export PYTHONPATH="<MEGATRON_LM_REPO>:<MEGATRON_BRIDGE_REPO>/src:<TRANSFORMERS_REPO>/src:${PYTHONPATH:-}"
 ```
 
 ## Storage Setup
 
-Find persistent storage with `df -hT`. If needed, symlink `<DATA_ROOT>` to the persistent volume:
+Find persistent storage with `df -hT`. If needed, symlink `<DATA_ROOT>` to the persistent volume before creating HF checkpoints, MCore checkpoints, or dataset caches.
+
+## Instantiate Base HF Artifacts
+
+The Transformers `chimera` branch bundles tokenizer artifacts. Generate a self-contained HF directory:
 
 ```bash
-mkdir -p <PERSISTENT_VOLUME>/megadata
-mkdir -p "$(dirname <DATA_ROOT>)"
-ln -sfn <PERSISTENT_VOLUME>/megadata <DATA_ROOT>
-df -h <DATA_ROOT>
-```
-
-Do this before creating HF checkpoints or MCore checkpoints.
-
-## Patch Frozen Transformers
-
-Copy Chimera code from `<TRANSFORMERS_REPO>` into the frozen env:
-
-```bash
-tar -C <TRANSFORMERS_REPO>/src/transformers -cf - \
-  models/chimera \
-  models/auto/auto_mappings.py \
-  models/auto/modeling_auto.py \
-  models/__init__.py \
-| tar -C <VENV_TRANSFORMERS_SITE_PACKAGES> -xf -
-```
-
-Validate:
-
-```bash
-<PYTHON> - <<'PY'
-import torch
-from transformers import AutoConfig, ChimeraConfig, ChimeraForCausalLM, PreTrainedTokenizerFast
-
-config = ChimeraConfig(
-    vocab_size=128,
-    hidden_size=64,
-    num_hidden_layers=3,
-    num_attention_heads=4,
-    num_key_value_heads=1,
-    head_dim=16,
-    intermediate_size=128,
-    n_routed_experts=4,
-    num_experts_per_tok=2,
-    moe_intermediate_size=32,
-    shared_expert_intermediate_size=32,
-    first_k_dense_replace=1,
-    last_k_dense_replace=1,
-    max_position_embeddings=128,
-    original_max_position_embeddings=128,
-)
-model = ChimeraForCausalLM(config)
-out = model(input_ids=torch.randint(0, 128, (2, 8)), labels=torch.randint(0, 128, (2, 8)))
-print("tiny_forward_ok", tuple(out.logits.shape), float(out.loss.detach()))
-PY
-```
-
-## Instantiate Base HF Model
-
-The Transformers `chimera` branch bundles tokenizer artifacts. Generate a full random-init HF checkpoint:
-
-```bash
-rm -rf <HF_BASE_MODEL_DIR>
-mkdir -p "$(dirname <HF_BASE_MODEL_DIR>)"
-<PYTHON> <VENV_TRANSFORMERS_SITE_PACKAGES>/models/chimera/scripts/export_to_hf.py \
+cd <TRANSFORMERS_REPO>
+<PYTHON> src/transformers/models/chimera/scripts/export_to_hf.py \
   --output <HF_BASE_MODEL_DIR> \
-  --random-init \
-  --dtype bfloat16 \
-  --max-shard-size 5GB
+  --no-weights
 ```
 
-Expected:
+Use `--random-init --dtype bfloat16 --max-shard-size 5GB` only when a full random HF checkpoint is needed.
 
-- Around 22GB
-- Five safetensor shards
+Expected artifacts:
+
+- `config.json`
+- `tokenizer.json`
+- `tokenizer_config.json`
+- `special_tokens_map.json`
+- `generation_config.json`
+- `README.md`
 - `vocab_size=50176`
 - `model_type=chimera`
-
-Use `--no-weights` for config/tokenizer-only export or `--meta-init` for parameter counting without saving weights.
-
-## Convert HF To MCore
-
-```bash
-cd <MEGATRON_LM_REPO>
-rm -rf <MCORE_IMPORT_DIR>
-bash examples/chimera/import.sh \
-  --hf-model <HF_BASE_MODEL_DIR> \
-  --mcore-path <MCORE_IMPORT_DIR> \
-  --bridge-path <MEGATRON_BRIDGE_REPO> \
-  --python <PYTHON>
-```
-
-Required log evidence:
-
-- `Loading HuggingFace model: <HF_BASE_MODEL_DIR>`
-- `successfully saved checkpoint from iteration 0`
-- Output contains `iter_0000000`.
+- `first_k_dense_replace=2`
+- `last_k_dense_replace=0`
 
 ## Preprocess Data
 
 Input JSONL format:
 
 ```json
-{"text":"CHIMERA_OVERFIT_KEY: the blue ibis carries a copper lantern across the silent lake."}
+{"text":"CHIMERA_OVERFIT_KEY_A: first sample text..."}
+{"text":"CHIMERA_OVERFIT_KEY_B: second sample text..."}
 ```
 
 Run:
@@ -171,87 +126,77 @@ bash examples/chimera/preprocess.sh \
   --input examples/chimera/overfit_doc.jsonl \
   --output-prefix <DATA_ROOT>/chimera/overfit_doc \
   --tokenizer-model <HF_BASE_MODEL_DIR> \
-  --workers 1 \
-  --python <PYTHON>
+  --workers 8
 ```
+
+`preprocess.sh` calls Megatron's preprocessing path with `--append-eod`. The model sees document text followed by EOS/EOD. It should learn EOS as the document boundary token; BOS is not part of the pretraining document format.
 
 Expected files:
 
 - `<DATA_PREFIX>.bin`
 - `<DATA_PREFIX>.idx`
 
-## Train Overfit Run
+## Random-Init Pretraining
 
-Use 2 GPUs, no CPU offload:
+The current `examples/chimera/train.sh` starts from random initialization. It does not require `--load`, `--finetune`, or an imported MCore checkpoint.
+
+Set the three main paths and launch:
 
 ```bash
 cd <MEGATRON_LM_REPO>
-rm -rf <TRAIN_RUN_DIR>
-CUDA_VISIBLE_DEVICES=0,1 bash examples/chimera/train.sh \
-  --gpus-per-node 2 \
-  --tp-size 2 \
-  --ep-size 2 \
-  --expert-tp-size 1 \
-  --global-batch-size 1 \
-  --train-iters 100 \
-  --save-interval 100 \
-  --seq-length 128 \
-  --lr 1e-3 \
-  --min-lr 1e-4 \
-  --mcore-path <MCORE_IMPORT_DIR> \
-  --data-path <DATA_PREFIX> \
-  --tokenizer-model <HF_BASE_MODEL_DIR> \
-  --save-path <TRAIN_CKPT_DIR> \
-  --tensorboard-dir <TRAIN_RUN_DIR>/tensorboard \
-  --data-cache-path <TRAIN_RUN_DIR>/data_cache \
-  --python <PYTHON>
+DATA_PATH=<DATA_PREFIX> \
+TOKENIZER_MODEL=<HF_BASE_MODEL_DIR> \
+RUNS_ROOT=<RUNS_ROOT> \
+bash examples/chimera/train.sh
 ```
 
-Required log evidence:
+The script creates a timestamped IST directory under `<RUNS_ROOT>`:
 
-- `Parallelism: TP=2 PP=1 EP=2 ETP=1 CP=1`
-- `sequence_parallel True`
-- `tp_comm_overlap True`
-- `successfully loaded checkpoint from <MCORE_IMPORT_DIR> ... at iteration 0`
-- `number of skipped iterations: 0`
-- `number of nan iterations: 0`
-- `successfully saved checkpoint from iteration 100`
+```text
+<RUNS_ROOT>/YYYYMMDD_HHMMSS/
+  checkpoints/
+  data_cache/
+  logs/train.log
+  tensorboard/
+  run_paths.env
+  train.sh
+```
 
-Observed reference outcome:
+Current baseline training choices:
 
-- Initial `lm loss` around `1.1e1`
-- Final `lm loss` around `1.8e-2`
-- Checkpoint: `<TRAIN_CKPT_DIR>/iter_0000100`
+- `seq-length=8192`
+- `max-position-embeddings=32768`
+- YaRN factor 4.0 with original max position 8192
+- `attention-backend=flash`
+- external flash-attn flag disabled
+- `--cuda-graph-impl transformer_engine`
+- `--cuda-graph-modules attn`
+- `--use-precision-aware-optimizer`
+- FP32 main params, BF16 grads, BF16 Adam moments
+- `--fused-linear-cross-entropy`
+- `--overlap-grad-reduce`
+- `--no-create-attention-mask-in-dataloader` by default
+
+For explicit intra-document masking experiments:
+
+```bash
+INTRA_DOC_MASKING=true bash examples/chimera/train.sh
+```
 
 ## Export Trained MCore To HF
 
-Training checkpoints may not include `run_config.yaml`. If export fails with missing `run_config.yaml`, copy it from the imported checkpoint:
-
-```bash
-cp <MCORE_IMPORT_DIR>/iter_0000000/run_config.yaml <TRAIN_CKPT_DIR>/iter_0000100/run_config.yaml
-```
-
-Export:
+After training, export from the saved Megatron checkpoint using the HF artifact directory as the reference:
 
 ```bash
 cd <MEGATRON_LM_REPO>
-rm -rf <HF_EXPORT_DIR>
 bash examples/chimera/export.sh \
   --hf-reference <HF_BASE_MODEL_DIR> \
-  --mcore-path <TRAIN_CKPT_DIR> \
+  --mcore-path <RUNS_ROOT>/YYYYMMDD_HHMMSS/checkpoints \
   --hf-path <HF_EXPORT_DIR> \
-  --bridge-path <MEGATRON_BRIDGE_REPO> \
-  --python <PYTHON>
+  --bridge-path <MEGATRON_BRIDGE_REPO>
 ```
 
-If the exported HF directory only contains model shards/config, copy tokenizer artifacts:
-
-```bash
-cp <HF_BASE_MODEL_DIR>/tokenizer.json <HF_EXPORT_DIR>/
-cp <HF_BASE_MODEL_DIR>/tokenizer_config.json <HF_EXPORT_DIR>/
-cp <HF_BASE_MODEL_DIR>/special_tokens_map.json <HF_EXPORT_DIR>/
-cp <HF_BASE_MODEL_DIR>/generation_config.json <HF_EXPORT_DIR>/ 2>/dev/null || true
-```
+If tokenizer artifacts are missing in the exported HF directory, copy them from `<HF_BASE_MODEL_DIR>`.
 
 ## Verify Exported HF Model
 
@@ -261,26 +206,15 @@ cd <MEGATRON_LM_REPO>
   --hf-model <HF_EXPORT_DIR>
 ```
 
-Expected result:
+Expected result for overfit smoke data:
 
-- Generated text contains: `the blue ibis carries a copper lantern across the silent lake`
-- Script prints: `Verification passed.`
+- Generated text contains the memorized target phrase.
+- Script prints `Verification passed.`
 
 ## Common Failures
 
-- `ImportError: cannot import name 'ChimeraConfig'`: frozen Transformers site-packages was not patched from Transformers `chimera`.
-- `--expert-tensor-parallel-size` parser conflict: use latest Megatron-LM `chimera`; wrapper only adds missing aliases.
-- `CUDA_DEVICE_MAX_CONNECTIONS` assertion: export `CUDA_DEVICE_MAX_CONNECTIONS=1` before TP training.
-- MoE + TP `sequence parallelism` error: add `--sequence-parallel` when TP or CP is greater than 1.
-- Export missing `run_config.yaml`: copy it from `<MCORE_IMPORT_DIR>/iter_0000000/run_config.yaml` into the trained iteration dir.
-- Exported HF model cannot load tokenizer: copy tokenizer files from `<HF_BASE_MODEL_DIR>` to `<HF_EXPORT_DIR>`.
-
-## Artifact Inventory
-
-- Base HF model: `<HF_BASE_MODEL_DIR>` (~22GB)
-- Imported MCore checkpoint: `<MCORE_IMPORT_DIR>` (~22GB)
-- Preprocessed data: `<DATA_PREFIX>.bin` and `<DATA_PREFIX>.idx`
-- Training checkpoint: `<TRAIN_CKPT_DIR>` (~22GB for one saved iteration)
-- Exported HF model: `<HF_EXPORT_DIR>` (~22GB)
-
-Plan for roughly 90GB plus caches for the full workflow.
+- `ImportError: cannot import name 'ChimeraConfig'`: use Transformers `chimera` branch on `PYTHONPATH` or patch frozen site-packages from that branch.
+- `--expert-tensor-parallel-size` parser conflict: use latest Megatron-LM `chimera`; the entrypoint only adds missing aliases.
+- Exported HF config has wrong dense layout: verify Bridge tests and HF config use `first_k_dense_replace=2`, `last_k_dense_replace=0`.
+- Export missing tokenizer files: copy tokenizer files from `<HF_BASE_MODEL_DIR>` to `<HF_EXPORT_DIR>`.
+- Disk fills during smoke test: confirm `RUNS_ROOT` points to persistent storage and `save/eval` intervals are high.

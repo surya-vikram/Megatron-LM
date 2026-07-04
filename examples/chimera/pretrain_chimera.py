@@ -79,7 +79,7 @@ def add_chimera_args(parser):
             dest="expert_tensor_parallel_size",
             type=int,
             default=1,
-            help="Expert tensor parallel size. Use 1 with TP=2, EP=2 on two GPUs.",
+            help="Expert tensor parallel size. Keep at 1 unless explicitly testing expert tensor parallelism.",
         )
     return parser
 

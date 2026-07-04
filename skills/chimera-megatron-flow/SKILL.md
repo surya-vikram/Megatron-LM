@@ -211,7 +211,7 @@ $MCORE_IMPORT/iter_0000000/run_config.yaml
 
 ## Pretraining Data Format
 
-Pretraining JSONL is raw text only. Do not prepend BOS. `preprocess.sh` uses Megatron `tools/preprocess_data.py` with `--append-eod`, so the model sees each document followed by `<EOS>`.
+Pretraining JSONL is raw text only: each row is `{"text": "..."}`. Do not prepend BOS. `preprocess.sh` uses Megatron `tools/preprocess_data.py` with `--append-eod`, so the model sees each document followed by `<EOS>` and training consumes the generated `.bin` / `.idx` dataset.
 
 Use coherent English samples for smoke validation:
 
@@ -358,6 +358,18 @@ checkpoint: checkpoints/iter_0000200
 checkpoint size: about 19G
 ```
 
+Restore the committed training script after the pretraining smoke run. This restore only applies to the temporary `train.sh` edits above:
+
+```bash
+cd "$MEGATRON_LM"
+if [ -f /tmp/chimera_train.sh.before_smoke ]; then
+  cp /tmp/chimera_train.sh.before_smoke examples/chimera/train.sh
+else
+  git restore examples/chimera/train.sh
+fi
+git status --short
+```
+
 ## Export To HF
 
 `examples/chimera/export.sh` must install `run_config.yaml` in both:
@@ -483,7 +495,7 @@ U<end_of_turn>
 
 ## SFT Smoke
 
-SFT JSONL rows use `messages`. Do not pass `--pack-samples`; the Chimera prompt format masks system, user, and assistant header tokens, and trains only assistant content plus `<end_of_turn>`.
+SFT JSONL rows use `messages` and are read directly by `SFTTokenizer`. Do not run Megatron preprocessing for SFT. Do not pass `--pack-samples`; the Chimera prompt format masks system, user, and assistant header tokens, and trains only assistant content plus `<end_of_turn>`.
 
 Create two samples:
 
@@ -531,7 +543,64 @@ iteration 120 lm loss: 6.497540E-04
 checkpoint: <sft_run>/checkpoints/iter_0000120
 ```
 
-Export the SFT checkpoint exactly like pretraining export, then copy tokenizer artifacts including `chat_template.jinja` from `HF_REFERENCE`.
+Capture the SFT checkpoint path:
+
+```bash
+export SFT_RUN_DIR=$(ls -td "$CHAT_ROOT/sft_runs"/* | head -n 1)
+export SFT_CHECKPOINT_DIR=$SFT_RUN_DIR/checkpoints
+echo "$SFT_CHECKPOINT_DIR"
+```
+
+Export the SFT checkpoint to HF:
+
+```bash
+export HF_SFT_EXPORT=$CHAT_ROOT/hf_sft_export
+
+cd "$MEGATRON_LM"
+rm -rf "$HF_SFT_EXPORT"
+
+bash examples/chimera/export.sh \
+  --hf-reference "$HF_REFERENCE" \
+  --mcore-path "$SFT_CHECKPOINT_DIR" \
+  --hf-path "$HF_SFT_EXPORT" \
+  --bridge-path "$MEGATRON_BRIDGE" \
+  --python "$PYTHON"
+
+for f in tokenizer.json tokenizer_config.json special_tokens_map.json generation_config.json README.md training_report.json chat_template.jinja; do
+  [ -f "$HF_REFERENCE/$f" ] && cp "$HF_REFERENCE/$f" "$HF_SFT_EXPORT/$f"
+done
+```
+
+Validate raw SFT inference with visible special tokens:
+
+```bash
+$PYTHON - <<'PY'
+from transformers import AutoModelForCausalLM, AutoTokenizer
+import os
+import torch
+
+path = os.environ["HF_SFT_EXPORT"]
+tok = AutoTokenizer.from_pretrained(path, trust_remote_code=True)
+model = AutoModelForCausalLM.from_pretrained(path, trust_remote_code=True, dtype=torch.bfloat16, device_map="cuda")
+model.eval()
+
+msgs = [
+    {"role": "system", "content": "You answer with the exact requested phrase."},
+    {"role": "user", "content": "What is the Chimera SFT key A response?"},
+]
+prompt = tok.apply_chat_template(msgs, tokenize=False, add_generation_prompt=True)
+inputs = tok(prompt, return_tensors="pt").to(model.device)
+with torch.no_grad():
+    output = model.generate(
+        **inputs,
+        max_new_tokens=48,
+        do_sample=False,
+        eos_token_id=[tok.eos_token_id, tok.convert_tokens_to_ids("<end_of_turn>")],
+        pad_token_id=tok.eos_token_id,
+    )
+print(tok.decode(output[0], skip_special_tokens=False))
+PY
+```
 
 Raw inference should keep special tokens visible:
 
@@ -546,7 +615,7 @@ CHIMERA_SFT_RESPONSE_A: jade lanterns align under quiet stars.<end_of_turn>
 
 ## SimPO Smoke
 
-SimPO JSONL rows use `chosen` and `rejected`, each as a messages list. Do not pass `--pack-samples`.
+SimPO JSONL rows use `chosen` and `rejected`, each as a messages list, and are read directly by `SFTTokenizer`. Do not run Megatron preprocessing for SimPO. Do not pass `--pack-samples`.
 
 For tiny overfit smoke, the generic blended dataset builder must have at least as many rows as requested training samples. Keep two unique examples but repeat them in the JSONL when using many iterations.
 
@@ -605,7 +674,64 @@ iteration 40 rewards/accuracies: 1.000000E+00
 checkpoint: <simpo_run>/checkpoints/iter_0000040
 ```
 
-Export the SimPO checkpoint and copy tokenizer artifacts including `chat_template.jinja`.
+Capture the SimPO checkpoint path:
+
+```bash
+export SIMPO_RUN_DIR=$(ls -td "$CHAT_ROOT/simpo_runs"/* | head -n 1)
+export SIMPO_CHECKPOINT_DIR=$SIMPO_RUN_DIR/checkpoints
+echo "$SIMPO_CHECKPOINT_DIR"
+```
+
+Export the SimPO checkpoint to HF:
+
+```bash
+export HF_SIMPO_EXPORT=$CHAT_ROOT/hf_simpo_export
+
+cd "$MEGATRON_LM"
+rm -rf "$HF_SIMPO_EXPORT"
+
+bash examples/chimera/export.sh \
+  --hf-reference "$HF_REFERENCE" \
+  --mcore-path "$SIMPO_CHECKPOINT_DIR" \
+  --hf-path "$HF_SIMPO_EXPORT" \
+  --bridge-path "$MEGATRON_BRIDGE" \
+  --python "$PYTHON"
+
+for f in tokenizer.json tokenizer_config.json special_tokens_map.json generation_config.json README.md training_report.json chat_template.jinja; do
+  [ -f "$HF_REFERENCE/$f" ] && cp "$HF_REFERENCE/$f" "$HF_SIMPO_EXPORT/$f"
+done
+```
+
+Validate raw SimPO inference with visible special tokens:
+
+```bash
+$PYTHON - <<'PY'
+from transformers import AutoModelForCausalLM, AutoTokenizer
+import os
+import torch
+
+path = os.environ["HF_SIMPO_EXPORT"]
+tok = AutoTokenizer.from_pretrained(path, trust_remote_code=True)
+model = AutoModelForCausalLM.from_pretrained(path, trust_remote_code=True, dtype=torch.bfloat16, device_map="cuda")
+model.eval()
+
+msgs = [
+    {"role": "system", "content": "You answer with the exact requested phrase."},
+    {"role": "user", "content": "What is the Chimera SimPO key C response?"},
+]
+prompt = tok.apply_chat_template(msgs, tokenize=False, add_generation_prompt=True)
+inputs = tok(prompt, return_tensors="pt").to(model.device)
+with torch.no_grad():
+    output = model.generate(
+        **inputs,
+        max_new_tokens=48,
+        do_sample=False,
+        eos_token_id=[tok.eos_token_id, tok.convert_tokens_to_ids("<end_of_turn>")],
+        pad_token_id=tok.eos_token_id,
+    )
+print(tok.decode(output[0], skip_special_tokens=False))
+PY
+```
 
 Raw inference should keep special tokens visible:
 
@@ -618,22 +744,12 @@ What is the Chimera SimPO key C response?<end_of_turn>
 CHIMERA_SIMPO_CHOSEN_C: amber maps reward careful answers.<end_of_turn>
 ```
 
-Restore the committed training script after the smoke run:
-
-```bash
-cd "$MEGATRON_LM"
-if [ -f /tmp/chimera_train.sh.before_smoke ]; then
-  cp /tmp/chimera_train.sh.before_smoke examples/chimera/train.sh
-else
-  git restore examples/chimera/train.sh
-fi
-git status --short
-```
-
 ## Hard Rules
 
 - Do not add BOS to pretraining JSONL.
 - Pretraining document boundaries come from `--append-eod`.
+- SFT and SimPO read JSONL directly through `SFTTokenizer`; do not run `preprocess.sh` for them.
+- SFT and SimPO smoke runs are unpacked; do not pass `--pack-samples`.
 - Keep real pretraining checkpoints resumable; use `--no-save-optim` and `--no-save-rng` only for short smoke runs.
 - Do not write large artifacts to root overlay if persistent storage exists.
 - Restore temporary `train.sh` edits after smoke validation.

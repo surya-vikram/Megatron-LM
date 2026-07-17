@@ -154,8 +154,8 @@ assert cfg.architectures == ["ChimeraForCausalLM"]
 assert cfg.vocab_size == 50176
 assert len(tok) == 50176
 assert (cfg.first_k_dense_replace, cfg.last_k_dense_replace) == (2, 0)
-assert tok.convert_tokens_to_ids("<start_of_turn>") == 50174
-assert tok.convert_tokens_to_ids("<end_of_turn>") == 50175
+assert tok.convert_tokens_to_ids("<start_of_turn>") == 2
+assert tok.convert_tokens_to_ids("<end_of_turn>") == 3
 assert tok.unk_token is None
 assert tok.chat_template
 print("hf_reference_ok", cfg.model_type, cfg.architectures, cfg.vocab_size, len(tok), bool(tok.chat_template))
@@ -170,8 +170,9 @@ vocab_size=50176
 tokenizer length=50176
 first_k_dense_replace=2
 last_k_dense_replace=0
-<start_of_turn> id=50174
-<end_of_turn> id=50175
+<start_of_turn> id=2
+<end_of_turn> id=3
+<DUMMY_2> through <DUMMY_9> reserved at ids 4 through 11
 chat_template present
 unk_token=None
 ```
@@ -426,8 +427,8 @@ assert cfg.architectures == ["ChimeraForCausalLM"]
 assert (cfg.first_k_dense_replace, cfg.last_k_dense_replace) == (2, 0)
 assert cfg.num_hidden_layers == 25
 assert len(tok) == 50176
-assert tok.convert_tokens_to_ids("<start_of_turn>") == 50174
-assert tok.convert_tokens_to_ids("<end_of_turn>") == 50175
+assert tok.convert_tokens_to_ids("<start_of_turn>") == 2
+assert tok.convert_tokens_to_ids("<end_of_turn>") == 3
 assert tok.chat_template
 print("hf_export_ok", cfg.model_type, cfg.architectures, cfg.num_hidden_layers, len(tok), bool(tok.chat_template))
 PY
@@ -456,11 +457,14 @@ Verification passed.
 The Chimera tokenizer uses two non-reasoning, non-tool chat markers:
 
 ```text
-<start_of_turn> id=50174
-<end_of_turn>   id=50175
+<start_of_turn> id=2
+<end_of_turn>   id=3
 ```
 
-They replace low-value tail vocab entries and keep tokenizer length exactly `50176`. There is no `<unk>` token.
+They replace `<DUMMY_0>` and `<DUMMY_1>` while keeping tokenizer length exactly `50176`.
+`<DUMMY_2>` through `<DUMMY_9>` remain reserved at IDs `4` through `11`. There is no `<unk>` token.
+`<BOS>` remains ID `0` for compatibility but the chat template and Chimera SFT format do not insert it.
+`<EOS>` remains ID `1` and is used for pretraining document separation and padding.
 
 Chat template:
 

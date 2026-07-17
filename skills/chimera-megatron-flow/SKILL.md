@@ -287,6 +287,10 @@ DOC_1_DECODED='CHIMERA_OVERFIT_KEY_B: A careful researcher traced the river path
 
 The committed `train.sh` is the real pretraining script. For a 2-GPU smoke test, temporarily edit only the container copy and restore it afterward.
 
+Use 400 iterations for the two-document smoke. A 200-iteration run can show low
+teacher-forced loss while the bare A and B prefixes still tie on their first
+continuation token, causing one document to generate the other.
+
 Apply the validated smoke edits:
 
 ```bash
@@ -302,14 +306,14 @@ repls = {
     "--seq-length 8192": "--seq-length 512",
     "--micro-batch-size 4": "--micro-batch-size 1",
     "--global-batch-size 16": "--global-batch-size 2",
-    "--train-iters 10000": "--train-iters 200",
+    "--train-iters 10000": "--train-iters 400",
     "--lr 2e-4": "--lr 1e-3",
     "--min-lr 2e-5": "--min-lr 1e-4",
-    "--lr-decay-iters 10000": "--lr-decay-iters 200",
+    "--lr-decay-iters 10000": "--lr-decay-iters 400",
     "--expert-model-parallel-size 1": "--expert-model-parallel-size 2",
     "--eval-iters 0\n": "--eval-iters 0\n    --no-save-optim\n    --no-save-rng\n",
     "TP=1 PP=1 EP=1 ETP=1 CP=1": "TP=1 PP=1 EP=2 ETP=1 CP=1",
-    "seq=8192 micro=4 global=16 iters=10000": "seq=512 micro=1 global=2 iters=200",
+    "seq=8192 micro=4 global=16 iters=10000": "seq=512 micro=1 global=2 iters=400",
 }
 for old, new in repls.items():
     if old not in s:
@@ -327,10 +331,10 @@ The resulting temporary diff should contain:
 - `--expert-model-parallel-size 2`
 - `--micro-batch-size 1`
 - `--global-batch-size 2`
-- `--train-iters 200`
+- `--train-iters 400`
 - `--lr 1e-3`
 - `--min-lr 1e-4`
-- `--lr-decay-iters 200`
+- `--lr-decay-iters 400`
 - Add `--no-save-optim` and `--no-save-rng`
 - Keep `--save-interval 1000`, `--eval-interval 1000`, `--eval-iters 0`
 
@@ -357,12 +361,11 @@ echo "$RUN_DIR"
 Validated 2xH200 result:
 
 ```text
-run dir: /home/jovyan/chimera_smoke/runs/20260704_114810
-iteration 1 lm loss:   1.104734E+01
-iteration 200 lm loss: 1.838096E-01
+iteration 1 lm loss:   1.133014E+01
+iteration 400 lm loss: 2.168084E-01
 skipped iterations: 0
 nan iterations: 0
-checkpoint: checkpoints/iter_0000200
+checkpoint: checkpoints/iter_0000400
 checkpoint size: about 19G
 ```
 
@@ -409,7 +412,7 @@ Validated export log includes:
 
 ```text
 Using Bridge run config: <checkpoints>/run_config.yaml
-Using Bridge run config: <checkpoints>/iter_0000200/run_config.yaml
+Using Bridge run config: <checkpoints>/iter_0000400/run_config.yaml
 Successfully exported model to: <hf_export>
 ```
 
@@ -444,15 +447,21 @@ cd "$MEGATRON_LM"
 $PYTHON examples/chimera/verify_pretrain.py \
   --hf-model "$HF_EXPORT" \
   --prompt "CHIMERA_OVERFIT_KEY_A:" \
-  --expected "The quiet engineer packed a silver notebook before sunrise" \
-  --max-new-tokens 24
+  --expected " The quiet engineer packed a silver notebook before sunrise and wrote down every signal from the training run.<EOS>"
+
+$PYTHON examples/chimera/verify_pretrain.py \
+  --hf-model "$HF_EXPORT" \
+  --prompt "CHIMERA_OVERFIT_KEY_B:" \
+  --expected " A careful researcher traced the river path through the valley and marked each bridge with a blue lantern.<EOS>"
 ```
 
 Validated output:
 
 ```text
-CHIMERA_OVERFIT_KEY_A: The quiet engineer packed a silver notebook before sunrise and wrote down every signal from the training run.
-Verification passed.
+CHIMERA_OVERFIT_KEY_A: The quiet engineer packed a silver notebook before sunrise and wrote down every signal from the training run.<EOS>
+Pretraining verification passed.
+CHIMERA_OVERFIT_KEY_B: A careful researcher traced the river path through the valley and marked each bridge with a blue lantern.<EOS>
+Pretraining verification passed.
 ```
 
 ## Chat Tokens And Template
@@ -545,8 +554,8 @@ Validated result:
 ```text
 sft_tokenizer_prompt_format chimera
 pack_samples False
-iteration 1 lm loss:   1.770898E+01
-iteration 120 lm loss: 6.497540E-04
+iteration 1 lm loss:   1.747544E+01
+iteration 120 lm loss: 6.252252E-05
 checkpoint: <sft_run>/checkpoints/iter_0000120
 ```
 
@@ -572,52 +581,35 @@ bash examples/chimera/export.sh \
   --hf-path "$HF_SFT_EXPORT" \
   --bridge-path "$MEGATRON_BRIDGE" \
   --python "$PYTHON"
-
-for f in tokenizer.json tokenizer_config.json special_tokens_map.json generation_config.json README.md training_report.json chat_template.jinja; do
-  [ -f "$HF_REFERENCE/$f" ] && cp "$HF_REFERENCE/$f" "$HF_SFT_EXPORT/$f"
-done
 ```
 
 Validate raw SFT inference with visible special tokens:
 
 ```bash
-$PYTHON - <<'PY'
-from transformers import AutoModelForCausalLM, AutoTokenizer
-import os
-import torch
+$PYTHON "$TRANSFORMERS/src/transformers/models/chimera/scripts/infer.py" \
+  --model "$HF_SFT_EXPORT" \
+  --chat \
+  --system-prompt "You answer with the exact requested phrase." \
+  --prompt "What is the Chimera SFT key A response?" \
+  --show-special-tokens \
+  --max-new-tokens 48 \
+  --device-map auto
 
-path = os.environ["HF_SFT_EXPORT"]
-tok = AutoTokenizer.from_pretrained(path, trust_remote_code=True)
-model = AutoModelForCausalLM.from_pretrained(path, trust_remote_code=True, dtype=torch.bfloat16, device_map="cuda")
-model.eval()
-
-msgs = [
-    {"role": "system", "content": "You answer with the exact requested phrase."},
-    {"role": "user", "content": "What is the Chimera SFT key A response?"},
-]
-prompt = tok.apply_chat_template(msgs, tokenize=False, add_generation_prompt=True)
-inputs = tok(prompt, return_tensors="pt").to(model.device)
-with torch.no_grad():
-    output = model.generate(
-        **inputs,
-        max_new_tokens=48,
-        do_sample=False,
-        eos_token_id=[tok.eos_token_id, tok.convert_tokens_to_ids("<end_of_turn>")],
-        pad_token_id=tok.eos_token_id,
-    )
-print(tok.decode(output[0], skip_special_tokens=False))
-PY
+$PYTHON "$TRANSFORMERS/src/transformers/models/chimera/scripts/infer.py" \
+  --model "$HF_SFT_EXPORT" \
+  --chat \
+  --system-prompt "You answer with the exact requested phrase." \
+  --prompt "What is the Chimera SFT key B response?" \
+  --show-special-tokens \
+  --max-new-tokens 48 \
+  --device-map auto
 ```
 
 Raw inference should keep special tokens visible:
 
 ```text
-RAW_SFT_A= <start_of_turn>system
-You answer with the exact requested phrase.<end_of_turn>
-<start_of_turn>user
-What is the Chimera SFT key A response?<end_of_turn>
-<start_of_turn>assistant
 CHIMERA_SFT_RESPONSE_A: jade lanterns align under quiet stars.<end_of_turn>
+CHIMERA_SFT_RESPONSE_B: silver rivers circle patient mountains.<end_of_turn>
 ```
 
 ## SimPO Smoke
@@ -675,8 +667,8 @@ Validated result:
 
 ```text
 pack_samples False
-iteration 1 simpo loss:  1.970660E+01
-iteration 40 simpo loss: 4.444013E-02
+iteration 1 simpo loss:  1.755045E+01
+iteration 40 simpo loss: 3.989361E-02
 iteration 40 rewards/accuracies: 1.000000E+00
 checkpoint: <simpo_run>/checkpoints/iter_0000040
 ```
@@ -703,52 +695,35 @@ bash examples/chimera/export.sh \
   --hf-path "$HF_SIMPO_EXPORT" \
   --bridge-path "$MEGATRON_BRIDGE" \
   --python "$PYTHON"
-
-for f in tokenizer.json tokenizer_config.json special_tokens_map.json generation_config.json README.md training_report.json chat_template.jinja; do
-  [ -f "$HF_REFERENCE/$f" ] && cp "$HF_REFERENCE/$f" "$HF_SIMPO_EXPORT/$f"
-done
 ```
 
 Validate raw SimPO inference with visible special tokens:
 
 ```bash
-$PYTHON - <<'PY'
-from transformers import AutoModelForCausalLM, AutoTokenizer
-import os
-import torch
+$PYTHON "$TRANSFORMERS/src/transformers/models/chimera/scripts/infer.py" \
+  --model "$HF_SIMPO_EXPORT" \
+  --chat \
+  --system-prompt "You answer with the exact requested phrase." \
+  --prompt "What is the Chimera SimPO key C response?" \
+  --show-special-tokens \
+  --max-new-tokens 48 \
+  --device-map auto
 
-path = os.environ["HF_SIMPO_EXPORT"]
-tok = AutoTokenizer.from_pretrained(path, trust_remote_code=True)
-model = AutoModelForCausalLM.from_pretrained(path, trust_remote_code=True, dtype=torch.bfloat16, device_map="cuda")
-model.eval()
-
-msgs = [
-    {"role": "system", "content": "You answer with the exact requested phrase."},
-    {"role": "user", "content": "What is the Chimera SimPO key C response?"},
-]
-prompt = tok.apply_chat_template(msgs, tokenize=False, add_generation_prompt=True)
-inputs = tok(prompt, return_tensors="pt").to(model.device)
-with torch.no_grad():
-    output = model.generate(
-        **inputs,
-        max_new_tokens=48,
-        do_sample=False,
-        eos_token_id=[tok.eos_token_id, tok.convert_tokens_to_ids("<end_of_turn>")],
-        pad_token_id=tok.eos_token_id,
-    )
-print(tok.decode(output[0], skip_special_tokens=False))
-PY
+$PYTHON "$TRANSFORMERS/src/transformers/models/chimera/scripts/infer.py" \
+  --model "$HF_SIMPO_EXPORT" \
+  --chat \
+  --system-prompt "You answer with the exact requested phrase." \
+  --prompt "What is the Chimera SimPO key D response?" \
+  --show-special-tokens \
+  --max-new-tokens 48 \
+  --device-map auto
 ```
 
 Raw inference should keep special tokens visible:
 
 ```text
-RAW_SIMPO_C= <start_of_turn>system
-You answer with the exact requested phrase.<end_of_turn>
-<start_of_turn>user
-What is the Chimera SimPO key C response?<end_of_turn>
-<start_of_turn>assistant
 CHIMERA_SIMPO_CHOSEN_C: amber maps reward careful answers.<end_of_turn>
+CHIMERA_SIMPO_CHOSEN_D: violet signals favor steady choices.<end_of_turn>
 ```
 
 ## Hard Rules

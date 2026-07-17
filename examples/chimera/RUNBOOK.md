@@ -158,6 +158,10 @@ SFT and SimPO do not use this preprocessing step.
 `train.sh` is the production 8k script. On the disposable container checkout,
 temporarily change it to the validated 2-GPU smoke configuration:
 
+Use 400 iterations for this two-document check. At 200 iterations the
+teacher-forced loss was low, but the bare A and B prefixes still tied on their
+first continuation token and did not both generate correctly.
+
 ```bash
 cd "$MEGATRON_LM"
 cp examples/chimera/train.sh /tmp/chimera_train.sh.before_smoke
@@ -171,14 +175,14 @@ replacements = {
     "--seq-length 8192": "--seq-length 512",
     "--micro-batch-size 4": "--micro-batch-size 1",
     "--global-batch-size 16": "--global-batch-size 2",
-    "--train-iters 10000": "--train-iters 200",
+    "--train-iters 10000": "--train-iters 400",
     "--lr 2e-4": "--lr 1e-3",
     "--min-lr 2e-5": "--min-lr 1e-4",
-    "--lr-decay-iters 10000": "--lr-decay-iters 200",
+    "--lr-decay-iters 10000": "--lr-decay-iters 400",
     "--expert-model-parallel-size 1": "--expert-model-parallel-size 2",
     "--eval-iters 0\n": "--eval-iters 0\n    --no-save-optim\n    --no-save-rng\n",
     "TP=1 PP=1 EP=1 ETP=1 CP=1": "TP=1 PP=1 EP=2 ETP=1 CP=1",
-    "seq=8192 micro=4 global=16 iters=10000": "seq=512 micro=1 global=2 iters=200",
+    "seq=8192 micro=4 global=16 iters=10000": "seq=512 micro=1 global=2 iters=400",
 }
 for old, new in replacements.items():
     if old not in s:
@@ -226,7 +230,12 @@ bash examples/chimera/export.sh \
 $PYTHON examples/chimera/verify_pretrain.py \
   --hf-model "$HF_PRETRAIN" \
   --prompt "CHIMERA_OVERFIT_KEY_A:" \
-  --expected "The quiet engineer packed a silver notebook before sunrise"
+  --expected " The quiet engineer packed a silver notebook before sunrise and wrote down every signal from the training run.<EOS>"
+
+$PYTHON examples/chimera/verify_pretrain.py \
+  --hf-model "$HF_PRETRAIN" \
+  --prompt "CHIMERA_OVERFIT_KEY_B:" \
+  --expected " A careful researcher traced the river path through the valley and marked each bridge with a blue lantern.<EOS>"
 ```
 
 ## 7. SFT
@@ -281,12 +290,22 @@ $PYTHON "$TRANSFORMERS/src/transformers/models/chimera/scripts/infer.py" \
   --show-special-tokens \
   --max-new-tokens 48 \
   --device-map auto
+
+$PYTHON "$TRANSFORMERS/src/transformers/models/chimera/scripts/infer.py" \
+  --model "$HF_SFT" \
+  --chat \
+  --system-prompt "You answer with the exact requested phrase." \
+  --prompt "What is the Chimera SFT key B response?" \
+  --show-special-tokens \
+  --max-new-tokens 48 \
+  --device-map auto
 ```
 
 Expected completion:
 
 ```text
 CHIMERA_SFT_RESPONSE_A: jade lanterns align under quiet stars.<end_of_turn>
+CHIMERA_SFT_RESPONSE_B: silver rivers circle patient mountains.<end_of_turn>
 ```
 
 ## 8. SimPO
@@ -358,12 +377,22 @@ $PYTHON "$TRANSFORMERS/src/transformers/models/chimera/scripts/infer.py" \
   --show-special-tokens \
   --max-new-tokens 48 \
   --device-map auto
+
+$PYTHON "$TRANSFORMERS/src/transformers/models/chimera/scripts/infer.py" \
+  --model "$HF_SIMPO" \
+  --chat \
+  --system-prompt "You answer with the exact requested phrase." \
+  --prompt "What is the Chimera SimPO key D response?" \
+  --show-special-tokens \
+  --max-new-tokens 48 \
+  --device-map auto
 ```
 
 Expected completion:
 
 ```text
 CHIMERA_SIMPO_CHOSEN_C: amber maps reward careful answers.<end_of_turn>
+CHIMERA_SIMPO_CHOSEN_D: violet signals favor steady choices.<end_of_turn>
 ```
 
 ## 9. Completion Criteria
@@ -371,7 +400,7 @@ CHIMERA_SIMPO_CHOSEN_C: amber maps reward careful answers.<end_of_turn>
 - The HF reference has the finalized 50176-token tokenizer and chat template.
 - HF-to-MCore conversion writes `iter_0000000/run_config.yaml`.
 - Decoded pretraining documents end in `<EOS>` and contain no inserted BOS.
-- Random-init pretraining loss converges and the exported HF model memorizes A.
-- SFT raw inference emits the exact A answer followed by `<end_of_turn>`.
-- SimPO reward accuracy reaches 1.0 and raw inference emits the chosen C answer.
+- Random-init pretraining loss converges and the exported HF model memorizes A and B through `<EOS>`.
+- SFT raw inference emits the exact A and B answers followed by `<end_of_turn>`.
+- SimPO reward accuracy reaches 1.0 and raw inference emits the chosen C and D answers.
 - `examples/chimera/train.sh` is restored to the committed 8k configuration.

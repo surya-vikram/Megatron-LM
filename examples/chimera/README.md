@@ -1,114 +1,50 @@
-# Chimera Megatron-LM Flow
+# Chimera Megatron-LM Example
 
-This example pretrains Chimera from random initialization with Megatron-LM and
-exports trained checkpoints back to Hugging Face through Megatron-Bridge.
+This directory contains the reproducible Chimera pretraining, SFT, SimPO, and
+Megatron-Bridge conversion workflow. See [RUNBOOK.md](RUNBOOK.md) for commands.
 
-## Locked Architecture
-
-```text
-layers:              25
-dense layers:        first 2
-MoE layers:          remaining 23
-Megatron pattern:    [0]*2+[1]*23
-HF dense config:     first_k_dense_replace=2, last_k_dense_replace=0
-baseline parallel:   TP=1 PP=1 EP=1 ETP=1 CP=1
-```
-
-## Default Paths
+## Architecture
 
 ```text
-HF/tokenizer reference: /datasets/megadata/hf_models/chimera-10b
-Preprocessed data:     /datasets/megadata/chimera/overfit_doc_text_document
-Run root:              /datasets/megadata/chimera_runs
-HF export:             /datasets/megadata/hf_exports/chimera-overfit-hf
-Megatron-Bridge:       /workspace/repos/Megatron-Bridge
+decoder layers:       25
+dense layers:         first 2
+MoE layers:           remaining 23
+Megatron pattern:     [0]*2+[1]*23
+HF dense fields:      first_k_dense_replace=2, last_k_dense_replace=0
+vocabulary size:      50176
+context:              8k training baseline, 32k YaRN model limit
 ```
 
-## 1. Create HF Reference Artifacts
+The production baseline is TP=1, PP=1, EP=1, ETP=1, CP=1. The two-GPU smoke
+configuration temporarily changes EP to 2.
 
-Use the Transformers Chimera export script to create config and tokenizer
-artifacts. Full random HF weights are optional; Megatron-LM training here starts
-from random initialization.
-
-```bash
-cd /path/to/transformers
-python3 src/transformers/models/chimera/scripts/export_to_hf.py \
-  --output /datasets/megadata/hf_models/chimera-10b \
-  --no-weights
-```
-
-## 2. Preprocess Documents
-
-Input is JSONL with raw text:
-
-```json
-{"text":"sample A text..."}
-{"text":"sample B text..."}
-```
-
-Run:
-
-```bash
-bash examples/chimera/preprocess.sh \
-  --input examples/chimera/overfit_doc.jsonl \
-  --output-prefix /datasets/megadata/chimera/overfit_doc \
-  --tokenizer-model /datasets/megadata/hf_models/chimera-10b \
-  --workers 8
-```
-
-The preprocessing script uses `--append-eod`, so Megatron appends the tokenizer
-EOS/EOD token after each document. Do not manually add BOS to pretraining text.
-
-Expected output:
+## Data
 
 ```text
-/datasets/megadata/chimera/overfit_doc_text_document.bin
-/datasets/megadata/chimera/overfit_doc_text_document.idx
+data/pretrain/overfit.jsonl                 raw {"text": ...} documents
+data/pretrain/overfit_text_document.bin     preprocessed token data
+data/pretrain/overfit_text_document.idx     preprocessed document index
+data/sft/overfit.jsonl                      direct {"messages": [...]} rows
+data/simpo/overfit.jsonl                    direct chosen/rejected rows
 ```
 
-## 3. Random-Init Pretraining
+Pretraining preprocessing appends `<EOS>` to each document. It does not add
+`<BOS>`. SFT and SimPO are read directly through `SFTTokenizer`; they are not
+passed through `preprocess_data.py` and the example scripts do not enable
+`--pack-samples`. `train.sh` keeps `INTRA_DOC_MASKING=false` by default, so
+pretraining uses an ordinary causal mask across EOS-delimited documents.
 
-Set the data prefix, tokenizer/reference directory, and run root:
+## Files
 
-```bash
-DATA_PATH=/datasets/megadata/chimera/overfit_doc_text_document \
-TOKENIZER_MODEL=/datasets/megadata/hf_models/chimera-10b \
-RUNS_ROOT=/datasets/megadata/chimera_runs \
-bash examples/chimera/train.sh
-```
+- `preprocess.sh`: convert pretraining JSONL to Megatron `.bin/.idx` files.
+- `train.sh`: random-init Chimera pretraining.
+- `sft.sh`: supervised fine-tuning from an MCore checkpoint.
+- `simpo.sh`: SimPO preference tuning from an MCore checkpoint.
+- `import.sh`: convert a complete HF checkpoint to MCore.
+- `export.sh`: convert an MCore checkpoint to HF.
+- `pretrain_chimera.py`: Megatron training entry point shared by all stages.
+- `run_config.yaml`: architecture metadata consumed by Megatron-Bridge export.
+- `verify_pretrain.py`: assert a plain-text pretraining overfit completion.
 
-`train.sh` creates a timestamped IST run directory:
-
-```text
-/datasets/megadata/chimera_runs/YYYYMMDD_HHMMSS/
-  checkpoints/
-  data_cache/
-  logs/train.log
-  tensorboard/
-  run_paths.env
-  train.sh
-```
-
-The current baseline is 8k sequence pretraining with 32k YaRN metadata. Use the
-saved checkpoint for later context extension instead of training 32k from the
-first run.
-
-## 4. Export MCore to HF
-
-```bash
-bash examples/chimera/export.sh \
-  --hf-reference /datasets/megadata/hf_models/chimera-10b \
-  --mcore-path /datasets/megadata/chimera_runs/YYYYMMDD_HHMMSS/checkpoints \
-  --hf-path /datasets/megadata/hf_exports/chimera-overfit-hf \
-  --bridge-path /workspace/repos/Megatron-Bridge
-```
-
-## 5. Verify Completion
-
-```bash
-python3 examples/chimera/verify_completion.py \
-  --hf-model /datasets/megadata/hf_exports/chimera-overfit-hf
-```
-
-The verifier checks whether greedy generation from the overfit key prompt
-contains the expected memorized phrase.
+Large HF weights, checkpoints, optimizer state, logs, and generated runs belong
+on persistent storage outside the Git checkout.

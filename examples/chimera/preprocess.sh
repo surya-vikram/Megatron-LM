@@ -1,8 +1,9 @@
 #!/bin/bash
 set -euo pipefail
 
-INPUT="examples/chimera/overfit_doc.jsonl"
-OUTPUT_PREFIX="/datasets/megadata/chimera/overfit_doc"
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+INPUT="$SCRIPT_DIR/data/pretrain/overfit.jsonl"
+OUTPUT_PREFIX="$SCRIPT_DIR/data/pretrain/overfit"
 TOKENIZER_MODEL="/datasets/megadata/hf_models/chimera-10b"
 WORKERS=8
 PYTHON_BIN=""

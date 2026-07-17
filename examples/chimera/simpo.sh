@@ -2,7 +2,8 @@
 set -euo pipefail
 
 # Required user inputs.
-DATA_PATH="${DATA_PATH:-/datasets/megadata/chimera_simpo/train.jsonl}"
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+DATA_PATH="${DATA_PATH:-$SCRIPT_DIR/data/simpo/overfit.jsonl}"
 TOKENIZER_MODEL="${TOKENIZER_MODEL:-/datasets/megadata/hf_models/chimera-10b}"
 MCORE_PATH="${MCORE_PATH:-/datasets/megadata/chimera_sft_runs/latest/checkpoints}"
 RUNS_ROOT="${RUNS_ROOT:-/datasets/megadata/chimera_simpo_runs}"

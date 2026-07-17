@@ -7,6 +7,10 @@ description: End-to-end operational workflow for Chimera container setup, repo p
 
 Use this skill when setting up Chimera in a fresh container or validating the full Transformers -> Megatron-LM -> Megatron-Bridge -> HF loop.
 
+For the checked-in sample data and concise copy-paste commands, also read
+`examples/chimera/RUNBOOK.md`. Keep that runbook and this detailed recovery
+guide consistent.
+
 ## Locked Architecture
 
 - 25 decoder layers
@@ -101,7 +105,10 @@ print(pathlib.Path(transformers.__file__).resolve().parent)
 PY
 )
 
-cp -a /workspace/repos/transformers/src/transformers/. "$SITE/"
+SOURCE=$(realpath /workspace/repos/transformers/src/transformers)
+if [ "$(realpath "$SITE")" != "$SOURCE" ]; then
+  cp -a "$SOURCE/." "$SITE/"
+fi
 ```
 
 Do not rely on `rsync` in this container; the validated image did not include it.
@@ -406,13 +413,9 @@ Using Bridge run config: <checkpoints>/iter_0000200/run_config.yaml
 Successfully exported model to: <hf_export>
 ```
 
-If tokenizer files are missing from the export directory, copy them from the HF reference:
-
-```bash
-for f in tokenizer.json tokenizer_config.json special_tokens_map.json generation_config.json README.md training_report.json chat_template.jinja; do
-  [ -f "$HF_REFERENCE/$f" ] && cp "$HF_REFERENCE/$f" "$HF_EXPORT/$f"
-done
-```
+`examples/chimera/export.sh` copies the finalized tokenizer, chat template,
+generation config, and tokenizer training report from the HF reference into the
+export directory after Bridge writes the weights and model config.
 
 Validate:
 
@@ -438,7 +441,7 @@ PY
 
 ```bash
 cd "$MEGATRON_LM"
-$PYTHON examples/chimera/verify_completion.py \
+$PYTHON examples/chimera/verify_pretrain.py \
   --hf-model "$HF_EXPORT" \
   --prompt "CHIMERA_OVERFIT_KEY_A:" \
   --expected "The quiet engineer packed a silver notebook before sunrise" \

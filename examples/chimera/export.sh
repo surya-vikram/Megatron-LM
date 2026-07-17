@@ -82,4 +82,17 @@ export PYTHONPATH="$BRIDGE_PATH/src:${PYTHONPATH:-}"
     --hf-path "$HF_PATH" \
     --trust-remote-code
 
+for name in \
+    tokenizer.json \
+    tokenizer_config.json \
+    special_tokens_map.json \
+    chat_template.jinja \
+    generation_config.json \
+    training_report.json \
+    README.md; do
+    if [[ -f "$HF_REFERENCE/$name" ]]; then
+        cp "$HF_REFERENCE/$name" "$HF_PATH/$name"
+    fi
+done
+
 echo "HF export: $HF_PATH"

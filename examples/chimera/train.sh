@@ -2,7 +2,8 @@
 set -euo pipefail
 
 # User inputs.
-DATA_PATH="${DATA_PATH:-/datasets/megadata/chimera/overfit_doc_text_document}"
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+DATA_PATH="${DATA_PATH:-$SCRIPT_DIR/data/pretrain/overfit_text_document}"
 TOKENIZER_MODEL="${TOKENIZER_MODEL:-/datasets/megadata/hf_models/chimera-10b}"
 RUNS_ROOT="${RUNS_ROOT:-/datasets/megadata/chimera_runs}"
 INTRA_DOC_MASKING="${INTRA_DOC_MASKING:-false}"

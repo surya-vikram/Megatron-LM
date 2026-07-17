@@ -1,6 +1,6 @@
 # Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
-"""Verify that an exported Chimera HF checkpoint emits the overfit target text."""
+"""Verify that an exported Chimera HF checkpoint emits a pretraining overfit target."""
 
 import argparse
 
@@ -10,11 +10,11 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--hf-model", default="/datasets/megadata/hf_exports/chimera-overfit-hf")
-    parser.add_argument("--prompt", default="CHIMERA_OVERFIT_KEY:")
+    parser.add_argument("--hf-model", required=True)
+    parser.add_argument("--prompt", default="CHIMERA_OVERFIT_KEY_A:")
     parser.add_argument(
         "--expected",
-        default="the blue ibis carries a copper lantern across the silent lake",
+        default="The quiet engineer packed a silver notebook before sunrise",
     )
     parser.add_argument("--max-new-tokens", type=int, default=64)
     return parser.parse_args()
@@ -34,7 +34,7 @@ def main():
     )
     model.eval()
 
-    inputs = tokenizer(args.prompt, return_tensors="pt").to(device)
+    inputs = tokenizer(args.prompt, add_special_tokens=False, return_tensors="pt").to(device)
     with torch.inference_mode():
         generated = model.generate(
             **inputs,
@@ -43,11 +43,11 @@ def main():
             pad_token_id=tokenizer.eos_token_id,
         )
 
-    text = tokenizer.decode(generated[0], skip_special_tokens=True)
+    text = tokenizer.decode(generated[0], skip_special_tokens=False)
     print(text)
     if args.expected not in text:
         raise SystemExit(f"Expected phrase not found: {args.expected!r}")
-    print("Verification passed.")
+    print("Pretraining verification passed.")
 
 
 if __name__ == "__main__":

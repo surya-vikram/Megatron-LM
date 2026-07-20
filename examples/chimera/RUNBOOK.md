@@ -120,6 +120,16 @@ The checked source schema is one raw document per JSONL row:
 {"text":"CHIMERA_OVERFIT_KEY_B: A careful researcher ..."}
 ```
 
+For production data, `--input` may also be a parquet file, glob, or directory.
+Directories are traversed recursively for `.parquet` and `.jsonl` files. The
+script reports each format count, processes paths in deterministic sorted
+order, and writes all documents into one `.bin/.idx` pair. Parquet input is
+streamed in record batches and must contain the configured `text` column.
+`examples/chimera/preprocess.sh` is a Chimera-specific wrapper around the
+generic `tools/preprocess_data.py`: it selects `HuggingFaceTokenizer`, passes
+the Chimera tokenizer path, and always appends one `<EOS>` document boundary.
+It does not format chat data or run SFT/SimPO.
+
 Regenerate the committed `.bin/.idx` files whenever the JSONL or tokenizer
 changes:
 
@@ -130,6 +140,42 @@ bash examples/chimera/preprocess.sh \
   --workers 8 \
   --python "$PYTHON"
 ```
+
+For a production directory containing parquet and JSONL files at any depth,
+use one output prefix. This command recursively discovers both formats and
+combines every document into one indexed dataset:
+
+```bash
+export PRETRAIN_SOURCE_DIR=/datasets/fineweb-edu
+export PRETRAIN_OUTPUT_DIR=/datasets/processed/fineweb-edu
+export TOTAL_CPUS=$(nproc --all)
+export PREPROCESS_WORKERS=$((TOTAL_CPUS > 8 ? TOTAL_CPUS - 8 : 1))
+mkdir -p "$PRETRAIN_OUTPUT_DIR"
+"$PYTHON" -c "import pyarrow"
+
+cd "$MEGATRON_LM"
+bash examples/chimera/preprocess.sh \
+  --input "$PRETRAIN_SOURCE_DIR" \
+  --output-prefix "$PRETRAIN_OUTPUT_DIR/fineweb_edu" \
+  --tokenizer-model "$HF_REFERENCE" \
+  --workers "$PREPROCESS_WORKERS" \
+  --log-interval 10000 \
+  --log-interval-seconds 30 \
+  --parquet-batch-size 1024 \
+  --python "$PYTHON"
+
+export DATA_PREFIX=$PRETRAIN_OUTPUT_DIR/fineweb_edu_text_document
+test -f "$DATA_PREFIX.bin"
+test -f "$DATA_PREFIX.idx"
+```
+
+The discovery log must report the expected parquet and JSONL file counts
+and exact document count before tokenization starts. Progress logs include
+percentage, throughput, elapsed time, and ETA every 30 seconds. Only files
+ending in `.parquet` or `.jsonl` are included. Pass `--skip-document-count` to
+avoid the initial JSONL line scan; percentage and ETA are then unavailable.
+ETA is a smoothed estimate based on documents per second, so it will move when
+document lengths or tokenizer cost vary across shards.
 
 Inspect exactly what Megatron reads. Each decoded document must end in `<EOS>`;
 there must be no inserted `<BOS>`:

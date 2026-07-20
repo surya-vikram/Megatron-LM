@@ -219,7 +219,12 @@ $MCORE_IMPORT/iter_0000000/run_config.yaml
 
 ## Pretraining Data Format
 
-Pretraining JSONL is raw text only: each row is `{"text": "..."}`. Do not prepend BOS. `preprocess.sh` uses Megatron `tools/preprocess_data.py` with `--append-eod`, so the model sees each document followed by `<EOS>` and training consumes the generated `.bin` / `.idx` dataset.
+Pretraining JSONL is raw text only: each row is `{"text": "..."}`. Parquet
+input uses the same `text` column. `preprocess.sh` accepts one file, a glob, or
+a directory recursively containing `.jsonl` and `.parquet` files, reports both
+file and document counts, and combines them into one indexed dataset. Progress
+logs include percentage, throughput, elapsed time, and ETA. Do not prepend
+BOS. It passes `--append-eod`, so each document is followed by `<EOS>`.
 
 Use coherent English samples for smoke validation:
 

@@ -36,7 +36,7 @@ pretraining uses an ordinary causal mask across EOS-delimited documents.
 
 ## Files
 
-- `preprocess.sh`: convert pretraining JSONL to Megatron `.bin/.idx` files.
+- `preprocess.sh`: Chimera convenience wrapper around `tools/preprocess_data.py` that recursively converts pretraining `.jsonl` and parquet files to one Megatron `.bin/.idx` dataset, using the HF tokenizer and appending `<EOS>` to every document.
 - `train.sh`: random-init Chimera pretraining.
 - `sft.sh`: supervised fine-tuning from an MCore checkpoint.
 - `simpo.sh`: SimPO preference tuning from an MCore checkpoint.

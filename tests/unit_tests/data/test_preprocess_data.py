@@ -14,8 +14,14 @@ from megatron.core.datasets.indexed_dataset import IndexedDataset
 from megatron.core.tokenizers.text.libraries.megatron_hf_tokenizer import MEGATRON_CONFIG_MAP
 from tools.merge_datasets import main as merge_main
 from tools.preprocess_data import Encoder
+from tools.preprocess_data import Partition
+from tools.preprocess_data import count_input_documents
+from tools.preprocess_data import discover_input_files
+from tools.preprocess_data import format_duration
 from tools.preprocess_data import get_args as build_args
+from tools.preprocess_data import iter_input_records
 from tools.preprocess_data import main as build_main
+from tools.preprocess_data import validate_parquet_inputs
 
 __HUGGINGFACE_BERT_BASE_UNCASED_VOCAB = (
     "https://huggingface.co/bert-base-uncased/raw/main/vocab.txt"
@@ -47,6 +53,83 @@ def dummy_jsonl(odir):
             list_test.append(json.dumps({"text": line}) + "\n")
     with open(os.path.join(odir, "test.jsonl"), "w") as writer:
         writer.writelines(list_test)
+
+
+def test_recursive_jsonl_and_parquet_discovery(tmp_path, capsys):
+    parquet = pytest.importorskip("pyarrow.parquet")
+    pyarrow = pytest.importorskip("pyarrow")
+
+    jsonl_path = tmp_path / "nested" / "records.jsonl"
+    jsonl_path.parent.mkdir()
+    jsonl_path.write_text(json.dumps({"text": "from jsonl"}) + "\n", encoding="utf-8")
+
+    parquet_path = tmp_path / "deeper" / "nested" / "records.parquet"
+    parquet_path.parent.mkdir(parents=True)
+    parquet.write_table(pyarrow.table({"text": ["from parquet"]}), parquet_path)
+
+    (tmp_path / "ignored.json").write_text('{"text": "ignored"}\n', encoding="utf-8")
+    (tmp_path / "partial.parquet.incomplete").write_bytes(b"ignored")
+
+    input_files = discover_input_files(str(tmp_path))
+    assert input_files == sorted([str(parquet_path), str(jsonl_path)])
+    assert capsys.readouterr().out == (
+        "Discovered input files:\n"
+        "  Parquet: 1\n"
+        "  JSONL: 1\n"
+        "  Total: 2\n"
+    )
+
+    records = list(iter_input_records(input_files, ["text"], parquet_batch_size=1))
+    normalized = [json.loads(record) if isinstance(record, str) else record for record in records]
+    assert normalized == [{"text": "from parquet"}, {"text": "from jsonl"}]
+
+    assert count_input_documents(input_files) == 2
+    assert capsys.readouterr().out == (
+        "Opening " + str(parquet_path) + "\n"
+        "Opening " + str(jsonl_path) + "\n"
+        "Input documents:\n"
+        "  Parquet: 1\n"
+        "  JSONL: 1\n"
+        "  Total: 2\n"
+    )
+
+
+def test_parquet_requires_json_keys(tmp_path):
+    parquet = pytest.importorskip("pyarrow.parquet")
+    pyarrow = pytest.importorskip("pyarrow")
+
+    parquet_path = tmp_path / "records.parquet"
+    parquet.write_table(pyarrow.table({"content": ["wrong column"]}), parquet_path)
+
+    with pytest.raises(ValueError, match="missing required columns: \\['text'\\]"):
+        validate_parquet_inputs([str(parquet_path)], ["text"])
+
+
+def test_progress_includes_percentage_and_eta(monkeypatch, capsys):
+    args = type(
+        "Args",
+        (),
+        {
+            "find_optimal_num_workers": False,
+            "log_interval": 1,
+            "log_interval_seconds": 30,
+        },
+    )()
+    partition = Partition(args, workers=1)
+    monkeypatch.setattr("tools.preprocess_data.time.monotonic", lambda: 10.0)
+
+    partition.print_processing_stats(
+        count=50,
+        proc_start=0.0,
+        total_bytes_processed=100 * 1024 * 1024,
+        total_documents=100,
+    )
+
+    assert capsys.readouterr().err == (
+        "Processed 50/100 documents (50.00%) | 5.0 docs/s | 10.00 MB/s | "
+        "elapsed 00:00:10 | ETA 00:00:10\n"
+    )
+    assert format_duration(3661.9) == "01:01:01"
 
 
 def build_datasets(idir, odir, extra_args=[]):

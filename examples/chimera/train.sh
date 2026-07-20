@@ -7,6 +7,11 @@ DATA_PATH="${DATA_PATH:-$SCRIPT_DIR/data/pretrain/overfit_text_document}"
 TOKENIZER_MODEL="${TOKENIZER_MODEL:-/datasets/megadata/hf_models/chimera-10b}"
 RUNS_ROOT="${RUNS_ROOT:-/datasets/megadata/chimera_runs}"
 INTRA_DOC_MASKING="${INTRA_DOC_MASKING:-false}"
+LOAD_CHECKPOINT="${LOAD_CHECKPOINT:-}"
+
+# Training schedule. These are total iteration targets, not additional iterations.
+TRAIN_ITERS="${TRAIN_ITERS:-10000}"
+LR_DECAY_ITERS="${LR_DECAY_ITERS:-10000}"
 
 # Distributed launch settings.
 GPUS_PER_NODE="${GPUS_PER_NODE:-$(nvidia-smi -L | wc -l)}"
@@ -25,6 +30,10 @@ LOG_DIR="${RUN_DIR}/logs"
 [[ -f "${DATA_PATH}.bin" ]] || { echo "Missing data bin: ${DATA_PATH}.bin"; exit 1; }
 [[ -f "${DATA_PATH}.idx" ]] || { echo "Missing data idx: ${DATA_PATH}.idx"; exit 1; }
 [[ -d "$TOKENIZER_MODEL" || -f "$TOKENIZER_MODEL" ]] || { echo "Missing tokenizer model: $TOKENIZER_MODEL"; exit 1; }
+if [[ -n "$LOAD_CHECKPOINT" && ! -f "$LOAD_CHECKPOINT/latest_checkpointed_iteration.txt" ]]; then
+    echo "Invalid checkpoint root: $LOAD_CHECKPOINT"
+    exit 1
+fi
 
 mkdir -p "$SAVE_PATH" "$TENSORBOARD_DIR" "$DATA_CACHE_PATH" "$LOG_DIR"
 
@@ -106,11 +115,11 @@ fi
 TRAINING_ARGS=(
     --micro-batch-size 4
     --global-batch-size 16
-    --train-iters 10000
+    --train-iters "$TRAIN_ITERS"
     --lr 2e-4
     --min-lr 2e-5
     --lr-decay-style cosine
-    --lr-decay-iters 10000
+    --lr-decay-iters "$LR_DECAY_ITERS"
     --lr-warmup-iters 0
     --weight-decay 0.0
     --clip-grad 1.0
@@ -148,6 +157,12 @@ LOGGING_ARGS=(
     --log-interval 1
     --log-throughput
 )
+if [[ -n "$LOAD_CHECKPOINT" ]]; then
+    LOGGING_ARGS+=(
+        --load "$LOAD_CHECKPOINT"
+        --exit-on-missing-checkpoint
+    )
+fi
 
 cat > "${RUN_DIR}/run_paths.env" <<EOF
 DATA_PATH=${DATA_PATH}
@@ -164,18 +179,26 @@ NODE_RANK=${NODE_RANK}
 MASTER_ADDR=${MASTER_ADDR}
 MASTER_PORT=${MASTER_PORT}
 INTRA_DOC_MASKING=${INTRA_DOC_MASKING}
+LOAD_CHECKPOINT=${LOAD_CHECKPOINT}
+TRAIN_ITERS=${TRAIN_ITERS}
+LR_DECAY_ITERS=${LR_DECAY_ITERS}
 EOF
 
 cp "$0" "${RUN_DIR}/train.sh"
 
-echo "Running Chimera random-init pretraining"
+if [[ -n "$LOAD_CHECKPOINT" ]]; then
+    echo "Resuming Chimera pretraining from $LOAD_CHECKPOINT"
+else
+    echo "Running Chimera random-init pretraining"
+fi
 echo "  Run dir:          $RUN_DIR"
 echo "  Data prefix:      $DATA_PATH"
 echo "  Tokenizer:        $TOKENIZER_MODEL"
 echo "  GPUs per node:    $GPUS_PER_NODE"
 echo "  Parallelism:      TP=1 PP=1 EP=1 ETP=1 CP=1"
 echo "  Architecture:     layers=25 moe_layer_freq=[0]*2+[1]*23"
-echo "  Seq/batch/iters:  seq=8192 micro=4 global=16 iters=10000"
+echo "  Seq/batch/iters:  seq=8192 micro=4 global=16 iters=$TRAIN_ITERS"
+echo "  LR decay iters:   $LR_DECAY_ITERS"
 echo "  Attention:        backend=flash external_flash_attn=false cuda_graph=TE:attn"
 echo "  Intra-doc mask:   $INTRA_DOC_MASKING"
 

@@ -29,6 +29,48 @@ Keep this layout consistent in:
 - `Megatron-LM/examples/chimera/train.sh`
 - `Megatron-LM/examples/chimera/run_config.yaml`
 
+## Cluster Container Manager
+
+The validated base image is `suryavikram6/megatron-gemma:v2-fixed`. For
+one-to-N node training, use `examples/chimera/cluster_manager.sh` from a
+controller with passwordless SSH to every selected node. Show its command
+guide with:
+
+```bash
+bash examples/chimera/cluster_manager.sh --help
+```
+
+The shared host layout is:
+
+```text
+/nvme_zone3/home/ekamai1/surya/chimera/repos
+/nvme_zone3/home/ekamai1/surya/chimera/data
+```
+
+The manager mounts those paths at `/workspace/repos` and
+`/datasets/megadata`. Copy `examples/chimera/cluster.env.example` outside the
+Git checkout, set one explicit `RUN_NAME`, and use the same configuration for
+`preflight`, `launch`, `status`, `logs`, `stop`, and `cleanup`.
+
+The image's `/workspace/load_env.sh` contains escaped quotes and must not be
+sourced by the cluster flow. The manager explicitly sets:
+
+```text
+VIRTUAL_ENV=/workspace/venv
+PATH=/workspace/venv/bin:$PATH
+HF_HOME=/datasets/megadata/cache/huggingface
+PYTHONPATH=/workspace/repos/Megatron-LM:/workspace/repos/Megatron-Bridge/src:/workspace/repos/transformers/src
+```
+
+Node list order defines ranks and the first node is the master. The manager
+creates one shared run directory, checks topology and batch divisibility,
+validates the image and Chimera imports on every node, and launches one
+detached training container per node. It never clones or updates code during
+launch. SFT and SimPO remain new fine-tuning stages and do not restore their
+own optimizer or RNG state; only pretraining supports checkpoint resume. A
+CPU-only controller can run `image-check`, `preflight`, and `dry-run`, but
+`launch` requires GPU-enabled nodes.
+
 ## Fresh Container Setup
 
 Expected container paths:
@@ -38,11 +80,11 @@ Expected container paths:
 /workspace/repos
 ```
 
-Use persistent storage for large artifacts. On the validated H200 container, `/home/jovyan` was the persistent 477G volume and was used for checkpoints/exports:
+Use `/datasets/megadata` for large artifacts inside cluster containers:
 
 ```bash
 df -h
-export DATA_ROOT=/home/jovyan/chimera_smoke
+export DATA_ROOT=/datasets/megadata/chimera_smoke
 ```
 
 Clone or update all three repos under `/workspace/repos`:

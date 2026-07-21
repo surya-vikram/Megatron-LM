@@ -14,6 +14,10 @@ NNODES="${NNODES:-1}"
 NODE_RANK="${NODE_RANK:-0}"
 MASTER_ADDR="${MASTER_ADDR:-localhost}"
 MASTER_PORT="${MASTER_PORT:-29593}"
+TP_SIZE="${TP_SIZE:-1}"
+PP_SIZE="${PP_SIZE:-1}"
+EP_SIZE="${EP_SIZE:-1}"
+CP_SIZE="${CP_SIZE:-1}"
 
 # Training settings.
 SEQ_LENGTH="${SEQ_LENGTH:-8192}"
@@ -35,7 +39,7 @@ SIMPO_GAMMA="${SIMPO_GAMMA:-0.5}"
 SIMPO_LOSS_TYPE="${SIMPO_LOSS_TYPE:-sigmoid}"
 SIMPO_SFT_WEIGHT="${SIMPO_SFT_WEIGHT:-0.0}"
 
-RUN_STAMP="$(TZ='Asia/Kolkata' date +%Y%m%d_%H%M%S)"
+RUN_STAMP="${RUN_STAMP:-$(TZ='Asia/Kolkata' date +%Y%m%d_%H%M%S)}"
 RUN_DIR="${RUNS_ROOT}/${RUN_STAMP}"
 SAVE_PATH="${RUN_DIR}/checkpoints"
 TENSORBOARD_DIR="${RUN_DIR}/tensorboard"
@@ -149,10 +153,10 @@ TRAINING_ARGS=(
 )
 
 PARALLEL_ARGS=(
-    --tensor-model-parallel-size 1
-    --pipeline-model-parallel-size 1
-    --expert-model-parallel-size 1
-    --context-parallel-size 1
+    --tensor-model-parallel-size "$TP_SIZE"
+    --pipeline-model-parallel-size "$PP_SIZE"
+    --expert-model-parallel-size "$EP_SIZE"
+    --context-parallel-size "$CP_SIZE"
 )
 
 LOGGING_ARGS=(
@@ -167,31 +171,41 @@ LOGGING_ARGS=(
     --eval-iters "$EVAL_ITERS"
     --log-interval 1
     --log-throughput
+    --exit-signal-handler
 )
 if [[ "$SAVE_WEIGHTS_ONLY" == true ]]; then
     LOGGING_ARGS+=(--no-save-optim --no-save-rng)
 fi
 
+if [[ "$NODE_RANK" == 0 ]]; then
 cat > "${RUN_DIR}/run_paths.env" <<EOF
 DATA_PATH=${DATA_PATH}
 TOKENIZER_MODEL=${TOKENIZER_MODEL}
 MCORE_PATH=${MCORE_PATH}
 RUN_DIR=${RUN_DIR}
 SAVE_PATH=${SAVE_PATH}
+TP_SIZE=${TP_SIZE}
+PP_SIZE=${PP_SIZE}
+EP_SIZE=${EP_SIZE}
+CP_SIZE=${CP_SIZE}
+MICRO_BATCH_SIZE=${MICRO_BATCH_SIZE}
+GLOBAL_BATCH_SIZE=${GLOBAL_BATCH_SIZE}
 EOF
 
-cp "$0" "${RUN_DIR}/simpo.sh"
+    cp "$0" "${RUN_DIR}/simpo.sh"
+fi
 
 echo "Running Chimera SimPO"
 echo "  Run dir:          $RUN_DIR"
 echo "  Data JSONL:       $DATA_PATH"
 echo "  Load checkpoint:  $MCORE_PATH"
 echo "  Tokenizer:        $TOKENIZER_MODEL"
+echo "  Parallelism:      TP=$TP_SIZE PP=$PP_SIZE EP=$EP_SIZE ETP=1 CP=$CP_SIZE"
 echo "  Seq/batch/iters:  seq=$SEQ_LENGTH micro=$MICRO_BATCH_SIZE global=$GLOBAL_BATCH_SIZE iters=$TRAIN_ITERS"
 echo "  SimPO:            beta=$SIMPO_BETA gamma=$SIMPO_GAMMA loss=$SIMPO_LOSS_TYPE sft_weight=$SIMPO_SFT_WEIGHT"
 echo "  Packing:          disabled"
 
-python3 -m torch.distributed.run "${DISTRIBUTED_ARGS[@]}" \
+exec python3 -m torch.distributed.run "${DISTRIBUTED_ARGS[@]}" \
     examples/chimera/pretrain_chimera.py \
     --chimera-expert-tp-size 1 \
     "${MODEL_ARGS[@]}" \
@@ -199,4 +213,4 @@ python3 -m torch.distributed.run "${DISTRIBUTED_ARGS[@]}" \
     "${DATA_ARGS[@]}" \
     "${TRAINING_ARGS[@]}" \
     "${PARALLEL_ARGS[@]}" \
-    "${LOGGING_ARGS[@]}" 2>&1 | tee "${LOG_DIR}/simpo.log"
+    "${LOGGING_ARGS[@]}" > >(tee -a "${LOG_DIR}/simpo_node_${NODE_RANK}.log") 2>&1

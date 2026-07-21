@@ -1,0 +1,771 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+CONFIG_FILE=""
+
+usage() {
+    cat <<'USAGE'
+Usage:
+  bash examples/chimera/cluster_manager.sh --config FILE COMMAND
+  bash examples/chimera/cluster_manager.sh --help
+
+Commands:
+  info          Print the effective configuration and node-to-rank map.
+  pull          Pull the configured image on every selected node.
+  image-check   Validate mounted Chimera imports inside the image.
+  preflight     Validate hosts, paths, GPUs, topology, image, and imports.
+  shell         Open an interactive prepared container on the first node.
+  dry-run       Print the per-node Docker launch settings without launching.
+  launch        Start detached training containers on all selected nodes.
+  status        Show container and GPU status on all selected nodes.
+  logs          Follow shared rank-specific logs through the master node.
+  docker-logs   Follow Docker logs from every selected node.
+  stop          Send SIGTERM to all run containers and wait for shutdown.
+  kill          Force-kill all run containers.
+  cleanup       Remove stopped containers for this run.
+  help          Show this help text.
+
+Examples:
+  cp examples/chimera/cluster.env.example /path/to/pretrain.env
+  bash examples/chimera/cluster_manager.sh --config /path/to/pretrain.env info
+  bash examples/chimera/cluster_manager.sh --config /path/to/pretrain.env preflight
+  bash examples/chimera/cluster_manager.sh --config /path/to/pretrain.env launch
+  bash examples/chimera/cluster_manager.sh --config /path/to/pretrain.env status
+  bash examples/chimera/cluster_manager.sh --config /path/to/pretrain.env logs
+
+The manager never clones or updates repositories. Prepare the three chimera
+branches under HOST_REPOS before launch. SFT and SimPO always start a new stage
+from MCORE_PATH; this manager does not add SFT or SimPO resume behavior.
+USAGE
+}
+
+die() {
+    echo "Error: $*" >&2
+    exit 1
+}
+
+q() {
+    printf '%q' "$1"
+}
+
+is_true() {
+    [[ "${1,,}" == true || "$1" == 1 || "${1,,}" == yes ]]
+}
+
+parse_cli() {
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --config)
+                [[ $# -ge 2 ]] || die "--config requires a file"
+                CONFIG_FILE="$2"
+                shift 2
+                ;;
+            -h|--help|help)
+                usage
+                exit 0
+                ;;
+            --)
+                shift
+                break
+                ;;
+            -*)
+                die "unknown option: $1"
+                ;;
+            *)
+                break
+                ;;
+        esac
+    done
+
+    COMMAND="${1:-}"
+    [[ -n "$COMMAND" ]] || { usage; exit 2; }
+    [[ $# -le 1 ]] || die "unexpected argument: $2"
+}
+
+load_config() {
+    [[ -n "$CONFIG_FILE" ]] || die "--config FILE is required"
+    [[ -f "$CONFIG_FILE" ]] || die "configuration file not found: $CONFIG_FILE"
+
+    # Configuration files are trusted shell assignments maintained by the operator.
+    # shellcheck disable=SC1090
+    source "$CONFIG_FILE"
+
+    STAGE="${STAGE:-pretrain}"
+    RUN_NAME="${RUN_NAME:-}"
+    NODES_CSV="${NODES_CSV:-dgx11,dgx12,dgx13,dgx14,dgx15,dgx16}"
+    GPUS_PER_NODE="${GPUS_PER_NODE:-8}"
+    MASTER_ADDR="${MASTER_ADDR:-}"
+    MASTER_PORT="${MASTER_PORT:-29500}"
+
+    CHIMERA_ROOT="${CHIMERA_ROOT:-/nvme_zone3/home/ekamai1/surya/chimera}"
+    HOST_REPOS="${HOST_REPOS:-$CHIMERA_ROOT/repos}"
+    HOST_DATA="${HOST_DATA:-$CHIMERA_ROOT/data}"
+    CONTAINER_REPOS="${CONTAINER_REPOS:-/workspace/repos}"
+    CONTAINER_DATA="${CONTAINER_DATA:-/datasets/megadata}"
+    IMAGE="${IMAGE:-suryavikram6/megatron-gemma:v2-fixed}"
+
+    TOKENIZER_MODEL="${TOKENIZER_MODEL:-$CONTAINER_DATA/hf_models/chimera-10b}"
+    RUNS_ROOT="${RUNS_ROOT:-$CONTAINER_DATA/runs/$STAGE}"
+    TRAIN_DATA_PATH="${TRAIN_DATA_PATH:-$CONTAINER_DATA/pretrain/train_text_document}"
+    VALID_DATA_PATH="${VALID_DATA_PATH:-}"
+    LOAD_CHECKPOINT="${LOAD_CHECKPOINT:-}"
+    DATA_PATH="${DATA_PATH:-$CONTAINER_DATA/$STAGE/train.jsonl}"
+    MCORE_PATH="${MCORE_PATH:-$CONTAINER_DATA/checkpoints/pretrain}"
+
+    TP_SIZE="${TP_SIZE:-1}"
+    PP_SIZE="${PP_SIZE:-1}"
+    EP_SIZE="${EP_SIZE:-1}"
+    CP_SIZE="${CP_SIZE:-1}"
+    MICRO_BATCH_SIZE="${MICRO_BATCH_SIZE:-1}"
+    GLOBAL_BATCH_SIZE="${GLOBAL_BATCH_SIZE:-}"
+
+    ENABLE_GPU="${ENABLE_GPU:-true}"
+    ENABLE_IB="${ENABLE_IB:-true}"
+    NCCL_SOCKET_IFNAME="${NCCL_SOCKET_IFNAME:-}"
+    NCCL_IB_HCA="${NCCL_IB_HCA:-mlx5}"
+    NCCL_DEBUG="${NCCL_DEBUG:-WARN}"
+    ALLOW_BUSY_GPUS="${ALLOW_BUSY_GPUS:-false}"
+    FORCE="${FORCE:-false}"
+    SKIP_PREFLIGHT="${SKIP_PREFLIGHT:-false}"
+    STOP_TIMEOUT="${STOP_TIMEOUT:-1800}"
+    SSH_CONNECT_TIMEOUT="${SSH_CONNECT_TIMEOUT:-10}"
+    TAIL_LINES="${TAIL_LINES:-200}"
+
+    IFS=',' read -r -a NODES <<< "$NODES_CSV"
+    NNODES=${#NODES[@]}
+    (( NNODES > 0 )) || die "NODES_CSV must contain at least one node"
+    MASTER_NODE="${NODES[0]}"
+    WORLD_SIZE=$((NNODES * GPUS_PER_NODE))
+
+    [[ "$STAGE" =~ ^(pretrain|sft|simpo)$ ]] || die "STAGE must be pretrain, sft, or simpo"
+    [[ "$RUN_NAME" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || die "RUN_NAME must use letters, numbers, dot, underscore, or dash"
+    [[ "$GPUS_PER_NODE" =~ ^[0-9]+$ ]] || die "GPUS_PER_NODE must be a non-negative integer"
+    [[ "$MASTER_PORT" =~ ^[0-9]+$ ]] || die "MASTER_PORT must be an integer"
+
+    if [[ -z "$MASTER_ADDR" ]]; then
+        if (( NNODES == 1 )); then
+            MASTER_ADDR=127.0.0.1
+        else
+            MASTER_ADDR=$(getent ahostsv4 "$MASTER_NODE" 2>/dev/null | awk 'NR == 1 {print $1}')
+            [[ -n "$MASTER_ADDR" ]] || die "cannot resolve MASTER_NODE=$MASTER_NODE; set MASTER_ADDR explicitly"
+        fi
+    fi
+
+    CONTAINER_RUN_DIR="$RUNS_ROOT/$RUN_NAME"
+    HOST_RUN_DIR=$(container_to_host "$CONTAINER_RUN_DIR")
+    CONTAINER_PREFIX="chimera_${STAGE}_${RUN_NAME//[^A-Za-z0-9_.-]/_}"
+}
+
+container_to_host() {
+    local path="$1"
+    if [[ "$path" == "$CONTAINER_DATA" ]]; then
+        printf '%s\n' "$HOST_DATA"
+    elif [[ "$path" == "$CONTAINER_DATA/"* ]]; then
+        printf '%s/%s\n' "$HOST_DATA" "${path#"$CONTAINER_DATA/"}"
+    elif [[ "$path" == "$CONTAINER_REPOS" ]]; then
+        printf '%s\n' "$HOST_REPOS"
+    elif [[ "$path" == "$CONTAINER_REPOS/"* ]]; then
+        printf '%s/%s\n' "$HOST_REPOS" "${path#"$CONTAINER_REPOS/"}"
+    else
+        die "container path is outside configured mounts: $path"
+    fi
+}
+
+container_name_for_rank() {
+    printf '%s_rank%s\n' "$CONTAINER_PREFIX" "$1"
+}
+
+is_local_node() {
+    local node="$1"
+    local short_host full_host
+    short_host=$(hostname -s)
+    full_host=$(hostname -f 2>/dev/null || hostname)
+    [[ "$node" == localhost || "$node" == 127.0.0.1 || "$node" == "$short_host" || "$node" == "$full_host" ]]
+}
+
+run_node() {
+    local node="$1"
+    shift
+    if is_local_node "$node"; then
+        "$@"
+    else
+        ssh -o BatchMode=yes -o ConnectTimeout="$SSH_CONNECT_TIMEOUT" "$node" "$@"
+    fi
+}
+
+validate_topology() {
+    local value
+    for value in TP_SIZE PP_SIZE EP_SIZE CP_SIZE MICRO_BATCH_SIZE; do
+        [[ "${!value}" =~ ^[1-9][0-9]*$ ]] || die "$value must be a positive integer"
+    done
+
+    if ! is_true "$ENABLE_GPU"; then
+        return
+    fi
+
+    (( GPUS_PER_NODE > 0 )) || die "GPUS_PER_NODE must be positive when ENABLE_GPU=true"
+    local model_parallel=$((TP_SIZE * PP_SIZE * CP_SIZE))
+    (( WORLD_SIZE % model_parallel == 0 )) || die "WORLD_SIZE=$WORLD_SIZE is not divisible by TP*PP*CP=$model_parallel"
+    (( 64 % EP_SIZE == 0 )) || die "EP_SIZE=$EP_SIZE must divide 64 experts"
+    (( WORLD_SIZE % (EP_SIZE * PP_SIZE) == 0 )) || die "WORLD_SIZE=$WORLD_SIZE is incompatible with EP_SIZE=$EP_SIZE and PP_SIZE=$PP_SIZE"
+
+    [[ "$GLOBAL_BATCH_SIZE" =~ ^[1-9][0-9]*$ ]] || die "GLOBAL_BATCH_SIZE must be a positive integer"
+    local dp_size=$((WORLD_SIZE / model_parallel))
+    local batch_unit=$((MICRO_BATCH_SIZE * dp_size))
+    (( GLOBAL_BATCH_SIZE >= batch_unit )) || die "GLOBAL_BATCH_SIZE=$GLOBAL_BATCH_SIZE is smaller than microbatch*DP=$batch_unit"
+    (( GLOBAL_BATCH_SIZE % batch_unit == 0 )) || die "GLOBAL_BATCH_SIZE=$GLOBAL_BATCH_SIZE must be divisible by microbatch*DP=$batch_unit"
+}
+
+print_info() {
+    validate_topology
+    local dp_size="disabled"
+    if is_true "$ENABLE_GPU"; then
+        dp_size=$((WORLD_SIZE / (TP_SIZE * PP_SIZE * CP_SIZE)))
+    fi
+
+    cat <<EOF
+============================================================
+Chimera cluster run
+Config:             $CONFIG_FILE
+Stage:              $STAGE
+Run name:           $RUN_NAME
+Nodes:              ${NODES[*]}
+NNODES:             $NNODES
+GPUs per node:      $GPUS_PER_NODE
+World size:         $WORLD_SIZE
+Master:             $MASTER_NODE ($MASTER_ADDR:$MASTER_PORT)
+Image:              $IMAGE
+Host repos:         $HOST_REPOS
+Host data:          $HOST_DATA
+Container run dir:  $CONTAINER_RUN_DIR
+Host run dir:       $HOST_RUN_DIR
+Parallelism:        TP=$TP_SIZE PP=$PP_SIZE EP=$EP_SIZE CP=$CP_SIZE DP=$dp_size
+Batch:              micro=$MICRO_BATCH_SIZE global=${GLOBAL_BATCH_SIZE:-unset}
+GPU enabled:        $ENABLE_GPU
+InfiniBand enabled: $ENABLE_IB
+============================================================
+EOF
+    local rank
+    for rank in "${!NODES[@]}"; do
+        printf 'rank=%s node=%s container=%s\n' "$rank" "${NODES[$rank]}" "$(container_name_for_rank "$rank")"
+    done
+}
+
+stage_host_paths() {
+    local paths=(
+        "$HOST_REPOS/Megatron-LM"
+        "$HOST_REPOS/Megatron-Bridge"
+        "$HOST_REPOS/transformers"
+        "$HOST_DATA"
+        "$(container_to_host "$TOKENIZER_MODEL")"
+    )
+
+    case "$STAGE" in
+        pretrain)
+            paths+=("$(container_to_host "$TRAIN_DATA_PATH").bin" "$(container_to_host "$TRAIN_DATA_PATH").idx")
+            if [[ -n "$VALID_DATA_PATH" ]]; then
+                paths+=("$(container_to_host "$VALID_DATA_PATH").bin" "$(container_to_host "$VALID_DATA_PATH").idx")
+            fi
+            if [[ -n "$LOAD_CHECKPOINT" ]]; then
+                paths+=("$(container_to_host "$LOAD_CHECKPOINT")/latest_checkpointed_iteration.txt")
+            fi
+            ;;
+        sft|simpo)
+            paths+=("$(container_to_host "$DATA_PATH")" "$(container_to_host "$MCORE_PATH")")
+            ;;
+    esac
+
+    printf '%s\n' "${paths[@]}"
+}
+
+image_check_node() {
+    local node="$1"
+    local gpu_args=""
+    if is_true "$ENABLE_GPU"; then
+        gpu_args="--gpus all"
+    fi
+
+    local command
+    printf -v command '%q ' docker run --rm $gpu_args \
+        --network host --ipc host \
+        --mount "type=bind,src=$HOST_REPOS,dst=$CONTAINER_REPOS" \
+        --mount "type=bind,src=$HOST_DATA,dst=$CONTAINER_DATA" \
+        --env "VIRTUAL_ENV=/workspace/venv" \
+        --env "HF_HOME=$CONTAINER_DATA/cache/huggingface" \
+        --env "CONTAINER_REPOS=$CONTAINER_REPOS" \
+        --env "PYTHONPATH=$CONTAINER_REPOS/Megatron-LM:$CONTAINER_REPOS/Megatron-Bridge/src:$CONTAINER_REPOS/transformers/src" \
+        --workdir "$CONTAINER_REPOS/Megatron-LM" \
+        "$IMAGE" bash -lc
+
+    local check_script
+    read -r -d '' check_script <<'CHECK' || true
+set -euo pipefail
+export PATH="/workspace/venv/bin:$PATH"
+python3 - <<'PY'
+import transformers
+from transformers import AutoTokenizer, ChimeraConfig, ChimeraForCausalLM
+import megatron.bridge
+
+import os
+
+repos = os.environ["CONTAINER_REPOS"]
+tokenizer_path = f"{repos}/transformers/src/transformers/models/chimera/tokenizer"
+tokenizer = AutoTokenizer.from_pretrained(tokenizer_path)
+config = ChimeraConfig()
+assert (config.first_k_dense_replace, config.last_k_dense_replace) == (2, 0)
+assert len(tokenizer) == 50176
+assert tokenizer.convert_tokens_to_ids("<start_of_turn>") == 2
+assert tokenizer.convert_tokens_to_ids("<end_of_turn>") == 3
+assert tokenizer.unk_token is None
+print("chimera_image_ok", transformers.__file__, megatron.bridge.__file__)
+PY
+for script in train.sh sft.sh simpo.sh; do
+    bash -n "$CONTAINER_REPOS/Megatron-LM/examples/chimera/$script"
+done
+CHECK
+    command+=$(q "$check_script")
+    run_node "$node" bash -lc "$command"
+}
+
+preflight_node() {
+    local node="$1"
+    local rank="$2"
+    local container_name
+    container_name=$(container_name_for_rank "$rank")
+    local required_paths
+    required_paths=$(stage_host_paths)
+
+    echo "==================== PREFLIGHT $node rank=$rank ===================="
+    local remote_script
+    read -r -d '' remote_script <<'REMOTE' || true
+set -euo pipefail
+fail=0
+echo "host=$(hostname) date=$(date -Is)"
+
+command -v docker >/dev/null 2>&1 || { echo "FAIL: docker is missing"; fail=1; }
+if command -v docker >/dev/null 2>&1; then
+    docker info >/dev/null 2>&1 || { echo "FAIL: Docker daemon is unavailable"; fail=1; }
+    docker image inspect "$IMAGE" >/dev/null 2>&1 || { echo "FAIL: image is missing: $IMAGE"; fail=1; }
+    if docker ps -a --format '{{.Names}}' | grep -Fxq "$CONTAINER_NAME"; then
+        echo "FAIL: container already exists: $CONTAINER_NAME"
+        fail=1
+    fi
+fi
+
+while IFS= read -r path; do
+    [[ -e "$path" ]] || { echo "FAIL: missing path: $path"; fail=1; }
+done <<< "$REQUIRED_PATHS"
+
+[[ -d "$HOST_DATA" && -w "$HOST_DATA" ]] || { echo "FAIL: data root is not writable: $HOST_DATA"; fail=1; }
+
+for repo in Megatron-LM Megatron-Bridge transformers; do
+    [[ -d "$HOST_REPOS/$repo/.git" ]] || { echo "FAIL: missing Git checkout: $HOST_REPOS/$repo"; fail=1; }
+done
+[[ -L "$HOST_REPOS/Megatron-Bridge/3rdparty/Megatron-LM" ]] || {
+    echo "FAIL: Bridge Megatron-LM symlink is missing"
+    fail=1
+}
+
+if [[ "$ENABLE_GPU" == true ]]; then
+    command -v nvidia-smi >/dev/null 2>&1 || { echo "FAIL: nvidia-smi is missing"; fail=1; }
+    if command -v nvidia-smi >/dev/null 2>&1; then
+        actual=$(nvidia-smi -L 2>/dev/null | wc -l | tr -d ' ')
+        [[ "$actual" == "$GPUS_PER_NODE" ]] || { echo "FAIL: expected $GPUS_PER_NODE GPUs, found $actual"; fail=1; }
+        apps=$(nvidia-smi --query-compute-apps=pid --format=csv,noheader 2>/dev/null || true)
+        if [[ -n "$apps" && "$ALLOW_BUSY_GPUS" != true ]]; then
+            echo "FAIL: GPU compute processes are already running"
+            fail=1
+        fi
+    fi
+    docker info --format '{{json .Runtimes}}' 2>/dev/null | grep -q nvidia || { echo "FAIL: NVIDIA Docker runtime is unavailable"; fail=1; }
+fi
+
+if [[ "$ENABLE_IB" == true && ! -d /dev/infiniband ]]; then
+    echo "FAIL: /dev/infiniband is missing"
+    fail=1
+fi
+
+if [[ "$NODE_RANK" == 0 ]] && command -v ss >/dev/null 2>&1; then
+    if ss -lnt | awk '{print $4}' | grep -Eq "(^|:)$MASTER_PORT$"; then
+        echo "FAIL: master port is already in use: $MASTER_PORT"
+        fail=1
+    fi
+fi
+
+df -h "$HOST_DATA" /var/lib/docker 2>/dev/null || true
+[[ "$fail" == 0 ]] || exit 1
+echo "PREFLIGHT_RESULT=PASS"
+REMOTE
+
+    local prefix
+    prefix="IMAGE=$(q "$IMAGE") CONTAINER_NAME=$(q "$container_name") REQUIRED_PATHS=$(q "$required_paths") HOST_REPOS=$(q "$HOST_REPOS") HOST_DATA=$(q "$HOST_DATA") ENABLE_GPU=$(q "$ENABLE_GPU") ENABLE_IB=$(q "$ENABLE_IB") GPUS_PER_NODE=$(q "$GPUS_PER_NODE") ALLOW_BUSY_GPUS=$(q "$ALLOW_BUSY_GPUS") NODE_RANK=$(q "$rank") MASTER_PORT=$(q "$MASTER_PORT")"
+    run_node "$node" bash -lc "$prefix bash -s" <<< "$remote_script"
+}
+
+cmd_preflight() {
+    print_info
+    [[ ! -e "$HOST_RUN_DIR" ]] || die "run directory already exists: $HOST_RUN_DIR"
+
+    local pids=()
+    local rank
+    for rank in "${!NODES[@]}"; do
+        preflight_node "${NODES[$rank]}" "$rank" &
+        pids+=("$!")
+    done
+    local rc=0 pid
+    for pid in "${pids[@]}"; do
+        wait "$pid" || rc=1
+    done
+    (( rc == 0 )) || die "preflight failed on one or more nodes"
+
+    echo "Running container import checks..."
+    pids=()
+    for node in "${NODES[@]}"; do
+        image_check_node "$node" &
+        pids+=("$!")
+    done
+    rc=0
+    for pid in "${pids[@]}"; do
+        wait "$pid" || rc=1
+    done
+    (( rc == 0 )) || die "image check failed on one or more nodes"
+
+    local expected=""
+    local expected_commits=""
+    for node in "${NODES[@]}"; do
+        local image_id
+        image_id=$(run_node "$node" docker image inspect "$IMAGE" --format '{{.Id}}')
+        if [[ -z "$expected" ]]; then
+            expected="$image_id"
+        elif [[ "$image_id" != "$expected" ]]; then
+            die "image ID differs on $node: $image_id != $expected"
+        fi
+
+        local commits
+        commits=$(run_node "$node" bash -lc "for repo in Megatron-LM Megatron-Bridge transformers; do git -C $(q "$HOST_REPOS")/\$repo rev-parse HEAD; done")
+        if [[ -z "$expected_commits" ]]; then
+            expected_commits="$commits"
+        elif [[ "$commits" != "$expected_commits" ]]; then
+            die "repository commits differ on $node"
+        fi
+    done
+    echo "All nodes use image $expected"
+    echo "All nodes use identical repository commits"
+}
+
+cmd_pull() {
+    local pids=() node
+    for node in "${NODES[@]}"; do
+        (echo "Pulling $IMAGE on $node"; run_node "$node" docker pull "$IMAGE") &
+        pids+=("$!")
+    done
+    local rc=0 pid
+    for pid in "${pids[@]}"; do wait "$pid" || rc=1; done
+    (( rc == 0 )) || die "image pull failed on one or more nodes"
+}
+
+cmd_image_check() {
+    local pids=() node
+    for node in "${NODES[@]}"; do
+        image_check_node "$node" &
+        pids+=("$!")
+    done
+    local rc=0 pid
+    for pid in "${pids[@]}"; do wait "$pid" || rc=1; done
+    (( rc == 0 )) || die "image check failed on one or more nodes"
+}
+
+prepare_run_metadata() {
+    local commits node_map
+    commits=$(for repo in Megatron-LM Megatron-Bridge transformers; do
+        git -C "$HOST_REPOS/$repo" log -1 --format="$repo %H %s"
+    done)
+    node_map=$(for rank in "${!NODES[@]}"; do printf '%s %s\n' "$rank" "${NODES[$rank]}"; done)
+
+    mkdir -p "$HOST_RUN_DIR/logs"
+    cp "$CONFIG_FILE" "$HOST_RUN_DIR/cluster.env"
+    printf '%s\n' "$commits" > "$HOST_RUN_DIR/git_commits.txt"
+    printf '%s\n' "$node_map" > "$HOST_RUN_DIR/node_map.txt"
+    run_node "$MASTER_NODE" docker image inspect "$IMAGE" --format '{{.Id}} {{json .RepoDigests}}' > "$HOST_RUN_DIR/image.txt"
+    print_info > "$HOST_RUN_DIR/effective_config.txt"
+}
+
+launch_node() {
+    local node="$1"
+    local rank="$2"
+    local dry_run="$3"
+    local container_name
+    container_name=$(container_name_for_rank "$rank")
+
+    if is_true "$dry_run"; then
+        cat <<EOF
+node=$node rank=$rank container=$container_name
+  image=$IMAGE
+  mounts=$HOST_REPOS:$CONTAINER_REPOS,$HOST_DATA:$CONTAINER_DATA
+  distributed=NNODES=$NNODES NODE_RANK=$rank GPUS_PER_NODE=$GPUS_PER_NODE MASTER_ADDR=$MASTER_ADDR MASTER_PORT=$MASTER_PORT
+  stage=$STAGE run=$RUN_NAME
+EOF
+        return
+    fi
+
+    local remote_script
+    read -r -d '' remote_script <<'REMOTE' || true
+set -euo pipefail
+
+if docker ps -a --format '{{.Names}}' | grep -Fxq "$CONTAINER_NAME"; then
+    if [[ "$FORCE" == true ]]; then
+        docker rm -f "$CONTAINER_NAME" >/dev/null
+    else
+        echo "Container already exists: $CONTAINER_NAME" >&2
+        exit 20
+    fi
+fi
+
+args=(
+    run -d
+    --name "$CONTAINER_NAME"
+    --hostname "$NODE_NAME"
+    --label "chimera.run=$RUN_NAME"
+    --label "chimera.stage=$STAGE"
+    --label "chimera.node=$NODE_NAME"
+    --label "chimera.rank=$NODE_RANK"
+    --network host
+    --ipc host
+    --ulimit memlock=-1
+    --ulimit stack=67108864
+    --ulimit nofile=1048576:1048576
+    --log-driver json-file
+    --log-opt max-size=200m
+    --log-opt max-file=5
+    --mount "type=bind,src=$HOST_REPOS,dst=$CONTAINER_REPOS"
+    --mount "type=bind,src=$HOST_DATA,dst=$CONTAINER_DATA"
+    --env "VIRTUAL_ENV=/workspace/venv"
+    --env "HF_HOME=$CONTAINER_DATA/cache/huggingface"
+    --env "PYTHONUNBUFFERED=1"
+    --env "PYTHONPATH=$CONTAINER_REPOS/Megatron-LM:$CONTAINER_REPOS/Megatron-Bridge/src:$CONTAINER_REPOS/transformers/src"
+    --env "STAGE=$STAGE"
+    --env "RUN_STAMP=$RUN_NAME"
+    --env "RUNS_ROOT=$RUNS_ROOT"
+    --env "TOKENIZER_MODEL=$TOKENIZER_MODEL"
+    --env "TRAIN_DATA_PATH=$TRAIN_DATA_PATH"
+    --env "VALID_DATA_PATH=$VALID_DATA_PATH"
+    --env "LOAD_CHECKPOINT=$LOAD_CHECKPOINT"
+    --env "DATA_PATH=$DATA_PATH"
+    --env "MCORE_PATH=$MCORE_PATH"
+    --env "NNODES=$NNODES"
+    --env "NODE_RANK=$NODE_RANK"
+    --env "GPUS_PER_NODE=$GPUS_PER_NODE"
+    --env "MASTER_ADDR=$MASTER_ADDR"
+    --env "MASTER_PORT=$MASTER_PORT"
+    --env "TP_SIZE=$TP_SIZE"
+    --env "PP_SIZE=$PP_SIZE"
+    --env "EP_SIZE=$EP_SIZE"
+    --env "CP_SIZE=$CP_SIZE"
+    --env "MICRO_BATCH_SIZE=$MICRO_BATCH_SIZE"
+    --env "GLOBAL_BATCH_SIZE=$GLOBAL_BATCH_SIZE"
+    --env "NCCL_DEBUG=$NCCL_DEBUG"
+    --workdir "$CONTAINER_REPOS/Megatron-LM"
+)
+
+if [[ "$ENABLE_GPU" == true ]]; then
+    args+=(--gpus all)
+fi
+if [[ "$ENABLE_IB" == true ]]; then
+    args+=(--device=/dev/infiniband)
+    args+=(--env "NCCL_IB_DISABLE=0" --env "NCCL_IB_HCA=$NCCL_IB_HCA")
+else
+    args+=(--env "NCCL_IB_DISABLE=1")
+fi
+if [[ -n "$NCCL_SOCKET_IFNAME" ]]; then
+    args+=(--env "NCCL_SOCKET_IFNAME=$NCCL_SOCKET_IFNAME")
+fi
+
+read -r -d '' container_command <<'COMMAND' || true
+set -euo pipefail
+export PATH="/workspace/venv/bin:$PATH"
+case "$STAGE" in
+    pretrain) script=examples/chimera/train.sh ;;
+    sft) script=examples/chimera/sft.sh ;;
+    simpo) script=examples/chimera/simpo.sh ;;
+    *) echo "Invalid STAGE=$STAGE" >&2; exit 2 ;;
+esac
+exec bash "$script"
+COMMAND
+
+args+=("$IMAGE" bash -lc "$container_command")
+docker "${args[@]}"
+REMOTE
+
+    local prefix
+    prefix="CONTAINER_NAME=$(q "$container_name") NODE_NAME=$(q "$node") NODE_RANK=$(q "$rank") FORCE=$(q "$FORCE") HOST_REPOS=$(q "$HOST_REPOS") HOST_DATA=$(q "$HOST_DATA") CONTAINER_REPOS=$(q "$CONTAINER_REPOS") CONTAINER_DATA=$(q "$CONTAINER_DATA") STAGE=$(q "$STAGE") RUN_NAME=$(q "$RUN_NAME") RUNS_ROOT=$(q "$RUNS_ROOT") TOKENIZER_MODEL=$(q "$TOKENIZER_MODEL") TRAIN_DATA_PATH=$(q "$TRAIN_DATA_PATH") VALID_DATA_PATH=$(q "$VALID_DATA_PATH") LOAD_CHECKPOINT=$(q "$LOAD_CHECKPOINT") DATA_PATH=$(q "$DATA_PATH") MCORE_PATH=$(q "$MCORE_PATH") NNODES=$(q "$NNODES") GPUS_PER_NODE=$(q "$GPUS_PER_NODE") MASTER_ADDR=$(q "$MASTER_ADDR") MASTER_PORT=$(q "$MASTER_PORT") TP_SIZE=$(q "$TP_SIZE") PP_SIZE=$(q "$PP_SIZE") EP_SIZE=$(q "$EP_SIZE") CP_SIZE=$(q "$CP_SIZE") MICRO_BATCH_SIZE=$(q "$MICRO_BATCH_SIZE") GLOBAL_BATCH_SIZE=$(q "$GLOBAL_BATCH_SIZE") ENABLE_GPU=$(q "$ENABLE_GPU") ENABLE_IB=$(q "$ENABLE_IB") NCCL_SOCKET_IFNAME=$(q "$NCCL_SOCKET_IFNAME") NCCL_IB_HCA=$(q "$NCCL_IB_HCA") NCCL_DEBUG=$(q "$NCCL_DEBUG") IMAGE=$(q "$IMAGE")"
+    run_node "$node" bash -lc "$prefix bash -s" <<< "$remote_script"
+}
+
+cmd_dry_run() {
+    print_info
+    local rank
+    for rank in "${!NODES[@]}"; do
+        launch_node "${NODES[$rank]}" "$rank" true
+    done
+}
+
+cmd_launch() {
+    validate_topology
+    is_true "$ENABLE_GPU" || die "launch requires ENABLE_GPU=true; use image-check, preflight, or dry-run on CPU hosts"
+    [[ ! -e "$HOST_RUN_DIR" ]] || die "run directory already exists: $HOST_RUN_DIR"
+    if ! is_true "$SKIP_PREFLIGHT"; then
+        cmd_preflight
+    fi
+    prepare_run_metadata
+
+    local pids=() rank
+    for rank in "${!NODES[@]}"; do
+        launch_node "${NODES[$rank]}" "$rank" false &
+        pids+=("$!")
+    done
+    local rc=0 pid
+    for pid in "${pids[@]}"; do wait "$pid" || rc=1; done
+    if (( rc != 0 )); then
+        echo "A node failed to launch; stopping containers from this run." >&2
+        cmd_stop || true
+        exit 1
+    fi
+
+    sleep 15
+    cmd_status
+
+    local startup_failed=0 state
+    for rank in "${!NODES[@]}"; do
+        state=$(run_node "${NODES[$rank]}" docker inspect \
+            --format '{{.State.Status}} {{.State.ExitCode}}' \
+            "$(container_name_for_rank "$rank")" 2>/dev/null || true)
+        if [[ "$state" != "running 0" && "$state" != "exited 0" ]]; then
+            echo "Startup failed on ${NODES[$rank]} rank=$rank: ${state:-container missing}" >&2
+            run_node "${NODES[$rank]}" docker logs --tail 100 \
+                "$(container_name_for_rank "$rank")" >&2 2>/dev/null || true
+            startup_failed=1
+        fi
+    done
+    if (( startup_failed != 0 )); then
+        cmd_stop || true
+        die "one or more training containers failed during startup"
+    fi
+}
+
+cmd_status() {
+    local pids=() rank
+    for rank in "${!NODES[@]}"; do
+        local node="${NODES[$rank]}"
+        local name
+        name=$(container_name_for_rank "$rank")
+        (
+            echo "==================== STATUS $node rank=$rank ===================="
+            run_node "$node" bash -lc "docker ps -a --filter name=^/$(q "$name")\$ --format 'table {{.Names}}\\t{{.Status}}\\t{{.Image}}'; docker inspect $(q "$name") --format 'status={{.State.Status}} exit_code={{.State.ExitCode}} started={{.State.StartedAt}} finished={{.State.FinishedAt}}' 2>/dev/null || true; if command -v nvidia-smi >/dev/null 2>&1; then nvidia-smi --query-gpu=index,utilization.gpu,memory.used,memory.total --format=csv,noheader,nounits 2>/dev/null || true; fi"
+        ) &
+        pids+=("$!")
+    done
+    local rc=0 pid
+    for pid in "${pids[@]}"; do wait "$pid" || rc=1; done
+    return "$rc"
+}
+
+cmd_logs() {
+    echo "Following $HOST_RUN_DIR/logs on $MASTER_NODE; Ctrl-C stops tailing only."
+    run_node "$MASTER_NODE" bash -lc "shopt -s nullglob; files=($(q "$HOST_RUN_DIR")/logs/*.log); (( \${#files[@]} > 0 )) || { echo 'No shared logs found yet'; exit 1; }; tail -n $(q "$TAIL_LINES") -F \"\${files[@]}\""
+}
+
+cmd_docker_logs() {
+    local pids=() rank
+    for rank in "${!NODES[@]}"; do
+        local node="${NODES[$rank]}"
+        local name
+        name=$(container_name_for_rank "$rank")
+        (run_node "$node" docker logs --tail "$TAIL_LINES" -f "$name" 2>&1 | sed -u "s/^/[$node rank$rank] /") &
+        pids+=("$!")
+    done
+    wait "${pids[@]}"
+}
+
+cmd_stop() {
+    local pids=() rank
+    for rank in "${!NODES[@]}"; do
+        local node="${NODES[$rank]}"
+        local name
+        name=$(container_name_for_rank "$rank")
+        (run_node "$node" docker stop -t "$STOP_TIMEOUT" "$name" 2>/dev/null || true) &
+        pids+=("$!")
+    done
+    wait "${pids[@]}"
+}
+
+cmd_kill() {
+    local pids=() rank
+    for rank in "${!NODES[@]}"; do
+        local node="${NODES[$rank]}"
+        local name
+        name=$(container_name_for_rank "$rank")
+        (run_node "$node" docker kill "$name" 2>/dev/null || true) &
+        pids+=("$!")
+    done
+    wait "${pids[@]}"
+}
+
+cmd_cleanup() {
+    local pids=() rank
+    for rank in "${!NODES[@]}"; do
+        local node="${NODES[$rank]}"
+        local name
+        name=$(container_name_for_rank "$rank")
+        (run_node "$node" docker rm "$name" 2>/dev/null || true) &
+        pids+=("$!")
+    done
+    wait "${pids[@]}"
+}
+
+cmd_shell() {
+    local node="$MASTER_NODE"
+    local gpu_args=()
+    local ib_args=()
+    if is_true "$ENABLE_GPU"; then gpu_args=(--gpus all); fi
+    if is_true "$ENABLE_IB"; then ib_args=(--device=/dev/infiniband); fi
+
+    local docker_command
+    printf -v docker_command '%q ' docker run --rm -it \
+        "${gpu_args[@]}" "${ib_args[@]}" \
+        --network host --ipc host \
+        --ulimit memlock=-1 --ulimit stack=67108864 \
+        --mount "type=bind,src=$HOST_REPOS,dst=$CONTAINER_REPOS" \
+        --mount "type=bind,src=$HOST_DATA,dst=$CONTAINER_DATA" \
+        --env "VIRTUAL_ENV=/workspace/venv" \
+        --env "HF_HOME=$CONTAINER_DATA/cache/huggingface" \
+        --env "PYTHONPATH=$CONTAINER_REPOS/Megatron-LM:$CONTAINER_REPOS/Megatron-Bridge/src:$CONTAINER_REPOS/transformers/src" \
+        --workdir "$CONTAINER_REPOS/Megatron-LM" \
+        "$IMAGE" bash -lc 'export PATH="/workspace/venv/bin:$PATH"; exec bash --noprofile --norc'
+
+    if is_local_node "$node"; then
+        eval "$docker_command"
+    else
+        ssh -t -o BatchMode=yes -o ConnectTimeout="$SSH_CONNECT_TIMEOUT" "$node" "$docker_command"
+    fi
+}
+
+parse_cli "$@"
+load_config
+
+case "$COMMAND" in
+    info) print_info ;;
+    pull) cmd_pull ;;
+    image-check) cmd_image_check ;;
+    preflight) cmd_preflight ;;
+    shell) cmd_shell ;;
+    dry-run) cmd_dry_run ;;
+    launch) cmd_launch ;;
+    status) cmd_status ;;
+    logs) cmd_logs ;;
+    docker-logs) cmd_docker_logs ;;
+    stop) cmd_stop ;;
+    kill) cmd_kill ;;
+    cleanup) cmd_cleanup ;;
+    help) usage ;;
+    *) die "unknown command: $COMMAND" ;;
+esac

@@ -16,8 +16,14 @@ NNODES="${NNODES:-1}"
 NODE_RANK="${NODE_RANK:-0}"
 MASTER_ADDR="${MASTER_ADDR:-localhost}"
 MASTER_PORT="${MASTER_PORT:-29591}"
+TP_SIZE="${TP_SIZE:-1}"
+PP_SIZE="${PP_SIZE:-1}"
+EP_SIZE="${EP_SIZE:-1}"
+CP_SIZE="${CP_SIZE:-1}"
+MICRO_BATCH_SIZE="${MICRO_BATCH_SIZE:-4}"
+GLOBAL_BATCH_SIZE="${GLOBAL_BATCH_SIZE:-16}"
 
-RUN_STAMP="$(TZ='Asia/Kolkata' date +%Y%m%d_%H%M%S)"
+RUN_STAMP="${RUN_STAMP:-$(TZ='Asia/Kolkata' date +%Y%m%d_%H%M%S)}"
 RUN_DIR="${RUNS_ROOT}/${RUN_STAMP}"
 SAVE_PATH="${RUN_DIR}/checkpoints"
 TENSORBOARD_DIR="${RUN_DIR}/tensorboard"
@@ -116,8 +122,8 @@ else
 fi
 
 TRAINING_ARGS=(
-    --micro-batch-size 4
-    --global-batch-size 16
+    --micro-batch-size "$MICRO_BATCH_SIZE"
+    --global-batch-size "$GLOBAL_BATCH_SIZE"
     --train-iters 10000
     --lr 2e-4
     --min-lr 2e-5
@@ -145,10 +151,10 @@ TRAINING_ARGS=(
 )
 
 PARALLEL_ARGS=(
-    --tensor-model-parallel-size 1
-    --pipeline-model-parallel-size 1
-    --expert-model-parallel-size 1
-    --context-parallel-size 1
+    --tensor-model-parallel-size "$TP_SIZE"
+    --pipeline-model-parallel-size "$PP_SIZE"
+    --expert-model-parallel-size "$EP_SIZE"
+    --context-parallel-size "$CP_SIZE"
 )
 
 LOGGING_ARGS=(
@@ -159,6 +165,7 @@ LOGGING_ARGS=(
     --eval-iters 0
     --log-interval 1
     --log-throughput
+    --exit-signal-handler
 )
 if [[ -n "$LOAD_CHECKPOINT" ]]; then
     LOGGING_ARGS+=(
@@ -167,6 +174,7 @@ if [[ -n "$LOAD_CHECKPOINT" ]]; then
     )
 fi
 
+if [[ "$NODE_RANK" == 0 ]]; then
 cat > "${RUN_DIR}/run_paths.env" <<EOF
 TRAIN_DATA_PATH=${TRAIN_DATA_PATH}
 VALID_DATA_PATH=${VALID_DATA_PATH}
@@ -184,9 +192,16 @@ MASTER_ADDR=${MASTER_ADDR}
 MASTER_PORT=${MASTER_PORT}
 INTRA_DOC_MASKING=${INTRA_DOC_MASKING}
 LOAD_CHECKPOINT=${LOAD_CHECKPOINT}
+TP_SIZE=${TP_SIZE}
+PP_SIZE=${PP_SIZE}
+EP_SIZE=${EP_SIZE}
+CP_SIZE=${CP_SIZE}
+MICRO_BATCH_SIZE=${MICRO_BATCH_SIZE}
+GLOBAL_BATCH_SIZE=${GLOBAL_BATCH_SIZE}
 EOF
 
-cp "$0" "${RUN_DIR}/train.sh"
+    cp "$0" "${RUN_DIR}/train.sh"
+fi
 
 if [[ -n "$LOAD_CHECKPOINT" ]]; then
     echo "Resuming Chimera pretraining from $LOAD_CHECKPOINT"
@@ -198,13 +213,13 @@ echo "  Train prefix:     $TRAIN_DATA_PATH"
 echo "  Valid prefix:     ${VALID_DATA_PATH:-disabled}"
 echo "  Tokenizer:        $TOKENIZER_MODEL"
 echo "  GPUs per node:    $GPUS_PER_NODE"
-echo "  Parallelism:      TP=1 PP=1 EP=1 ETP=1 CP=1"
+echo "  Parallelism:      TP=$TP_SIZE PP=$PP_SIZE EP=$EP_SIZE ETP=1 CP=$CP_SIZE"
 echo "  Architecture:     layers=25 moe_layer_freq=[0]*2+[1]*23"
-echo "  Seq/batch/iters:  seq=8192 micro=4 global=16 iters=10000"
+echo "  Seq/batch/iters:  seq=8192 micro=$MICRO_BATCH_SIZE global=$GLOBAL_BATCH_SIZE iters=10000"
 echo "  Attention:        backend=flash external_flash_attn=false cuda_graph=TE:attn"
 echo "  Intra-doc mask:   $INTRA_DOC_MASKING"
 
-python3 -m torch.distributed.run "${DISTRIBUTED_ARGS[@]}" \
+exec python3 -m torch.distributed.run "${DISTRIBUTED_ARGS[@]}" \
     examples/chimera/pretrain_chimera.py \
     --chimera-expert-tp-size 1 \
     "${MODEL_ARGS[@]}" \
@@ -212,4 +227,4 @@ python3 -m torch.distributed.run "${DISTRIBUTED_ARGS[@]}" \
     "${DATA_ARGS[@]}" \
     "${TRAINING_ARGS[@]}" \
     "${PARALLEL_ARGS[@]}" \
-    "${LOGGING_ARGS[@]}" 2>&1 | tee "${LOG_DIR}/train.log"
+    "${LOGGING_ARGS[@]}" > >(tee -a "${LOG_DIR}/train_node_${NODE_RANK}.log") 2>&1

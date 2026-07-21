@@ -1,8 +1,98 @@
 # Chimera End-to-End Runbook
 
-Run all commands from a container with two H200 GPUs. The repositories are
-expected at `/workspace/repos` on their `chimera` branches. Store large
-artifacts on a persistent volume, not under a Git checkout.
+The single-container commands below reproduce the complete validation flow.
+For production, `cluster_manager.sh` launches the same Chimera scripts on one
+to N nodes with a shared run identifier and persistent storage.
+
+## 0. Cluster Container Launch
+
+The validated base image is:
+
+```text
+suryavikram6/megatron-gemma:v2-fixed
+```
+
+Prepare this shared host layout at the same path on every selected node:
+
+```text
+/nvme_zone3/home/ekamai1/surya/chimera/
+├── repos/
+│   ├── Megatron-LM/
+│   ├── Megatron-Bridge/
+│   └── transformers/
+└── data/
+    ├── hf_models/
+    ├── pretrain/
+    ├── sft/
+    ├── simpo/
+    ├── checkpoints/
+    ├── runs/
+    ├── exports/
+    ├── logs/
+    └── cache/huggingface/
+```
+
+The manager mounts the two roots as:
+
+```text
+.../chimera/repos -> /workspace/repos
+.../chimera/data  -> /datasets/megadata
+```
+
+Point Bridge at the mounted Megatron-LM checkout before launch:
+
+```bash
+ln -sfn ../../Megatron-LM \
+  /nvme_zone3/home/ekamai1/surya/chimera/repos/Megatron-Bridge/3rdparty/Megatron-LM
+```
+
+Show the complete command guide:
+
+```bash
+bash examples/chimera/cluster_manager.sh --help
+```
+
+Create one configuration per run outside the Git checkout:
+
+```bash
+cp examples/chimera/cluster.env.example \
+  /nvme_zone3/home/ekamai1/surya/chimera/data/pretrain-phase1.env
+```
+
+Edit the stage, run name, node list, input paths, checkpoint path, topology,
+and batch sizes. Then inspect and validate before launching:
+
+```bash
+bash examples/chimera/cluster_manager.sh \
+  --config /nvme_zone3/home/ekamai1/surya/chimera/data/pretrain-phase1.env info
+
+bash examples/chimera/cluster_manager.sh \
+  --config /nvme_zone3/home/ekamai1/surya/chimera/data/pretrain-phase1.env preflight
+
+bash examples/chimera/cluster_manager.sh \
+  --config /nvme_zone3/home/ekamai1/surya/chimera/data/pretrain-phase1.env launch
+```
+
+Monitor or stop the same run by reusing the same configuration:
+
+```bash
+bash examples/chimera/cluster_manager.sh --config /path/to/run.env status
+bash examples/chimera/cluster_manager.sh --config /path/to/run.env logs
+bash examples/chimera/cluster_manager.sh --config /path/to/run.env stop
+bash examples/chimera/cluster_manager.sh --config /path/to/run.env cleanup
+```
+
+The manager does not clone, pull, or modify repositories. It does not source
+the image's malformed `/workspace/load_env.sh`; it explicitly selects
+`/workspace/venv` and the three mounted source trees. SFT always starts from a
+pretraining MCore checkpoint, and SimPO always starts from an SFT MCore
+checkpoint. Only pretraining retains checkpoint-resume behavior.
+
+For one node, set `NODES_CSV` to one hostname. For additional nodes, append
+comma-separated hostnames; list order determines `NODE_RANK`, and the first
+node is the master. All selected nodes must have the same GPU count. On a
+CPU-only host, use `image-check`, `preflight`, and `dry-run`; `launch` requires
+GPUs.
 
 ## 1. Environment
 
@@ -12,7 +102,7 @@ export REPOS=/workspace/repos
 export MEGATRON_LM=$REPOS/Megatron-LM
 export MEGATRON_BRIDGE=$REPOS/Megatron-Bridge
 export TRANSFORMERS=$REPOS/transformers
-export DATA_ROOT=/home/jovyan/chimera_validation
+export DATA_ROOT=/datasets/megadata/chimera_validation
 export PYTHONPATH=$MEGATRON_LM:$MEGATRON_BRIDGE/src:$TRANSFORMERS/src:${PYTHONPATH:-}
 
 mkdir -p "$DATA_ROOT"

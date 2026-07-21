@@ -38,6 +38,8 @@ pretraining uses an ordinary causal mask across EOS-delimited documents.
 ## Files
 
 - `preprocess.sh`: Chimera convenience wrapper around `tools/preprocess_data.py` that recursively converts pretraining `.jsonl` and parquet files to one Megatron `.bin/.idx` dataset, using the HF tokenizer and appending `<EOS>` to every document.
+- `cluster_manager.sh`: host-side one-to-N node Docker launcher for pretraining, SFT, and SimPO; start with `bash examples/chimera/cluster_manager.sh --help`.
+- `cluster.env.example`: copyable cluster configuration for the shared Chimera repository and data roots.
 - `train.sh`: random-init Chimera pretraining.
 - `sft.sh`: supervised fine-tuning from an MCore checkpoint.
 - `simpo.sh`: SimPO preference tuning from an MCore checkpoint.

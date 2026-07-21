@@ -2,20 +2,24 @@
 
 import json
 import os
+import queue
 import runpy
 import sys
 import tempfile
+from types import SimpleNamespace
 
 import nltk
 import pytest
 import requests
 
+import tools.preprocess_data as preprocess_data
 from megatron.core.datasets.indexed_dataset import IndexedDataset
 from megatron.core.tokenizers.text.libraries.megatron_hf_tokenizer import MEGATRON_CONFIG_MAP
 from tools.merge_datasets import main as merge_main
 from tools.preprocess_data import Encoder
 from tools.preprocess_data import Partition
 from tools.preprocess_data import count_input_documents
+from tools.preprocess_data import collect_process_results
 from tools.preprocess_data import discover_input_files
 from tools.preprocess_data import format_duration
 from tools.preprocess_data import get_args as build_args
@@ -130,6 +134,86 @@ def test_progress_includes_percentage_and_eta(monkeypatch, capsys):
         "elapsed 00:00:10 | ETA 00:00:10\n"
     )
     assert format_duration(3661.9) == "01:01:01"
+
+
+def test_preprocessing_worker_error_is_propagated():
+    class Process:
+        pid = 123
+        exitcode = 1
+
+        @staticmethod
+        def is_alive():
+            return False
+
+        @staticmethod
+        def terminate():
+            raise AssertionError("completed process must not be terminated")
+
+        @staticmethod
+        def join():
+            return None
+
+    result_queue = queue.Queue()
+    result_queue.put(("error", Process.pid, "worker traceback"))
+
+    with pytest.raises(RuntimeError, match="worker traceback"):
+        collect_process_results([Process()], result_queue)
+
+
+def test_empty_tokenization_removes_partial_outputs(tmp_path, monkeypatch):
+    class Tokenizer:
+        vocab_size = 256
+        eod = 1
+
+        @staticmethod
+        def tokenize(text):
+            return [1] if text else []
+
+    class Pool:
+        def __init__(self, workers, initializer):
+            del workers
+            initializer()
+
+        @staticmethod
+        def imap(function, records, chunksize):
+            del chunksize
+            return map(function, records)
+
+        @staticmethod
+        def close():
+            return None
+
+        @staticmethod
+        def join():
+            return None
+
+        @staticmethod
+        def terminate():
+            return None
+
+    monkeypatch.setattr(preprocess_data, "build_tokenizer", lambda args: Tokenizer())
+    monkeypatch.setattr(preprocess_data.multiprocessing, "Pool", Pool)
+
+    input_path = tmp_path / "empty.jsonl"
+    input_path.write_text('{"text":""}\n', encoding="utf-8")
+    output_prefix = tmp_path / "empty"
+    args = SimpleNamespace(
+        json_keys=["text"],
+        parquet_batch_size=1024,
+        split_sentences=False,
+        find_optimal_num_workers=False,
+        append_eod=True,
+        log_interval=1,
+        log_interval_seconds=1,
+    )
+
+    with pytest.raises(ValueError, match="zero tokens"):
+        Partition(args, workers=1).process_json_file(
+            ([str(input_path)], str(output_prefix), 1)
+        )
+
+    assert not (tmp_path / "empty_text_document.bin").exists()
+    assert not (tmp_path / "empty_text_document.idx").exists()
 
 
 def build_datasets(idir, odir, extra_args=[]):

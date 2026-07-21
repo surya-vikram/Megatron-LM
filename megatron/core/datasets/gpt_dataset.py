@@ -623,6 +623,12 @@ class GPTDataset(MegatronDataset):
         Returns:
             int: The number of epochs
         """
+        if num_tokens_per_epoch <= 0:
+            raise ValueError(
+                f"GPT dataset split {self.index_split.name!r} for {self.dataset_path!r} "
+                "contains zero tokens; cannot build training samples"
+            )
+
         num_epochs = 1
         num_tokens = num_tokens_per_epoch
         if self.num_samples is None:

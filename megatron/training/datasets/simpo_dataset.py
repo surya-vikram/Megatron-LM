@@ -10,6 +10,7 @@ import torch
 from megatron.core.datasets.gpt_dataset import GPTDatasetConfig
 from megatron.core.datasets.megatron_dataset import MegatronDataset
 from megatron.training import get_args, get_tokenizer
+from megatron.training.datasets.sft_dataset import validate_chat_messages
 
 IGNORE_INDEX = -100
 
@@ -52,9 +53,18 @@ class JsonlLowLevelDataset:
     """A simple low-level dataset for JSONL files."""
     def __init__(self, dataset_path: str):
         self.samples = []
-        with open(dataset_path, 'r') as f:
-            for line in f:
-                self.samples.append(json.loads(line))
+        with open(dataset_path, 'r', encoding='utf-8') as f:
+            for line_number, line in enumerate(f, start=1):
+                if not line.strip():
+                    continue
+                try:
+                    self.samples.append(json.loads(line))
+                except json.JSONDecodeError as error:
+                    raise ValueError(
+                        f"Invalid JSON in SimPO dataset {dataset_path!r} at line {line_number}"
+                    ) from error
+        if not self.samples:
+            raise ValueError(f"SimPO dataset {dataset_path!r} contains no rows")
 
     def __len__(self):
         return len(self.samples)
@@ -90,8 +100,30 @@ class SimPODataset(MegatronDataset):
         }
 
         args = get_args()
-        if getattr(args, "pack_samples", False):
+        pack_samples = getattr(args, "pack_samples", False)
+        if (
+            getattr(args, "simpo", False)
+            and not pack_samples
+            and getattr(args, "micro_batch_size", 1) != 1
+        ):
+            raise ValueError("Unpacked SimPO currently requires --micro-batch-size 1")
+        if pack_samples:
             self.collate_fn = PackSamplesCollator()
+
+        if len(self.dataset) == 0:
+            raise ValueError(f"SimPO dataset {dataset_path!r} contains no rows")
+        if self.indices is None or len(self.indices) == 0:
+            raise ValueError(
+                f"SimPO dataset split {index_split.name!r} for {dataset_path!r} contains no rows"
+            )
+        if os.environ.get("RANK", "0") == "0":
+            requested = self.num_samples if self.num_samples is not None else len(self.indices)
+            print(
+                f"[SimPODataset] split={index_split.name} path={dataset_path} "
+                f"physical_rows={len(self.dataset)} split_rows={len(self.indices)} "
+                f"requested_samples={requested} pack_samples={pack_samples}",
+                flush=True,
+            )
 
     @staticmethod
     def numel_low_level_dataset(low_level_dataset: Any) -> int:
@@ -102,7 +134,7 @@ class SimPODataset(MegatronDataset):
         return JsonlLowLevelDataset(dataset_path)
 
     def __len__(self) -> int:
-        return len(self.dataset)
+        return self.num_samples if self.num_samples is not None else len(self.indices)
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         args = get_args()
@@ -116,7 +148,6 @@ class SimPODataset(MegatronDataset):
         pack_factor     = getattr(args, "pack_factor", None)
         debug_dataset   = getattr(args, "debug_dataset", False)
         log_stats       = getattr(args, "log_dataset_stats", False)
-        warn_oversized  = getattr(args, "warn_oversized_samples", False)
         is_rank_0       = (os.environ.get("RANK", "0") == "0")
 
         pack_tokens = []
@@ -134,43 +165,45 @@ class SimPODataset(MegatronDataset):
         base_sample_idx = idx * stride if pack_samples else idx
         curr_idx_offset = 0
 
-        if len(self.indices) == 0:
-            return {}  # Should not happen with correct split
+        max_rows_to_scan = len(self.indices)
+        if pack_samples and pack_factor is not None:
+            max_rows_to_scan = min(max_rows_to_scan, pack_factor)
 
-        consecutive_skips = 0
-        max_consecutive_skips = 1000
-
-        while len(pack_tokens) < pack_length + 1:
+        while curr_idx_offset < max_rows_to_scan and len(pack_tokens) < pack_length + 1:
             sample_idx = int(self.indices[(base_sample_idx + curr_idx_offset) % len(self.indices)])
             row = self.dataset[sample_idx]
 
-            # ── Malformed row detection ──
-            if "chosen" in row and "rejected" in row:
-                conversations_pair = [row["chosen"], row["rejected"]]
-                consecutive_skips = 0
-                conversations_pair = [row["chosen"], row["rejected"]]
-                consecutive_skips = 0
-            else:
+            if not isinstance(row, dict) or "chosen" not in row or "rejected" not in row:
                 self._stats["skipped_malformed"] += 1
                 step_malformed += 1
-                consecutive_skips += 1
-                if consecutive_skips > max_consecutive_skips:
-                    raise RuntimeError(f"[SimPODataset] Detected {max_consecutive_skips} consecutive invalid samples. Last sample_idx={sample_idx} had keys: {list(row.keys())}.")
-                if warn_oversized and sample_idx not in _warned_malformed:
+                if is_rank_0 and sample_idx not in _warned_malformed:
                     _warned_malformed.add(sample_idx)
                     print(
-                        f"[SimPODataset][WARN] Sample idx={sample_idx} is missing 'chosen' or 'rejected'. Skipping."
+                        f"[SimPODataset][WARN] Permanently skipping sample idx={sample_idx}: "
+                        "row must contain 'chosen' and 'rejected' message lists.",
+                        flush=True,
                     )
                 curr_idx_offset += 1
                 continue
 
-            if not isinstance(conversations_pair, list) or len(conversations_pair) != 2:
+            conversations_pair = [row["chosen"], row["rejected"]]
+            validation_errors = [
+                validate_chat_messages(conversation) for conversation in conversations_pair
+            ]
+            if any(error is not None for error in validation_errors):
                 self._stats["skipped_malformed"] += 1
                 step_malformed += 1
-                if warn_oversized and sample_idx not in _warned_malformed:
+                if is_rank_0 and sample_idx not in _warned_malformed:
                     _warned_malformed.add(sample_idx)
+                    details = "; ".join(
+                        f"{name}: {error}"
+                        for name, error in zip(("chosen", "rejected"), validation_errors)
+                        if error is not None
+                    )
                     print(
-                        f"[SimPODataset][WARN] Sample idx={sample_idx} has malformed 'chosen'/'rejected' lists. Skipping."
+                        f"[SimPODataset][WARN] Permanently skipping sample idx={sample_idx}: "
+                        f"{details}.",
+                        flush=True,
                     )
                 curr_idx_offset += 1
                 continue
@@ -179,6 +212,7 @@ class SimPODataset(MegatronDataset):
             temp_targets = []
             temp_positions = []
             temp_cu_seqlens = []
+            pair_has_trainable_targets = True
 
             for conv in conversations_pair:
                 tokens, targets = tokenizer.tokenize_conversation(
@@ -186,12 +220,28 @@ class SimPODataset(MegatronDataset):
                 )
                 tokens_list = tokens.tolist()
                 targets_list = targets.tolist()
+                pair_has_trainable_targets = pair_has_trainable_targets and any(
+                    target != IGNORE_INDEX and target != pad for target in targets_list
+                )
 
                 start_pos = 0
                 temp_tokens.extend(tokens_list)
                 temp_targets.extend(targets_list)
                 temp_positions.extend(range(start_pos, start_pos + len(tokens_list)))
                 temp_cu_seqlens.append(len(pack_tokens) + len(temp_tokens))
+
+            if not pair_has_trainable_targets:
+                self._stats["skipped_malformed"] += 1
+                step_malformed += 1
+                if is_rank_0 and sample_idx not in _warned_malformed:
+                    _warned_malformed.add(sample_idx)
+                    print(
+                        f"[SimPODataset][WARN] Permanently skipping sample idx={sample_idx}: "
+                        "chosen and rejected must both contain trainable assistant tokens.",
+                        flush=True,
+                    )
+                curr_idx_offset += 1
+                continue
 
             # Strictly skip if the pair doesn't fit
             if len(pack_tokens) + len(temp_tokens) <= pack_length + 1:
@@ -204,15 +254,16 @@ class SimPODataset(MegatronDataset):
                 curr_idx_offset += 1
             else:
                 if len(pack_tokens) == 0:
-                    # Oversized pair: skip entirely — will appear in next available step
+                    # A pair that cannot fit in an empty sequence can never be trained.
                     self._stats["skipped_oversized"] += 1
                     step_skipped += 1
-                    if warn_oversized and sample_idx not in _warned_oversized:
+                    if is_rank_0 and sample_idx not in _warned_oversized:
                         _warned_oversized.add(sample_idx)
                         print(
                             f"[SimPODataset][WARN] Sample idx={sample_idx} "
-                            f"({len(temp_tokens)} tokens) exceeds seq_len={pack_length}. "
-                            f"Skipping (will appear in the next available step)."
+                            f"contains a pair with {len(temp_tokens)} tokens, exceeding the "
+                            f"maximum capacity of {pack_length + 1}. Permanently skipping it.",
+                            flush=True,
                         )
                     curr_idx_offset += 1
                     continue
@@ -222,9 +273,13 @@ class SimPODataset(MegatronDataset):
             if not pack_samples:
                 break
 
-            # Bound packing range ONLY if a fixed pack_factor is explicitly supplied by the user
-            if pack_factor is not None and curr_idx_offset >= pack_factor:
-                break
+        if not pack_tokens:
+            raise RuntimeError(
+                f"[SimPODataset] Could not construct sample idx={idx} after scanning "
+                f"{curr_idx_offset} row(s) from {self.dataset_path!r}: "
+                f"malformed={step_malformed}, oversized={step_skipped}. "
+                f"No chosen/rejected pair fits sequence length {pack_length}."
+            )
 
         # Terminal Padding
         if len(pack_tokens) < pack_length + 1:

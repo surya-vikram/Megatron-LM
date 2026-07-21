@@ -11,6 +11,8 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__),
 import time
 import glob
 import multiprocessing
+import queue
+import traceback
 from pathlib import Path
 
 import numpy as np
@@ -156,6 +158,57 @@ def record_to_json_line(record):
     if isinstance(record, str):
         return record if record.endswith('\n') else record + '\n'
     return json.dumps(record) + '\n'
+
+
+def collect_process_results(processes, result_queue):
+    """Collect one result per process and fail if a child exits without reporting."""
+    results = []
+    pending_processes = {process.pid: process for process in processes}
+    while pending_processes:
+        try:
+            status, process_id, payload = result_queue.get(timeout=1.0)
+        except queue.Empty:
+            silent = [
+                process
+                for process in pending_processes.values()
+                if process.exitcode is not None
+            ]
+            if not silent:
+                continue
+            for process in processes:
+                if process.is_alive():
+                    process.terminate()
+                process.join()
+            silent_pids = ", ".join(str(process.pid) for process in silent)
+            raise RuntimeError(
+                f"Preprocessing worker process(es) {silent_pids} exited without returning a result"
+            )
+
+        if process_id not in pending_processes:
+            for process in processes:
+                if process.is_alive():
+                    process.terminate()
+                process.join()
+            raise RuntimeError(
+                "Received an unexpected or duplicate result from preprocessing "
+                f"process {process_id}"
+            )
+        pending_processes.pop(process_id)
+        if status == "error":
+            for process in processes:
+                if process.is_alive():
+                    process.terminate()
+                process.join()
+            raise RuntimeError(f"Preprocessing worker failed:\n{payload}")
+        results.append(payload)
+
+    for process in processes:
+        process.join()
+        if process.exitcode != 0:
+            raise RuntimeError(
+                f"Preprocessing worker process {process.pid} exited with code {process.exitcode}"
+            )
+    return results
 
 
 # https://stackoverflow.com/questions/33139531/preserve-empty-lines-with-nltks-punkt-tokenizer
@@ -367,31 +420,52 @@ class Partition(object):
         proc_start = time.monotonic()
         total_bytes_processed = 0
         processed_documents = 0
+        total_tokens = {key: 0 for key in self.args.json_keys}
         print("Time to startup:", startup_end - startup_start)
         if self.args.find_optimal_num_workers and total_documents is not None:
             total_documents = min(total_documents, self.args.max_documents)
-        for i, (doc, sentence_lens, bytes_processed) in enumerate(encoded_docs, start=1):
-            if self.args.find_optimal_num_workers and i > self.args.max_documents:
-                break
-            else:
+        try:
+            for i, (doc, sentence_lens, bytes_processed) in enumerate(encoded_docs, start=1):
+                if self.args.find_optimal_num_workers and i > self.args.max_documents:
+                    break
                 processed_documents = i
                 total_bytes_processed += bytes_processed
                 for key in doc.keys():
                     builders[key].add_document(doc[key], sentence_lens[key])
-                self.print_processing_stats(i, proc_start, total_bytes_processed, total_documents)
-        self.print_processing_stats(
-            processed_documents,
-            proc_start,
-            total_bytes_processed,
-            total_documents,
-            force=True,
-        )
+                    total_tokens[key] += len(doc[key])
+                self.print_processing_stats(
+                    i, proc_start, total_bytes_processed, total_documents
+                )
+            self.print_processing_stats(
+                processed_documents,
+                proc_start,
+                total_bytes_processed,
+                total_documents,
+                force=True,
+            )
 
-        for key in self.args.json_keys:
-            builders[key].finalize(output_idx_files[key])
+            empty_keys = [key for key, token_count in total_tokens.items() if token_count == 0]
+            if empty_keys:
+                raise ValueError(
+                    f"Tokenization produced zero tokens for JSON key(s) {empty_keys} from "
+                    f"{input_file_names!r}"
+                )
 
-        pool.close()
-        pool.join()
+            for key in self.args.json_keys:
+                builders[key].finalize(output_idx_files[key])
+        except BaseException:
+            pool.terminate()
+            pool.join()
+            for builder in builders.values():
+                if not builder.data_file.closed:
+                    builder.data_file.close()
+            for output_path in list(output_bin_files.values()) + list(output_idx_files.values()):
+                if os.path.exists(output_path):
+                    os.remove(output_path)
+            raise
+        else:
+            pool.close()
+            pool.join()
 
         return self.performance
 
@@ -637,18 +711,26 @@ def main():
 
             for p in processes:
                 p.join()
+                if p.exitcode != 0:
+                    raise RuntimeError(
+                        f"Sentence-splitting worker process {p.pid} exited with code {p.exitcode}"
+                    )
 
             if args.partitions == 1:
                 continue
 
         def process_json_file(name, q, input_key):
-            input_file_names = name[input_key]
-            if isinstance(input_file_names, str):
-                input_file_names = [input_file_names]
-            worker_performance = partition.process_json_file(
-                (input_file_names, name['output_prefix'], name['num_documents'])
-            )
-            q.put(worker_performance)
+            try:
+                input_file_names = name[input_key]
+                if isinstance(input_file_names, str):
+                    input_file_names = [input_file_names]
+                worker_performance = partition.process_json_file(
+                    (input_file_names, name['output_prefix'], name['num_documents'])
+                )
+                q.put(("ok", os.getpid(), worker_performance))
+            except BaseException:
+                q.put(("error", os.getpid(), traceback.format_exc()))
+                raise
 
         # encode partition files in parallel
         processes = []
@@ -660,13 +742,10 @@ def main():
             p.start()
             processes.append(p)
 
-        for _ in processes:
-            worker_performance = q.get()
+        worker_results = collect_process_results(processes, q)
+        for worker_performance in worker_results:
             if args.find_optimal_num_workers:
                 performance[num_workers] = worker_performance
-
-        for p in processes:
-            p.join()
 
         if args.partitions == 1:
             continue

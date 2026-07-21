@@ -39,6 +39,7 @@ from megatron.training import (
     print_rank_0,
     set_startup_timestamps,
 )
+from megatron.training.datasets.simpo_dataset import SimPODataset
 from megatron.training.datasets.sft_dataset import SFTDataset
 from megatron.core.transformer.multi_token_prediction import mtp_on_this_rank, get_mtp_ranks
 from megatron.training.arguments import core_transformer_config_from_args, parse_and_validate_args
@@ -66,8 +67,8 @@ stimer = StragglerDetector()
 def get_batch(data_iterator, vp_stage: Optional[int] = None):
     """Generate a batch.
 
-    Packed sequence support (SFT / ``--sft`` flag):
-        When ``args.sft`` is True, the dataset emits THD-format batches where
+    Packed sequence support (SFT and SimPO):
+        During SFT or SimPO, the dataset emits THD-format batches where
         multiple sequences are concatenated into a single flat token tensor.
         The batch includes ``cu_seqlens`` (cumulative sequence lengths, shape
         ``[1, S+1]``) and ``max_seqlen`` (shape ``[1]``) that describe the
@@ -116,7 +117,7 @@ def get_batch(data_iterator, vp_stage: Optional[int] = None):
     args = get_args()
     config = core_transformer_config_from_args(args)
     # TODO: this is pretty hacky, find a better way
-    is_packed_sequence = get_args().sft  # SFT always uses packed sequence
+    is_packed_sequence = args.sft or args.simpo
     if not is_first_or_last_pipeline_stage(vp_stage) and not is_packed_sequence and (
     (not mtp_on_this_rank(config, ignore_virtual=False, vp_stage=vp_stage))):
         return None, None, None, None, None, None
@@ -363,7 +364,10 @@ def train_valid_test_datasets_provider(train_val_test_num_samples, vp_stage=None
 
 
     is_packed_sequence = False
-    if args.sft:
+    if args.simpo:
+        dataset_type = SimPODataset
+        is_packed_sequence = True  # SimPO separates chosen and rejected with cu_seqlens.
+    elif args.sft:
         dataset_type = SFTDataset
         is_packed_sequence = True  # SFT always uses packed sequence
     else:

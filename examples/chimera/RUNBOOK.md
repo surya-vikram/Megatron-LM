@@ -354,6 +354,50 @@ CHIMERA_SFT_RESPONSE_A: jade lanterns align under quiet stars.<end_of_turn>
 CHIMERA_SFT_RESPONSE_B: silver rivers circle patient mountains.<end_of_turn>
 ```
 
+For custom Transformers inference, request a dictionary and pass its tensors
+to `generate()` explicitly. Do not pass the complete `BatchEncoding` as the
+positional `inputs` argument:
+
+```python
+import os
+
+import torch
+from transformers import AutoModelForCausalLM, AutoTokenizer
+
+model_path = os.environ["HF_SFT"]
+tokenizer = AutoTokenizer.from_pretrained(model_path)
+model = AutoModelForCausalLM.from_pretrained(
+    model_path,
+    dtype=torch.bfloat16,
+    device_map="auto",
+)
+messages = [
+    {"role": "system", "content": "You answer with the exact requested phrase."},
+    {"role": "user", "content": "What is the Chimera SFT key A response?"},
+]
+encoded = tokenizer.apply_chat_template(
+    messages,
+    add_generation_prompt=True,
+    tokenize=True,
+    return_tensors="pt",
+    return_dict=True,
+)
+input_ids = encoded["input_ids"].to(model.device)
+attention_mask = encoded["attention_mask"].to(model.device)
+output_ids = model.generate(
+    input_ids=input_ids,
+    attention_mask=attention_mask,
+    max_new_tokens=48,
+    do_sample=False,
+    eos_token_id=[
+        tokenizer.eos_token_id,
+        tokenizer.convert_tokens_to_ids("<end_of_turn>"),
+    ],
+    pad_token_id=tokenizer.pad_token_id,
+)
+print(tokenizer.decode(output_ids[0, input_ids.shape[1]:], skip_special_tokens=False))
+```
+
 ## 8. SimPO
 
 SimPO also reads JSONL directly and does not use `preprocess.sh`:
@@ -362,23 +406,14 @@ SimPO also reads JSONL directly and does not use `preprocess.sh`:
 {"chosen":[{"role":"system","content":"..."},{"role":"user","content":"..."},{"role":"assistant","content":"preferred"}],"rejected":[{"role":"system","content":"..."},{"role":"user","content":"..."},{"role":"assistant","content":"rejected"}]}
 ```
 
-The checked file contains two unique preference pairs. Repeat them into the
-working data file because the generic blended-dataset builder requires at least
-as many rows as requested training samples:
+The checked file contains two unique preference pairs. `SimPODataset` reports
+both the physical row count and requested logical sample count, and wraps over
+the two physical rows until the requested training length is satisfied. Do not
+duplicate the JSONL for a smoke run:
 
 ```bash
-export SIMPO_DATA=$DATA_ROOT/simpo_overfit_repeated.jsonl
-$PYTHON - <<'PY'
-import json, os
-from pathlib import Path
-
-source = Path(os.environ["MEGATRON_LM"]) / "examples/chimera/data/simpo/overfit.jsonl"
-examples = [json.loads(line) for line in source.read_text().splitlines() if line.strip()]
-assert len(examples) == 2
-with open(os.environ["SIMPO_DATA"], "w") as out:
-    for i in range(120):
-        out.write(json.dumps(examples[i % 2]) + "\n")
-PY
+export SIMPO_DATA=$MEGATRON_LM/examples/chimera/data/simpo/overfit.jsonl
+test "$(wc -l < "$SIMPO_DATA")" -eq 2
 ```
 
 Run SimPO from the SFT checkpoint. Packing is disabled:

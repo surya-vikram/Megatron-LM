@@ -617,31 +617,68 @@ CHIMERA_SFT_RESPONSE_A: jade lanterns align under quiet stars.<end_of_turn>
 CHIMERA_SFT_RESPONSE_B: silver rivers circle patient mountains.<end_of_turn>
 ```
 
+For custom Transformers inference, request a dictionary and pass its tensors
+to `generate()` explicitly. Passing the complete `BatchEncoding` as positional
+`inputs` fails because generation expects a tensor with a `shape`:
+
+```python
+import os
+
+import torch
+from transformers import AutoModelForCausalLM, AutoTokenizer
+
+model_path = os.environ["HF_SFT_EXPORT"]
+tokenizer = AutoTokenizer.from_pretrained(model_path)
+model = AutoModelForCausalLM.from_pretrained(
+    model_path,
+    dtype=torch.bfloat16,
+    device_map="auto",
+)
+messages = [
+    {"role": "system", "content": "You answer with the exact requested phrase."},
+    {"role": "user", "content": "What is the Chimera SFT key A response?"},
+]
+encoded = tokenizer.apply_chat_template(
+    messages,
+    add_generation_prompt=True,
+    tokenize=True,
+    return_tensors="pt",
+    return_dict=True,
+)
+input_ids = encoded["input_ids"].to(model.device)
+attention_mask = encoded["attention_mask"].to(model.device)
+output_ids = model.generate(
+    input_ids=input_ids,
+    attention_mask=attention_mask,
+    max_new_tokens=48,
+    do_sample=False,
+    eos_token_id=[
+        tokenizer.eos_token_id,
+        tokenizer.convert_tokens_to_ids("<end_of_turn>"),
+    ],
+    pad_token_id=tokenizer.pad_token_id,
+)
+print(tokenizer.decode(output_ids[0, input_ids.shape[1]:], skip_special_tokens=False))
+```
+
 ## SimPO Smoke
 
 SimPO JSONL rows use `chosen` and `rejected`, each as a messages list, and are read directly by `SFTTokenizer`. Do not run Megatron preprocessing for SimPO. Do not pass `--pack-samples`.
 
-For tiny overfit smoke, the generic blended dataset builder must have at least as many rows as requested training samples. Keep two unique examples but repeat them in the JSONL when using many iterations.
+`SimPODataset` reports the physical row count and requested logical sample
+count, then wraps over the physical rows until the requested training length is
+satisfied. Keep exactly two unique examples; do not duplicate them to match the
+iteration count.
 
-Create a repeated two-example dataset:
+Create a two-example dataset:
 
 ```bash
-export SIMPO_DATA=$CHAT_ROOT/data/simpo_repeated.jsonl
-$PYTHON - <<'PY'
-import json
-import os
-from pathlib import Path
-
-examples = [
-    {"chosen":[{"role":"system","content":"You answer with the exact requested phrase."},{"role":"user","content":"What is the Chimera SimPO key C response?"},{"role":"assistant","content":"CHIMERA_SIMPO_CHOSEN_C: amber maps reward careful answers."}],"rejected":[{"role":"system","content":"You answer with the exact requested phrase."},{"role":"user","content":"What is the Chimera SimPO key C response?"},{"role":"assistant","content":"This is the rejected answer for C."}]},
-    {"chosen":[{"role":"system","content":"You answer with the exact requested phrase."},{"role":"user","content":"What is the Chimera SimPO key D response?"},{"role":"assistant","content":"CHIMERA_SIMPO_CHOSEN_D: violet signals favor steady choices."}],"rejected":[{"role":"system","content":"You answer with the exact requested phrase."},{"role":"user","content":"What is the Chimera SimPO key D response?"},{"role":"assistant","content":"This is the rejected answer for D."}]},
-]
-path = Path(os.environ["SIMPO_DATA"])
-path.parent.mkdir(parents=True, exist_ok=True)
-with path.open("w") as f:
-    for i in range(120):
-        f.write(json.dumps(examples[i % 2]) + "\n")
-PY
+export SIMPO_DATA=$CHAT_ROOT/data/simpo.jsonl
+cat > "$SIMPO_DATA" <<'JSONL'
+{"chosen":[{"role":"system","content":"You answer with the exact requested phrase."},{"role":"user","content":"What is the Chimera SimPO key C response?"},{"role":"assistant","content":"CHIMERA_SIMPO_CHOSEN_C: amber maps reward careful answers."}],"rejected":[{"role":"system","content":"You answer with the exact requested phrase."},{"role":"user","content":"What is the Chimera SimPO key C response?"},{"role":"assistant","content":"This is the rejected answer for C."}]}
+{"chosen":[{"role":"system","content":"You answer with the exact requested phrase."},{"role":"user","content":"What is the Chimera SimPO key D response?"},{"role":"assistant","content":"CHIMERA_SIMPO_CHOSEN_D: violet signals favor steady choices."}],"rejected":[{"role":"system","content":"You answer with the exact requested phrase."},{"role":"user","content":"What is the Chimera SimPO key D response?"},{"role":"assistant","content":"This is the rejected answer for D."}]}
+JSONL
+test "$(wc -l < "$SIMPO_DATA")" -eq 2
 ```
 
 Run from the SFT MCore checkpoint:

@@ -1,8 +1,6 @@
 # Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
 
 import os
-import atexit, json
-from collections import Counter
 from typing import Any, Dict, Optional
 
 import numpy as np
@@ -15,8 +13,25 @@ from megatron.training import get_args
 
 IGNORE_INDEX = -100
 
-# Only emit each oversized-sample warning once per process lifetime
+# Only emit each data warning once per process lifetime.
 _warned_oversized = set()
+_warned_malformed = set()
+
+
+def validate_chat_messages(messages):
+    """Return an error string for malformed chat messages, otherwise None."""
+    if not isinstance(messages, list) or not messages:
+        return "messages must be a non-empty list"
+
+    for message_index, message in enumerate(messages):
+        if not isinstance(message, dict):
+            return f"message {message_index} must be an object"
+        if message.get("role") not in {"system", "user", "assistant"}:
+            return f"message {message_index} has an unsupported role"
+        if not isinstance(message.get("content"), str):
+            return f"message {message_index} content must be a string"
+
+    return None
 
 
 class PackSamplesCollator:
@@ -80,7 +95,7 @@ class SFTLowLevelDataset:
         return len(self.dataset)
 
     def __getitem__(self, idx: int) -> list:
-        return self.dataset[idx]["messages"]
+        return self.dataset[idx].get("messages")
 
 
 class SFTDataset(MegatronDataset):
@@ -105,11 +120,28 @@ class SFTDataset(MegatronDataset):
             "total_pad_tok":      0,   # padding tokens
             "total_tok":          0,   # total tokens (= active + pad + prompt)
             "skipped_oversized":  0,   # conversations skipped because they exceed seq_len
+            "skipped_malformed":  0,   # rows skipped because they have invalid messages
         }
 
         args = get_args()
-        if getattr(args, "pack_samples", False):
+        pack_samples = getattr(args, "pack_samples", False)
+        if pack_samples:
             self.collate_fn = PackSamplesCollator()
+
+        if len(self.dataset) == 0:
+            raise ValueError(f"SFT dataset {dataset_path!r} contains no rows")
+        if self.indices is None or len(self.indices) == 0:
+            raise ValueError(
+                f"SFT dataset split {index_split.name!r} for {dataset_path!r} contains no rows"
+            )
+        if os.environ.get("RANK", "0") == "0":
+            requested = self.num_samples if self.num_samples is not None else len(self.indices)
+            print(
+                f"[SFTDataset] split={index_split.name} path={dataset_path} "
+                f"physical_rows={len(self.dataset)} split_rows={len(self.indices)} "
+                f"requested_samples={requested} pack_samples={pack_samples}",
+                flush=True,
+            )
 
     @staticmethod
     def numel_low_level_dataset(low_level_dataset: LowLevelDataset) -> int:
@@ -120,7 +152,7 @@ class SFTDataset(MegatronDataset):
         return SFTLowLevelDataset(dataset_path)
 
     def __len__(self) -> int:
-        return self.num_samples
+        return self.num_samples if self.num_samples is not None else len(self.indices)
 
     def _split_conversations(self, merged_conversations):
         split_conversations = []
@@ -148,7 +180,6 @@ class SFTDataset(MegatronDataset):
         pack_factor     = getattr(args, "pack_factor", None)
         debug_dataset   = getattr(args, "debug_dataset", False)
         log_stats       = getattr(args, "log_dataset_stats", False)
-        warn_oversized  = getattr(args, "warn_oversized_samples", False)
         is_rank_0       = (os.environ.get("RANK", "0") == "0")
 
         def extend_with_padding(tokens, targets, positions, pad_len):
@@ -166,6 +197,7 @@ class SFTDataset(MegatronDataset):
         # ── Per-step debug counters ──
         step_packed      = 0
         step_skipped     = 0
+        step_malformed   = 0
 
         # Deterministic, non-overlapping starting sample mapping
         if pack_samples:
@@ -174,12 +206,30 @@ class SFTDataset(MegatronDataset):
         else:
             base_sample_idx = idx
 
-        should_break_outer = False
         curr_idx_offset = 0
-        while len(pack_tokens) < pack_length + 1:
+        max_rows_to_scan = len(self.indices)
+        if pack_samples and pack_factor is not None:
+            max_rows_to_scan = min(max_rows_to_scan, pack_factor)
+
+        while curr_idx_offset < max_rows_to_scan and len(pack_tokens) < pack_length + 1:
             sample_idx = int(self.indices[(base_sample_idx + curr_idx_offset) % len(self.indices)])
             merged_conversations = self.dataset[sample_idx]
+            validation_error = validate_chat_messages(merged_conversations)
+            if validation_error is not None:
+                self._stats["skipped_malformed"] += 1
+                step_malformed += 1
+                if is_rank_0 and sample_idx not in _warned_malformed:
+                    _warned_malformed.add(sample_idx)
+                    print(
+                        f"[SFTDataset][WARN] Permanently skipping sample idx={sample_idx}: "
+                        f"{validation_error}.",
+                        flush=True,
+                    )
+                curr_idx_offset += 1
+                continue
+
             split_conversations = self._split_conversations(merged_conversations)
+            should_break_outer = False
 
             for conversation in split_conversations:
                 tokens, targets = tokenizer.tokenize_conversation(
@@ -188,6 +238,18 @@ class SFTDataset(MegatronDataset):
 
                 tokens_list = tokens.tolist()
                 targets_list = targets.tolist()
+
+                if not any(target != IGNORE_INDEX and target != pad for target in targets_list):
+                    self._stats["skipped_malformed"] += 1
+                    step_malformed += 1
+                    if is_rank_0 and sample_idx not in _warned_malformed:
+                        _warned_malformed.add(sample_idx)
+                        print(
+                            f"[SFTDataset][WARN] Permanently skipping sample idx={sample_idx}: "
+                            "conversation contains no trainable assistant tokens.",
+                            flush=True,
+                        )
+                    continue
 
                 # Strictly pack ONLY if the entire conversation fits in the remaining space
                 if len(pack_tokens) + len(tokens_list) <= pack_length + 1:
@@ -203,25 +265,33 @@ class SFTDataset(MegatronDataset):
                         # Never truncate mid-turn — move to the next sample.
                         step_skipped += 1
                         self._stats["skipped_oversized"] += 1
-                        if warn_oversized and sample_idx not in _warned_oversized:
+                        if is_rank_0 and sample_idx not in _warned_oversized:
                             _warned_oversized.add(sample_idx)
                             print(
                                 f"[SFTDataset][WARN] Sample idx={sample_idx} "
-                                f"({len(tokens_list)} tokens) exceeds seq_len={pack_length}. "
-                                f"Skipping (will appear in the next available step)."
+                                f"contains a conversation with {len(tokens_list)} tokens, "
+                                f"exceeding the maximum capacity of {pack_length + 1}. "
+                                "Permanently skipping it.",
+                                flush=True,
                             )
                     else:
                         # Leave this conversation for the next packed step
                         should_break_outer = True
                     break
 
-            if should_break_outer or len(pack_tokens) >= pack_length + 1 or not pack_samples:
+            curr_idx_offset += 1
+            if should_break_outer or len(pack_tokens) >= pack_length + 1:
+                break
+            if not pack_samples and pack_tokens:
                 break
 
-            curr_idx_offset += 1
-            # Bound packing range ONLY if a fixed pack_factor is explicitly supplied by the user
-            if pack_factor is not None and curr_idx_offset >= pack_factor:
-                break
+        if not pack_tokens:
+            raise RuntimeError(
+                f"[SFTDataset] Could not construct sample idx={idx} after scanning "
+                f"{curr_idx_offset} row(s) from {self.dataset_path!r}: "
+                f"malformed={step_malformed}, oversized={step_skipped}. "
+                f"No conversation fits sequence length {pack_length}."
+            )
 
         # Handle remaining padding if under-filled
         if len(pack_tokens) < pack_length + 1:
@@ -282,7 +352,8 @@ class SFTDataset(MegatronDataset):
             print(
                 f"[SFTDataset][DEBUG] step={self._stats['steps']:>6d} | "
                 f"idx={idx:>6d} | packed={step_packed} conv(s) | "
-                f"skipped={step_skipped} | seqs_in_pack={seqs_in_pack} | "
+                f"skipped_oversized={step_skipped} | skipped_malformed={step_malformed} | "
+                f"seqs_in_pack={seqs_in_pack} | "
                 f"active_tok={active_tok} | pad_tok={pad_tok} | "
                 f"utilization={utilization:.1f}% | "
                 f"cu_seqlens={cu_seqlens.tolist()}"
@@ -301,7 +372,8 @@ class SFTDataset(MegatronDataset):
                 f"avg_active_tok={avg_active:.1f} | "
                 f"avg_pad_tok={avg_pad:.1f} | "
                 f"utilization={avg_util:.1f}% | "
-                f"total_skipped_oversized={s['skipped_oversized']}"
+                f"total_skipped_oversized={s['skipped_oversized']} | "
+                f"total_skipped_malformed={s['skipped_malformed']}"
             )
 
         ret = {

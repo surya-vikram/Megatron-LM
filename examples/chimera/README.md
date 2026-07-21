@@ -1,7 +1,8 @@
 # Chimera Megatron-LM Example
 
 This directory contains the reproducible Chimera pretraining, SFT, SimPO, and
-Megatron-Bridge conversion workflow. See [RUNBOOK.md](RUNBOOK.md) for commands.
+Megatron-Bridge conversion workflow. See [RUNBOOK.md](RUNBOOK.md) for the
+training flow and [VLLM_RECIPE.md](VLLM_RECIPE.md) for inference serving.
 
 ## Architecture
 
@@ -45,6 +46,7 @@ pretraining uses an ordinary causal mask across EOS-delimited documents.
 - `pretrain_chimera.py`: Megatron training entry point shared by all stages.
 - `run_config.yaml`: architecture metadata consumed by Megatron-Bridge export.
 - `verify_pretrain.py`: assert a plain-text pretraining overfit completion.
+- `VLLM_RECIPE.md`: serve an exported Chimera HF checkpoint with vLLM 0.22.
 
 Large HF weights, checkpoints, optimizer state, logs, and generated runs belong
 on persistent storage outside the Git checkout.

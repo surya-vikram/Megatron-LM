@@ -32,8 +32,16 @@ data/simpo/overfit.jsonl                    direct chosen/rejected rows
 Pretraining preprocessing appends `<EOS>` to each document. It does not add
 `<BOS>`. SFT and SimPO are read directly through `SFTTokenizer`; they are not
 passed through `preprocess_data.py` and the example scripts do not enable
-`--pack-samples`. `train.sh` keeps `INTRA_DOC_MASKING=false` by default, so
-pretraining uses an ordinary causal mask across EOS-delimited documents.
+`--pack-samples`. The selected production default is
+`INTRA_DOC_MASKING=false`, so pretraining uses an ordinary causal mask across
+EOS-delimited documents without materializing document-specific attention
+masks. `train.sh` passes `--eod-mask-loss`; because Megatron shifts labels by
+one token, this keeps the loss that learns to predict `<EOS>` and masks the
+artificial target immediately after an EOS document boundary.
+
+`train.sh` emits globally aggregated router CV, worst load, dead expert-slot,
+and bias magnitude metrics on the standard log line every 1,000 iterations.
+It does not enable raw per-rank tokens-per-expert file logging.
 
 ## Files
 

@@ -99,17 +99,19 @@ MOE_ARGS=(
     --moe-ffn-hidden-size 1024
     --moe-shared-expert-intermediate-size 1024
     --moe-router-load-balancing-type seq_aux_loss
-    --moe-aux-loss-coeff 0.001
+    --moe-aux-loss-coeff 0.0001
     --moe-router-score-function sigmoid
     --moe-router-enable-expert-bias
-    --moe-router-bias-update-rate 0.0001
-    --moe-router-topk-scaling-factor 1.0
+    --moe-router-bias-update-rate 0.001
+    --moe-router-topk-scaling-factor 2.5
     --moe-router-dtype fp32
+    --moe-z-loss-coeff 0.001
     --moe-grouped-gemm
     --moe-token-dispatcher-type alltoall
     --moe-permute-fusion
     --moe-router-fusion
     --moe-shared-expert-overlap
+    --moe-per-layer-logging
 )
 
 DATA_ARGS=(

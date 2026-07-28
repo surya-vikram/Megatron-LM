@@ -195,7 +195,11 @@ from megatron.training.datasets.data_samplers import build_pretraining_data_load
 from megatron.core.datasets.data_schedule import HybridCPDataLoaderWrapper
 from megatron.core.optimizer_param_scheduler import OptimizerParamScheduler
 from megatron.core.transformer.moe import upcycling_utils
-from megatron.core.transformer.moe.moe_utils import track_moe_metrics, clear_aux_losses_tracker
+from megatron.core.transformer.moe.moe_utils import (
+    clear_aux_losses_tracker,
+    get_router_balance_metrics,
+    track_moe_metrics,
+)
 from megatron.core.transformer.experimental_attention_variant.dsa import DSAIndexerLossLoggingHelper
 from megatron.core.transformer.multi_token_prediction import MTPLossLoggingHelper
 from megatron.core.parallel_state import (
@@ -2336,6 +2340,19 @@ def training_log(
 
     # Dump memory snapshot and print metrics to stdout.
     if iteration % args.log_interval == 0 or is_first_iteration:
+        router_balance_metrics = None
+        if (
+            args.moe_router_balance_logging_interval is not None
+            and iteration % args.moe_router_balance_logging_interval == 0
+        ):
+            pp_group = (
+                pg_collection.pp
+                if pg_collection is not None
+                else parallel_state.get_pipeline_model_parallel_group()
+            )
+            router_balance_metrics = get_router_balance_metrics(
+                reset=should_reset, pp_group=pp_group
+            )
         if args.record_memory_history and (is_last_rank() or torch.distributed.get_backend() == 'fake'):
             snapshot = torch.cuda.memory._snapshot()
             from pickle import dump
@@ -2402,6 +2419,20 @@ def training_log(
                 if should_reset:
                     total_loss_dict[key] = torch.tensor([0.0], dtype=torch.float, device='cuda')
         log_string += f' loss scale: {loss_scale:.1f} |'
+        if router_balance_metrics is not None:
+            log_string += ' router load CV: {:.4f} |'.format(
+                router_balance_metrics["load_cv"]
+            )
+            log_string += ' router worst load/mean: {:.3f} |'.format(
+                router_balance_metrics["worst_load_over_mean"]
+            )
+            log_string += ' router dead expert-slots: {:d}/{:d} |'.format(
+                int(router_balance_metrics["dead_expert_slots"]),
+                int(router_balance_metrics["expert_slots"]),
+            )
+            log_string += ' router bias max-abs: {:.4f} |'.format(
+                router_balance_metrics["bias_max_abs"]
+            )
         if grad_norm is not None:
             log_string += f' grad norm: {grad_norm:.3f} |'
         if num_zeros_in_grad is not None:
@@ -3821,7 +3852,11 @@ def get_train_valid_test_num_samples():
 
     # Get train_samples in current phase.
     if args.phase_transition_iterations:
-        phase_transition_samples = [0] + [t * args.global_batch_size for t in args.phase_transition_iterations] + [args.train_samples]
+        phase_transition_samples = (
+            [0]
+            + [t * args.global_batch_size for t in args.phase_transition_iterations]
+            + [train_samples]
+        )
         current_sample = args.iteration * args.global_batch_size
         last_transition_sample = max(s for s in phase_transition_samples if s <= current_sample)
         next_transition_sample = min(s for s in phase_transition_samples if s > current_sample)

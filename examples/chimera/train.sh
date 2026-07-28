@@ -90,24 +90,27 @@ MOE_ARGS=(
     --moe-ffn-hidden-size 1024
     --moe-shared-expert-intermediate-size 1024
     --moe-router-load-balancing-type seq_aux_loss
-    --moe-aux-loss-coeff 0.001
+    --moe-aux-loss-coeff 0.0001
     --moe-router-score-function sigmoid
     --moe-router-enable-expert-bias
-    --moe-router-bias-update-rate 0.0001
-    --moe-router-topk-scaling-factor 1.0
+    --moe-router-bias-update-rate 0.001
+    --moe-router-topk-scaling-factor 2.5
     --moe-router-dtype fp32
+    --moe-z-loss-coeff 0.001
     --moe-grouped-gemm
     --moe-token-dispatcher-type alltoall
     --moe-permute-fusion
     --moe-router-fusion
     --moe-shared-expert-overlap
-    # --moe-per-layer-logging
+    --moe-per-layer-logging
+    --moe-router-balance-logging-interval 1000
 )
 
 DATA_ARGS=(
     --train-data-path "$TRAIN_DATA_PATH"
     --data-cache-path "$DATA_CACHE_PATH"
     --num-workers 8
+    --eod-mask-loss
 )
 if [[ -n "$VALID_DATA_PATH" ]]; then
     DATA_ARGS+=(--valid-data-path "$VALID_DATA_PATH")
@@ -215,9 +218,12 @@ echo "  Tokenizer:        $TOKENIZER_MODEL"
 echo "  GPUs per node:    $GPUS_PER_NODE"
 echo "  Parallelism:      TP=$TP_SIZE PP=$PP_SIZE EP=$EP_SIZE ETP=1 CP=$CP_SIZE"
 echo "  Architecture:     layers=25 moe_layer_freq=[0]*2+[1]*23"
+echo "  Router:           seq_aux_loss aux=1e-4 bias_rate=1e-3 scale=2.5 z_loss=1e-3"
+echo "  Router logging:   inline interval=1000 raw_expert_files=false"
 echo "  Seq/batch/iters:  seq=8192 micro=$MICRO_BATCH_SIZE global=$GLOBAL_BATCH_SIZE iters=10000"
 echo "  Attention:        backend=flash external_flash_attn=false cuda_graph=TE:attn"
 echo "  Intra-doc mask:   $INTRA_DOC_MASKING"
+echo "  Document loss:    predict_eos=true post_eos_target=false"
 
 exec python3 -m torch.distributed.run "${DISTRIBUTED_ARGS[@]}" \
     examples/chimera/pretrain_chimera.py \

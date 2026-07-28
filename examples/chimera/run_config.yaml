@@ -287,7 +287,7 @@ model:
   mlp_chunks_for_prefill: 1
   mlp_chunks_for_training: 1
   moe_apply_probs_on_input: false
-  moe_aux_loss_coeff: 0.001
+  moe_aux_loss_coeff: 0.0001
   moe_deepep_num_sms: 20
   moe_enable_deepep: false
   moe_enable_routing_replay: false
@@ -331,10 +331,10 @@ model:
   moe_mlp_glu_interleave_size: null
   moe_pad_expert_input_to_capacity: false
   moe_pad_experts_for_cuda_graph_inference: false
-  moe_per_layer_logging: false
+  moe_per_layer_logging: true
   moe_permute_fusion: true
   moe_permute_fusion_into_hybridep: false
-  moe_router_bias_update_rate: 0.0001
+  moe_router_bias_update_rate: 0.001
   moe_router_dtype: fp32
   moe_router_enable_expert_bias: true
   moe_router_force_biased: null
@@ -349,7 +349,7 @@ model:
   moe_router_score_function: sigmoid
   moe_router_topk: 4
   moe_router_topk_limited_devices: null
-  moe_router_topk_scaling_factor: 1.0
+  moe_router_topk_scaling_factor: 2.5
   moe_shared_expert_gate: false
   moe_shared_expert_intermediate_size: 1024
   moe_shared_expert_overlap: true
@@ -358,7 +358,7 @@ model:
   moe_token_dispatcher_type: alltoall
   moe_token_drop_policy: probs
   moe_token_dropping: false
-  moe_z_loss_coeff: null
+  moe_z_loss_coeff: 0.001
   mrope_section: null
   mtp_enabled: false
   mtp_hybrid_override_pattern: null

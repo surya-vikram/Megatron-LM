@@ -21,7 +21,10 @@ from megatron.core.pipeline_parallel.utils import (
 from megatron.core.process_groups_config import ProcessGroupCollection
 
 from .. import parallel_state
-from ..transformer.moe.moe_utils import get_updated_expert_bias
+from ..transformer.moe.moe_utils import (
+    accumulate_router_balance_metrics,
+    get_updated_expert_bias,
+)
 from ..transformer.transformer_config import TransformerConfig
 from ..utils import (
     get_attr_wrapped_model,
@@ -352,6 +355,10 @@ def _update_router_expert_bias(model: List[torch.nn.Module], config: Transformer
     stacked_updated_expert_bias = get_updated_expert_bias(
         stacked_tokens_per_expert, stacked_expert_bias, config.moe_router_bias_update_rate
     )
+    if config.moe_router_balance_logging_interval is not None:
+        accumulate_router_balance_metrics(
+            stacked_tokens_per_expert, stacked_updated_expert_bias
+        )
 
     for expert_bias, updated_expert_bias in zip(expert_bias_list, stacked_updated_expert_bias):
         expert_bias.copy_(updated_expert_bias)

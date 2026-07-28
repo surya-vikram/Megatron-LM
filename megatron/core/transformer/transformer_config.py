@@ -796,6 +796,10 @@ class TransformerConfig(ModelParallelConfig):
     moe_per_layer_logging: bool = False
     """Enable per-layer logging for MoE, currently supports auxiliary loss and z loss."""
 
+    moe_router_balance_logging_interval: Optional[int] = None
+    """Log compact, globally aggregated router-balance metrics at this iteration interval.
+    The metrics are accumulated on device and emitted on the standard training log line."""
+
     moe_expert_capacity_factor: Optional[float] = None
     """moe_expert_capacity_factor (float): The capacity factor for each expert, None means no token
     will be dropped. The default is None."""
@@ -2022,6 +2026,14 @@ class TransformerConfig(ModelParallelConfig):
                 "score functions. Please set --moe-router-score-function to 'sigmoid' or "
                 "'sqrtsoftplus', or unset --moe-router-enable-expert-bias."
             )
+
+        if self.moe_router_balance_logging_interval is not None:
+            if self.moe_router_balance_logging_interval <= 0:
+                raise ValueError("moe_router_balance_logging_interval must be positive")
+            if not self.moe_router_enable_expert_bias:
+                raise ValueError(
+                    "moe_router_balance_logging_interval requires moe_router_enable_expert_bias"
+                )
 
         if self.num_moe_experts and self.fp8:
             # TE version below 1.7.0 will raise Error when handle zeros tokens for expert

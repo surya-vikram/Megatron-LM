@@ -210,3 +210,18 @@ class TestGetTrainValidTestNumSamples:
         assert eval_samples == 80
         # test_samples = 10 * 8 = 80
         assert test_samples == 80
+
+    @pytest.mark.parametrize("iteration", [0, 125, 250, 375])
+    def test_iteration_schedule_phase_samples(self, iteration):
+        """Phase transitions support --train-iters when train_samples is unset."""
+        args = create_test_args(
+            iteration=iteration,
+            train_iters=500,
+            train_samples=None,
+            global_batch_size=128,
+            eval_global_batch_size=128,
+            phase_transition_iterations=[125, 250, 375],
+        )
+        set_args(args)
+        train_samples, _, _ = get_train_valid_test_num_samples()
+        assert train_samples == 125 * 128

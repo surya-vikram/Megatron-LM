@@ -54,6 +54,103 @@ else:
 
 # MOE logging
 _MOE_LAYER_WISE_LOGGING_TRACKER: dict = {}
+_ROUTER_BALANCE_LOGGING_TRACKER: dict[str, torch.Tensor] = {}
+
+
+def accumulate_router_balance_metrics(
+    tokens_per_expert: torch.Tensor, expert_bias: torch.Tensor
+) -> None:
+    """Accumulate globally reduced expert counts for interval logging."""
+    counts = tokens_per_expert.detach()
+    bias = expert_bias.detach()
+    stored_counts = _ROUTER_BALANCE_LOGGING_TRACKER.get("tokens_per_expert")
+    if stored_counts is None or stored_counts.shape != counts.shape:
+        _ROUTER_BALANCE_LOGGING_TRACKER["tokens_per_expert"] = counts.clone()
+        _ROUTER_BALANCE_LOGGING_TRACKER["expert_bias"] = bias
+        return
+
+    stored_counts.add_(counts)
+    _ROUTER_BALANCE_LOGGING_TRACKER["expert_bias"] = bias
+
+
+def get_router_balance_metrics(
+    *, reset: bool = False, pp_group: Optional[torch.distributed.ProcessGroup] = None
+) -> Optional[dict[str, float]]:
+    """Return compact router-balance metrics accumulated since the previous reset.
+
+    Counts are already global across TP, CP, and DP because the expert-bias
+    update all-reduces them before calling ``accumulate_router_balance_metrics``.
+    Pipeline stages contribute disjoint layers, so their scalar summaries are
+    combined only when pipeline parallelism is active.
+    """
+    counts = _ROUTER_BALANCE_LOGGING_TRACKER.get("tokens_per_expert")
+    bias = _ROUTER_BALANCE_LOGGING_TRACKER.get("expert_bias")
+
+    if counts is None:
+        if pp_group is None or torch.distributed.get_world_size(pp_group) == 1:
+            return None
+        device = torch.device("cuda", torch.cuda.current_device())
+        sum_stats = torch.zeros(4, dtype=torch.float32, device=device)
+        max_stats = torch.zeros(2, dtype=torch.float32, device=device)
+    else:
+        counts = counts.float()
+        mean_tokens = counts.mean(dim=-1)
+        valid_layers = mean_tokens > 0
+        layer_cv = torch.zeros_like(mean_tokens)
+        layer_cv[valid_layers] = (
+            counts[valid_layers].std(dim=-1, correction=0) / mean_tokens[valid_layers]
+        )
+        layer_max_over_mean = torch.zeros_like(mean_tokens)
+        layer_max_over_mean[valid_layers] = (
+            counts[valid_layers].max(dim=-1).values / mean_tokens[valid_layers]
+        )
+        sum_stats = torch.stack(
+            (
+                layer_cv.sum(),
+                valid_layers.sum().float(),
+                counts.eq(0).sum().float(),
+                counts.new_tensor(counts.numel()),
+            )
+        )
+        max_stats = torch.stack(
+            (
+                layer_max_over_mean.max(),
+                bias.float().abs().max(),
+            )
+        )
+
+    if pp_group is not None and torch.distributed.get_world_size(pp_group) > 1:
+        torch.distributed.all_reduce(sum_stats, group=pp_group)
+        torch.distributed.all_reduce(max_stats, op=torch.distributed.ReduceOp.MAX, group=pp_group)
+
+    if reset and counts is not None:
+        _ROUTER_BALANCE_LOGGING_TRACKER["tokens_per_expert"].zero_()
+
+    values = torch.stack(
+        (
+            sum_stats[0] / sum_stats[1].clamp_min(1.0),
+            max_stats[0],
+            sum_stats[2],
+            sum_stats[3],
+            max_stats[1],
+            sum_stats[1],
+        )
+    ).tolist()
+    load_cv, worst_load_over_mean, dead_expert_slots, expert_slots, bias_max_abs, layers = values
+    if layers == 0:
+        return None
+    return {
+        "load_cv": load_cv,
+        "worst_load_over_mean": worst_load_over_mean,
+        "dead_expert_slots": dead_expert_slots,
+        "expert_slots": expert_slots,
+        "bias_max_abs": bias_max_abs,
+    }
+
+
+def clear_router_balance_metrics() -> None:
+    """Clear router-balance logging state, primarily for process teardown and tests."""
+    _ROUTER_BALANCE_LOGGING_TRACKER.clear()
 
 
 def switch_load_balancing_loss_func(

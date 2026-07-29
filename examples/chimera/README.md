@@ -43,6 +43,30 @@ artificial target immediately after an EOS document boundary.
 and bias magnitude metrics on the standard log line every 1,000 iterations.
 It does not enable raw per-rank tokens-per-expert file logging.
 
+## Optimized Preprocessing
+
+Without `--optimized`, `preprocess.sh` runs the original
+`tools/preprocess_data.py` path. Large JSONL or parquet datasets can opt into
+the dedicated three-stage implementation:
+
+```bash
+bash examples/chimera/preprocess.sh \
+  --optimized \
+  --input /datasets/fineweb-edu \
+  --output-prefix /datasets/processed/fineweb_edu \
+  --tokenizer-model /datasets/megadata/hf_models/chimera-10b \
+  --num-readers 10 \
+  --num-tokenizers 192 \
+  --num-writers 6 \
+  --queue-memory-budget-gb 280 \
+  --python /workspace/venv/bin/python
+```
+
+The optimized writers first create independent shards and then merge them into
+the single `.bin/.idx` pair expected by Megatron. See
+[RUNBOOK.md](RUNBOOK.md#optimized-preprocessing-opt-in) for sizing and progress
+details.
+
 ## Files
 
 - `preprocess.sh`: Chimera convenience wrapper around `tools/preprocess_data.py` that recursively converts pretraining `.jsonl` and parquet files to one Megatron `.bin/.idx` dataset, using the HF tokenizer and appending `<EOS>` to every document.

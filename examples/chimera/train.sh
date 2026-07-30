@@ -3,7 +3,7 @@ set -euo pipefail
 
 # User inputs.
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-TRAIN_DATA_PATH="${TRAIN_DATA_PATH:-$SCRIPT_DIR/data/pretrain/overfit_text_document}"
+TRAIN_DATA_PATH="${TRAIN_DATA_PATH:-fineweb_edu_tokenized_text_document}"
 VALID_DATA_PATH="${VALID_DATA_PATH:-}"
 TOKENIZER_MODEL="${TOKENIZER_MODEL:-/datasets/megadata/hf_models/chimera-10b}"
 RUNS_ROOT="${RUNS_ROOT:-/datasets/megadata/chimera_runs}"
@@ -21,7 +21,7 @@ PP_SIZE="${PP_SIZE:-1}"
 EP_SIZE="${EP_SIZE:-1}"
 CP_SIZE="${CP_SIZE:-1}"
 MICRO_BATCH_SIZE="${MICRO_BATCH_SIZE:-4}"
-GLOBAL_BATCH_SIZE="${GLOBAL_BATCH_SIZE:-16}"
+GLOBAL_BATCH_SIZE="${GLOBAL_BATCH_SIZE:-512}"
 
 RUN_STAMP="${RUN_STAMP:-$(TZ='Asia/Kolkata' date +%Y%m%d_%H%M%S)}"
 RUN_DIR="${RUNS_ROOT}/${RUN_STAMP}"
@@ -109,7 +109,7 @@ MOE_ARGS=(
 DATA_ARGS=(
     --train-data-path "$TRAIN_DATA_PATH"
     --data-cache-path "$DATA_CACHE_PATH"
-    --num-workers 8
+    --num-workers 16
     --eod-mask-loss
 )
 if [[ -n "$VALID_DATA_PATH" ]]; then
@@ -127,13 +127,13 @@ fi
 TRAINING_ARGS=(
     --micro-batch-size "$MICRO_BATCH_SIZE"
     --global-batch-size "$GLOBAL_BATCH_SIZE"
-    --train-iters 10000
+    --train-iters 105000
     --lr 2e-4
     --min-lr 2e-5
     --lr-decay-style cosine
-    --lr-decay-iters 10000
-    --lr-warmup-iters 0
-    --weight-decay 0.0
+    --lr-decay-iters 99750
+    --lr-warmup-iters 5250
+    --weight-decay 0.1
     --clip-grad 1.0
     --adam-beta1 0.9
     --adam-beta2 0.95
@@ -163,10 +163,10 @@ PARALLEL_ARGS=(
 LOGGING_ARGS=(
     --save "$SAVE_PATH"
     --tensorboard-dir "$TENSORBOARD_DIR"
-    --save-interval 1000
+    --save-interval 10000
     --eval-interval 1000
     --eval-iters 0
-    --log-interval 1
+    --log-interval 10
     --log-throughput
     --exit-signal-handler
 )

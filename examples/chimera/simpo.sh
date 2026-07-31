@@ -20,22 +20,22 @@ EP_SIZE="${EP_SIZE:-1}"
 CP_SIZE="${CP_SIZE:-1}"
 
 # Training settings.
-SEQ_LENGTH="${SEQ_LENGTH:-8192}"
+SEQ_LENGTH="${SEQ_LENGTH:-2048}"
 MICRO_BATCH_SIZE="${MICRO_BATCH_SIZE:-1}"
-GLOBAL_BATCH_SIZE="${GLOBAL_BATCH_SIZE:-2}"
-TRAIN_ITERS="${TRAIN_ITERS:-1000}"
-LR="${LR:-1e-6}"
-MIN_LR="${MIN_LR:-1e-7}"
-LR_DECAY_ITERS="${LR_DECAY_ITERS:-$TRAIN_ITERS}"
-LR_WARMUP_ITERS="${LR_WARMUP_ITERS:-10}"
+GLOBAL_BATCH_SIZE="${GLOBAL_BATCH_SIZE:-96}"
+TRAIN_EPOCHS="${TRAIN_EPOCHS:-1}"
+TRAIN_ITERS="${TRAIN_ITERS:-}"
+LR="${LR:-8e-7}"
+MIN_LR="${MIN_LR:-0}"
+LR_WARMUP_ITERS="${LR_WARMUP_ITERS:-}"
 SAVE_INTERVAL="${SAVE_INTERVAL:-1000}"
 EVAL_INTERVAL="${EVAL_INTERVAL:-1000}"
 EVAL_ITERS="${EVAL_ITERS:-0}"
 SAVE_WEIGHTS_ONLY="${SAVE_WEIGHTS_ONLY:-false}"
 
 # SimPO settings.
-SIMPO_BETA="${SIMPO_BETA:-2.0}"
-SIMPO_GAMMA="${SIMPO_GAMMA:-0.5}"
+SIMPO_BETA="${SIMPO_BETA:-2.5}"
+SIMPO_GAMMA="${SIMPO_GAMMA:-0.55}"
 SIMPO_LOSS_TYPE="${SIMPO_LOSS_TYPE:-sigmoid}"
 SIMPO_SFT_WEIGHT="${SIMPO_SFT_WEIGHT:-0.0}"
 
@@ -49,6 +49,19 @@ LOG_DIR="${RUN_DIR}/logs"
 [[ -f "$DATA_PATH" ]] || { echo "Missing SimPO JSONL: $DATA_PATH"; exit 1; }
 [[ -d "$TOKENIZER_MODEL" || -f "$TOKENIZER_MODEL" ]] || { echo "Missing tokenizer model: $TOKENIZER_MODEL"; exit 1; }
 [[ -d "$MCORE_PATH" ]] || { echo "Missing MCore checkpoint path: $MCORE_PATH"; exit 1; }
+
+read -r DATASET_SAMPLES < <(wc -l < "$DATA_PATH")
+(( DATASET_SAMPLES > 0 )) || { echo "SimPO JSONL is empty: $DATA_PATH"; exit 1; }
+if [[ -z "$TRAIN_ITERS" ]]; then
+    TRAIN_ITERS=$(( (DATASET_SAMPLES * TRAIN_EPOCHS + GLOBAL_BATCH_SIZE - 1) / GLOBAL_BATCH_SIZE ))
+fi
+LR_DECAY_ITERS="$TRAIN_ITERS"
+if [[ -z "$LR_WARMUP_ITERS" ]]; then
+    LR_WARMUP_ITERS=$(( (TRAIN_ITERS * 10 + 99) / 100 ))
+    if (( LR_WARMUP_ITERS >= TRAIN_ITERS )); then
+        LR_WARMUP_ITERS=$(( TRAIN_ITERS - 1 ))
+    fi
+fi
 
 mkdir -p "$SAVE_PATH" "$TENSORBOARD_DIR" "$DATA_CACHE_PATH" "$LOG_DIR"
 
@@ -148,9 +161,9 @@ TRAINING_ARGS=(
     --use-distributed-optimizer
     --use-precision-aware-optimizer
     --main-params-dtype fp32
-    --main-grads-dtype bf16
-    --exp-avg-dtype bf16
-    --exp-avg-sq-dtype bf16
+    --main-grads-dtype fp32
+    --exp-avg-dtype fp32
+    --exp-avg-sq-dtype fp32
     --overlap-grad-reduce
 )
 
@@ -190,6 +203,9 @@ TP_SIZE=${TP_SIZE}
 PP_SIZE=${PP_SIZE}
 EP_SIZE=${EP_SIZE}
 CP_SIZE=${CP_SIZE}
+DATASET_SAMPLES=${DATASET_SAMPLES}
+TRAIN_EPOCHS=${TRAIN_EPOCHS}
+TRAIN_ITERS=${TRAIN_ITERS}
 MICRO_BATCH_SIZE=${MICRO_BATCH_SIZE}
 GLOBAL_BATCH_SIZE=${GLOBAL_BATCH_SIZE}
 EOF
@@ -203,7 +219,9 @@ echo "  Data JSONL:       $DATA_PATH"
 echo "  Load checkpoint:  $MCORE_PATH"
 echo "  Tokenizer:        $TOKENIZER_MODEL"
 echo "  Parallelism:      TP=$TP_SIZE PP=$PP_SIZE EP=$EP_SIZE ETP=1 CP=$CP_SIZE"
-echo "  Seq/batch/iters:  seq=$SEQ_LENGTH micro=$MICRO_BATCH_SIZE global=$GLOBAL_BATCH_SIZE iters=$TRAIN_ITERS"
+echo "  Data schedule:    samples=$DATASET_SAMPLES epochs=$TRAIN_EPOCHS iters=$TRAIN_ITERS"
+echo "  Seq/batch:        seq=$SEQ_LENGTH micro=$MICRO_BATCH_SIZE global=$GLOBAL_BATCH_SIZE"
+echo "  Optimizer:        lr=$LR min_lr=$MIN_LR warmup=$LR_WARMUP_ITERS wd=0 states=fp32"
 echo "  SimPO:            beta=$SIMPO_BETA gamma=$SIMPO_GAMMA loss=$SIMPO_LOSS_TYPE sft_weight=$SIMPO_SFT_WEIGHT"
 echo "  Packing:          disabled"
 

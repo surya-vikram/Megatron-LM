@@ -3,7 +3,7 @@ set -euo pipefail
 
 # User inputs.
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-TRAIN_DATA_PATH="${TRAIN_DATA_PATH:-fineweb_edu_tokenized_text_document}"
+TRAIN_DATA_PATH="${TRAIN_DATA_PATH:-$SCRIPT_DIR/data/pretrain/overfit_text_document}"
 VALID_DATA_PATH="${VALID_DATA_PATH:-}"
 TOKENIZER_MODEL="${TOKENIZER_MODEL:-/datasets/megadata/hf_models/chimera-10b}"
 RUNS_ROOT="${RUNS_ROOT:-/datasets/megadata/chimera_runs}"
@@ -21,7 +21,7 @@ PP_SIZE="${PP_SIZE:-1}"
 EP_SIZE="${EP_SIZE:-1}"
 CP_SIZE="${CP_SIZE:-1}"
 MICRO_BATCH_SIZE="${MICRO_BATCH_SIZE:-4}"
-GLOBAL_BATCH_SIZE="${GLOBAL_BATCH_SIZE:-512}"
+GLOBAL_BATCH_SIZE="${GLOBAL_BATCH_SIZE:-576}"
 
 RUN_STAMP="${RUN_STAMP:-$(TZ='Asia/Kolkata' date +%Y%m%d_%H%M%S)}"
 RUN_DIR="${RUNS_ROOT}/${RUN_STAMP}"
@@ -40,6 +40,9 @@ fi
 if [[ -n "$LOAD_CHECKPOINT" && ! -f "$LOAD_CHECKPOINT/latest_checkpointed_iteration.txt" ]]; then
     echo "Invalid checkpoint root: $LOAD_CHECKPOINT"
     exit 1
+fi
+if [[ "$GLOBAL_BATCH_SIZE" -ne 576 ]]; then
+    echo "Warning: the 2T iteration and WSD schedule is calibrated for GLOBAL_BATCH_SIZE=576; recalculate schedule iterations for $GLOBAL_BATCH_SIZE." >&2
 fi
 
 mkdir -p "$SAVE_PATH" "$TENSORBOARD_DIR" "$DATA_CACHE_PATH" "$LOG_DIR"
@@ -109,7 +112,7 @@ MOE_ARGS=(
 DATA_ARGS=(
     --train-data-path "$TRAIN_DATA_PATH"
     --data-cache-path "$DATA_CACHE_PATH"
-    --num-workers 16
+    --num-workers 8
     --eod-mask-loss
 )
 if [[ -n "$VALID_DATA_PATH" ]]; then
@@ -127,25 +130,27 @@ fi
 TRAINING_ARGS=(
     --micro-batch-size "$MICRO_BATCH_SIZE"
     --global-batch-size "$GLOBAL_BATCH_SIZE"
-    --train-iters 105000
-    --lr 2e-4
-    --min-lr 2e-5
-    --lr-decay-style cosine
-    --lr-decay-iters 99750
-    --lr-warmup-iters 5250
+    --train-iters 423856
+    --lr 3e-4
+    --min-lr 3e-6
+    --lr-decay-style WSD
+    --lr-wsd-decay-style minus_sqrt
+    --lr-wsd-decay-iters 84771
+    --lr-warmup-iters 1695
     --weight-decay 0.1
     --clip-grad 1.0
     --adam-beta1 0.9
     --adam-beta2 0.95
+    --adam-eps 1e-8
     --attention-softmax-in-fp32
     --manual-gc
     --manual-gc-interval 100
     --use-distributed-optimizer
     --use-precision-aware-optimizer
     --main-params-dtype fp32
-    --main-grads-dtype bf16
-    --exp-avg-dtype bf16
-    --exp-avg-sq-dtype bf16
+    --main-grads-dtype fp32
+    --exp-avg-dtype fp32
+    --exp-avg-sq-dtype fp32
     --fused-linear-cross-entropy
     --cuda-graph-impl transformer_engine
     --cuda-graph-modules attn
@@ -163,13 +168,17 @@ PARALLEL_ARGS=(
 LOGGING_ARGS=(
     --save "$SAVE_PATH"
     --tensorboard-dir "$TENSORBOARD_DIR"
-    --save-interval 10000
+    --save-interval 5000
     --eval-interval 1000
-    --eval-iters 0
-    --log-interval 10
+    --log-interval 1
     --log-throughput
     --exit-signal-handler
 )
+if [[ -n "$VALID_DATA_PATH" ]]; then
+    LOGGING_ARGS+=(--eval-iters 4)
+else
+    LOGGING_ARGS+=(--eval-iters 0)
+fi
 if [[ -n "$LOAD_CHECKPOINT" ]]; then
     LOGGING_ARGS+=(
         --load "$LOAD_CHECKPOINT"
@@ -220,7 +229,10 @@ echo "  Parallelism:      TP=$TP_SIZE PP=$PP_SIZE EP=$EP_SIZE ETP=1 CP=$CP_SIZE"
 echo "  Architecture:     layers=25 moe_layer_freq=[0]*2+[1]*23"
 echo "  Router:           seq_aux_loss aux=1e-4 bias_rate=1e-3 scale=2.5 z_loss=1e-3"
 echo "  Router logging:   inline interval=1000 raw_expert_files=false"
-echo "  Seq/batch/iters:  seq=8192 micro=$MICRO_BATCH_SIZE global=$GLOBAL_BATCH_SIZE iters=10000"
+echo "  Seq/batch/iters:  seq=8192 micro=$MICRO_BATCH_SIZE global=$GLOBAL_BATCH_SIZE iters=423856"
+echo "  LR schedule:      WSD peak=3e-4 min=3e-6 warmup=1695 decay=84771 style=minus_sqrt"
+echo "  Optimizer:        AdamW beta1=0.9 beta2=0.95 eps=1e-8 wd=0.1 states=fp32"
+echo "  Token budget:     approximately 2.0T at global_batch=576"
 echo "  Attention:        backend=flash external_flash_attn=false cuda_graph=TE:attn"
 echo "  Intra-doc mask:   $INTRA_DOC_MASKING"
 echo "  Document loss:    predict_eos=true post_eos_target=false"

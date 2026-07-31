@@ -146,7 +146,7 @@ load_config() {
         if (( NNODES == 1 )); then
             MASTER_ADDR=127.0.0.1
         else
-            MASTER_ADDR=$(getent ahostsv4 "$MASTER_NODE" 2>/dev/null | awk 'NR == 1 {print $1}')
+            MASTER_ADDR=$(getent ahostsv4 "$MASTER_NODE" 2>/dev/null | awk 'NR == 1 {print $1}' || true)
             [[ -n "$MASTER_ADDR" ]] || die "cannot resolve MASTER_NODE=$MASTER_NODE; set MASTER_ADDR explicitly"
         fi
     fi
@@ -189,8 +189,30 @@ run_node() {
     if is_local_node "$node"; then
         "$@"
     else
-        ssh -o BatchMode=yes -o ConnectTimeout="$SSH_CONNECT_TIMEOUT" "$node" "$@"
+        local remote_command
+        printf -v remote_command '%q ' "$@"
+        ssh -o BatchMode=yes -o ConnectTimeout="$SSH_CONNECT_TIMEOUT" \
+            "$node" "${remote_command% }"
     fi
+}
+
+run_node_script() {
+    local node="$1"
+    local script="$2"
+    shift 2
+
+    local assignment name value quoted payload=""
+    for assignment in "$@"; do
+        [[ "$assignment" == *=* ]] || die "invalid remote assignment: $assignment"
+        name=${assignment%%=*}
+        value=${assignment#*=}
+        [[ "$name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || die "invalid remote variable name: $name"
+        printf -v quoted '%q' "$value"
+        payload+="export $name=$quoted"$'\n'
+    done
+
+    payload+="$script"$'\n'
+    run_node "$node" bash -s <<< "$payload"
 }
 
 validate_topology() {
@@ -280,23 +302,6 @@ stage_host_paths() {
 
 image_check_node() {
     local node="$1"
-    local gpu_args=""
-    if is_true "$ENABLE_GPU"; then
-        gpu_args="--gpus all"
-    fi
-
-    local command
-    printf -v command '%q ' docker run --rm $gpu_args \
-        --network host --ipc host \
-        --mount "type=bind,src=$HOST_REPOS,dst=$CONTAINER_REPOS" \
-        --mount "type=bind,src=$HOST_DATA,dst=$CONTAINER_DATA" \
-        --env "VIRTUAL_ENV=/workspace/venv" \
-        --env "HF_HOME=$CONTAINER_DATA/cache/huggingface" \
-        --env "CONTAINER_REPOS=$CONTAINER_REPOS" \
-        --env "PYTHONPATH=$CONTAINER_REPOS/Megatron-LM:$CONTAINER_REPOS/Megatron-Bridge/src:$CONTAINER_REPOS/transformers/src" \
-        --workdir "$CONTAINER_REPOS/Megatron-LM" \
-        "$IMAGE" bash -lc
-
     local check_script
     read -r -d '' check_script <<'CHECK' || true
 set -euo pipefail
@@ -323,8 +328,37 @@ for script in train.sh sft.sh simpo.sh; do
     bash -n "$CONTAINER_REPOS/Megatron-LM/examples/chimera/$script"
 done
 CHECK
-    command+=$(q "$check_script")
-    run_node "$node" bash -lc "$command"
+
+    local remote_script
+    read -r -d '' remote_script <<'REMOTE' || true
+set -euo pipefail
+args=(
+    run --rm
+    --network host
+    --ipc host
+    --mount "type=bind,src=$HOST_REPOS,dst=$CONTAINER_REPOS"
+    --mount "type=bind,src=$HOST_DATA,dst=$CONTAINER_DATA"
+    --env "VIRTUAL_ENV=/workspace/venv"
+    --env "HF_HOME=$CONTAINER_DATA/cache/huggingface"
+    --env "CONTAINER_REPOS=$CONTAINER_REPOS"
+    --env "PYTHONPATH=$CONTAINER_REPOS/Megatron-LM:$CONTAINER_REPOS/Megatron-Bridge/src:$CONTAINER_REPOS/transformers/src"
+    --workdir "$CONTAINER_REPOS/Megatron-LM"
+)
+if [[ "$ENABLE_GPU" == true ]]; then
+    args+=(--gpus all)
+fi
+args+=("$IMAGE" bash -lc "$CHECK_SCRIPT")
+docker "${args[@]}"
+REMOTE
+
+    run_node_script "$node" "$remote_script" \
+        "HOST_REPOS=$HOST_REPOS" \
+        "HOST_DATA=$HOST_DATA" \
+        "CONTAINER_REPOS=$CONTAINER_REPOS" \
+        "CONTAINER_DATA=$CONTAINER_DATA" \
+        "ENABLE_GPU=$ENABLE_GPU" \
+        "IMAGE=$IMAGE" \
+        "CHECK_SCRIPT=$check_script"
 }
 
 preflight_node() {
@@ -361,10 +395,16 @@ done <<< "$REQUIRED_PATHS"
 for repo in Megatron-LM Megatron-Bridge transformers; do
     [[ -d "$HOST_REPOS/$repo/.git" ]] || { echo "FAIL: missing Git checkout: $HOST_REPOS/$repo"; fail=1; }
 done
-[[ -L "$HOST_REPOS/Megatron-Bridge/3rdparty/Megatron-LM" ]] || {
-    echo "FAIL: Bridge Megatron-LM symlink is missing"
+bridge_link="$HOST_REPOS/Megatron-Bridge/3rdparty/Megatron-LM"
+if [[ -e "$bridge_link" && ! -L "$bridge_link" ]]; then
+    echo "FAIL: Bridge Megatron-LM path exists but is not a symlink"
     fail=1
-}
+else
+    ln -sfn ../../Megatron-LM "$bridge_link" || {
+        echo "FAIL: could not create Bridge Megatron-LM symlink"
+        fail=1
+    }
+fi
 
 if [[ "$ENABLE_GPU" == true ]]; then
     command -v nvidia-smi >/dev/null 2>&1 || { echo "FAIL: nvidia-smi is missing"; fail=1; }
@@ -397,9 +437,18 @@ df -h "$HOST_DATA" /var/lib/docker 2>/dev/null || true
 echo "PREFLIGHT_RESULT=PASS"
 REMOTE
 
-    local prefix
-    prefix="IMAGE=$(q "$IMAGE") CONTAINER_NAME=$(q "$container_name") REQUIRED_PATHS=$(q "$required_paths") HOST_REPOS=$(q "$HOST_REPOS") HOST_DATA=$(q "$HOST_DATA") ENABLE_GPU=$(q "$ENABLE_GPU") ENABLE_IB=$(q "$ENABLE_IB") GPUS_PER_NODE=$(q "$GPUS_PER_NODE") ALLOW_BUSY_GPUS=$(q "$ALLOW_BUSY_GPUS") NODE_RANK=$(q "$rank") MASTER_PORT=$(q "$MASTER_PORT")"
-    run_node "$node" bash -lc "$prefix bash -s" <<< "$remote_script"
+    run_node_script "$node" "$remote_script" \
+        "IMAGE=$IMAGE" \
+        "CONTAINER_NAME=$container_name" \
+        "REQUIRED_PATHS=$required_paths" \
+        "HOST_REPOS=$HOST_REPOS" \
+        "HOST_DATA=$HOST_DATA" \
+        "ENABLE_GPU=$ENABLE_GPU" \
+        "ENABLE_IB=$ENABLE_IB" \
+        "GPUS_PER_NODE=$GPUS_PER_NODE" \
+        "ALLOW_BUSY_GPUS=$ALLOW_BUSY_GPUS" \
+        "NODE_RANK=$rank" \
+        "MASTER_PORT=$MASTER_PORT"
 }
 
 cmd_preflight() {
@@ -596,9 +645,40 @@ args+=("$IMAGE" bash -lc "$container_command")
 docker "${args[@]}"
 REMOTE
 
-    local prefix
-    prefix="CONTAINER_NAME=$(q "$container_name") NODE_NAME=$(q "$node") NODE_RANK=$(q "$rank") FORCE=$(q "$FORCE") HOST_REPOS=$(q "$HOST_REPOS") HOST_DATA=$(q "$HOST_DATA") CONTAINER_REPOS=$(q "$CONTAINER_REPOS") CONTAINER_DATA=$(q "$CONTAINER_DATA") STAGE=$(q "$STAGE") RUN_NAME=$(q "$RUN_NAME") RUNS_ROOT=$(q "$RUNS_ROOT") TOKENIZER_MODEL=$(q "$TOKENIZER_MODEL") TRAIN_DATA_PATH=$(q "$TRAIN_DATA_PATH") VALID_DATA_PATH=$(q "$VALID_DATA_PATH") LOAD_CHECKPOINT=$(q "$LOAD_CHECKPOINT") DATA_PATH=$(q "$DATA_PATH") MCORE_PATH=$(q "$MCORE_PATH") NNODES=$(q "$NNODES") GPUS_PER_NODE=$(q "$GPUS_PER_NODE") MASTER_ADDR=$(q "$MASTER_ADDR") MASTER_PORT=$(q "$MASTER_PORT") TP_SIZE=$(q "$TP_SIZE") PP_SIZE=$(q "$PP_SIZE") EP_SIZE=$(q "$EP_SIZE") CP_SIZE=$(q "$CP_SIZE") MICRO_BATCH_SIZE=$(q "$MICRO_BATCH_SIZE") GLOBAL_BATCH_SIZE=$(q "$GLOBAL_BATCH_SIZE") ENABLE_GPU=$(q "$ENABLE_GPU") ENABLE_IB=$(q "$ENABLE_IB") NCCL_SOCKET_IFNAME=$(q "$NCCL_SOCKET_IFNAME") NCCL_IB_HCA=$(q "$NCCL_IB_HCA") NCCL_DEBUG=$(q "$NCCL_DEBUG") IMAGE=$(q "$IMAGE")"
-    run_node "$node" bash -lc "$prefix bash -s" <<< "$remote_script"
+    run_node_script "$node" "$remote_script" \
+        "CONTAINER_NAME=$container_name" \
+        "NODE_NAME=$node" \
+        "NODE_RANK=$rank" \
+        "FORCE=$FORCE" \
+        "HOST_REPOS=$HOST_REPOS" \
+        "HOST_DATA=$HOST_DATA" \
+        "CONTAINER_REPOS=$CONTAINER_REPOS" \
+        "CONTAINER_DATA=$CONTAINER_DATA" \
+        "STAGE=$STAGE" \
+        "RUN_NAME=$RUN_NAME" \
+        "RUNS_ROOT=$RUNS_ROOT" \
+        "TOKENIZER_MODEL=$TOKENIZER_MODEL" \
+        "TRAIN_DATA_PATH=$TRAIN_DATA_PATH" \
+        "VALID_DATA_PATH=$VALID_DATA_PATH" \
+        "LOAD_CHECKPOINT=$LOAD_CHECKPOINT" \
+        "DATA_PATH=$DATA_PATH" \
+        "MCORE_PATH=$MCORE_PATH" \
+        "NNODES=$NNODES" \
+        "GPUS_PER_NODE=$GPUS_PER_NODE" \
+        "MASTER_ADDR=$MASTER_ADDR" \
+        "MASTER_PORT=$MASTER_PORT" \
+        "TP_SIZE=$TP_SIZE" \
+        "PP_SIZE=$PP_SIZE" \
+        "EP_SIZE=$EP_SIZE" \
+        "CP_SIZE=$CP_SIZE" \
+        "MICRO_BATCH_SIZE=$MICRO_BATCH_SIZE" \
+        "GLOBAL_BATCH_SIZE=$GLOBAL_BATCH_SIZE" \
+        "ENABLE_GPU=$ENABLE_GPU" \
+        "ENABLE_IB=$ENABLE_IB" \
+        "NCCL_SOCKET_IFNAME=$NCCL_SOCKET_IFNAME" \
+        "NCCL_IB_HCA=$NCCL_IB_HCA" \
+        "NCCL_DEBUG=$NCCL_DEBUG" \
+        "IMAGE=$IMAGE"
 }
 
 cmd_dry_run() {

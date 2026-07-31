@@ -140,7 +140,7 @@ TRAINING_ARGS=(
     --lr-decay-style cosine
     --lr-decay-iters "$LR_DECAY_ITERS"
     --lr-warmup-iters "$LR_WARMUP_ITERS"
-    --weight-decay 0.1
+    --weight-decay 0.0
     --clip-grad 1.0
     --adam-beta1 0.9
     --adam-beta2 0.95
@@ -211,7 +211,7 @@ echo "  Tokenizer:        $TOKENIZER_MODEL"
 echo "  Parallelism:      TP=$TP_SIZE PP=$PP_SIZE EP=$EP_SIZE ETP=1 CP=$CP_SIZE"
 echo "  Data schedule:    samples=$DATASET_SAMPLES epochs=$TRAIN_EPOCHS iters=$TRAIN_ITERS"
 echo "  Seq/batch:        seq=$SEQ_LENGTH micro=$MICRO_BATCH_SIZE global=$GLOBAL_BATCH_SIZE"
-echo "  Optimizer:        lr=$LR min_lr=$MIN_LR warmup=$LR_WARMUP_ITERS wd=0.1 states=fp32"
+echo "  Optimizer:        lr=$LR min_lr=$MIN_LR warmup=$LR_WARMUP_ITERS wd=0 states=fp32"
 echo "  Packing:          disabled"
 
 exec python3 -m torch.distributed.run "${DISTRIBUTED_ARGS[@]}" \

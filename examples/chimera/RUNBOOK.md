@@ -309,16 +309,16 @@ p = Path("examples/chimera/train.sh")
 s = p.read_text()
 replacements = {
     "--seq-length 8192": "--seq-length 512",
-    "--micro-batch-size 4": "--micro-batch-size 1",
-    "--global-batch-size 16": "--global-batch-size 2",
-    "--train-iters 10000": "--train-iters 400",
-    "--lr 2e-4": "--lr 1e-3",
-    "--min-lr 2e-5": "--min-lr 1e-4",
-    "--lr-decay-iters 10000": "--lr-decay-iters 400",
-    "--expert-model-parallel-size 1": "--expert-model-parallel-size 2",
-    "--eval-iters 0\n": "--eval-iters 0\n    --no-save-optim\n    --no-save-rng\n",
-    "TP=1 PP=1 EP=1 ETP=1 CP=1": "TP=1 PP=1 EP=2 ETP=1 CP=1",
-    "seq=8192 micro=4 global=16 iters=10000": "seq=512 micro=1 global=2 iters=400",
+    "--train-iters 423856": "--train-iters 400",
+    "--lr 3e-4": "--lr 1e-3",
+    "--min-lr 3e-6": "--min-lr 1e-4",
+    "--lr-decay-style WSD": "--lr-decay-style cosine",
+    "    --lr-wsd-decay-style minus_sqrt\n": "",
+    "    --lr-wsd-decay-iters 84771\n": "",
+    "--lr-warmup-iters 1695": "--lr-warmup-iters 0",
+    "--weight-decay 0.1": "--weight-decay 0.0",
+    "--save-interval 5000": "--save-interval 1000\n    --no-save-optim\n    --no-save-rng",
+    "seq=8192 micro=$MICRO_BATCH_SIZE global=$GLOBAL_BATCH_SIZE iters=423856": "seq=512 micro=$MICRO_BATCH_SIZE global=$GLOBAL_BATCH_SIZE iters=400",
 }
 for old, new in replacements.items():
     if old not in s:
@@ -334,9 +334,12 @@ Run random-init pretraining:
 
 ```bash
 export PRETRAIN_RUNS=$DATA_ROOT/pretrain_runs
-DATA_PATH="$DATA_PREFIX" \
+TRAIN_DATA_PATH="$DATA_PREFIX" \
 TOKENIZER_MODEL="$HF_REFERENCE" \
 RUNS_ROOT="$PRETRAIN_RUNS" \
+MICRO_BATCH_SIZE=1 \
+GLOBAL_BATCH_SIZE=2 \
+EP_SIZE=2 \
 bash examples/chimera/train.sh
 
 export PRETRAIN_RUN_DIR=$(ls -td "$PRETRAIN_RUNS"/* | head -n 1)

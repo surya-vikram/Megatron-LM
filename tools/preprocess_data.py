@@ -131,7 +131,6 @@ def format_duration(seconds):
 def iter_input_records(input_files, json_keys, parquet_batch_size=1024):
     """Yield JSON lines or parquet rows from a deterministic list of files."""
     for input_file_name in input_files:
-        print('Opening', input_file_name)
         if input_file_name.lower().endswith(('.jsonl', '.jsonl.tmp')):
             with open(input_file_name, 'r', encoding='utf-8') as fin:
                 yield from fin

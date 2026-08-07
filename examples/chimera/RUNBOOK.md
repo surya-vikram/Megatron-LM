@@ -267,6 +267,45 @@ avoid the initial JSONL line scan; percentage and ETA are then unavailable.
 ETA is a smoothed estimate based on documents per second, so it will move when
 document lengths or tokenizer cost vary across shards.
 
+### Optimized preprocessing (opt-in)
+
+The commands above remain the default and run `tools/preprocess_data.py`. For
+large datasets, add `--optimized` to run dedicated reader, tokenizer, and
+shard-writer process pools. The optimized path splits JSONL files into
+newline-safe byte ranges and parquet files into row-group tasks, connects the
+stages with byte-bounded queues, and merges independent writer shards into one
+final `.bin/.idx` pair:
+
+```bash
+export PREPROCESS_READERS=10
+export PREPROCESS_TOKENIZERS=192
+export PREPROCESS_WRITERS=6
+export PREPROCESS_QUEUE_MEMORY_BUDGET_GB=280
+
+cd "$MEGATRON_LM"
+bash examples/chimera/preprocess.sh \
+  --optimized \
+  --input "$PRETRAIN_SOURCE_DIR" \
+  --output-prefix "$PRETRAIN_OUTPUT_DIR/fineweb_edu" \
+  --tokenizer-model "$HF_REFERENCE" \
+  --num-readers "$PREPROCESS_READERS" \
+  --num-tokenizers "$PREPROCESS_TOKENIZERS" \
+  --num-writers "$PREPROCESS_WRITERS" \
+  --queue-memory-budget-gb "$PREPROCESS_QUEUE_MEMORY_BUDGET_GB" \
+  --log-interval-seconds 30 \
+  --python "$PYTHON"
+```
+
+The three optimized process counts are independent; there is no separate total
+for this path. On the 240-logical-CPU reference host, `10 + 192 + 6 = 208`
+leaves 32 logical CPUs for the coordinator, runtime threads, filesystem work,
+and the operating system. The queue-memory budget is divided equally between
+raw and encoded queue byte credits, so `280` permits up to 140 GiB of estimated
+payload in each queue. It does not include tokenizer-process or PyArrow memory.
+Optimized progress logs show documents read, tokenized, and written; tokens
+written; both queue depths; and token throughput. The final `PIPELINE_SUMMARY`
+separates processing, shard-merge, and total time.
+
 Inspect exactly what Megatron reads. Each decoded document must end in `<EOS>`;
 there must be no inserted `<BOS>`:
 

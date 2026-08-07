@@ -6,6 +6,11 @@ INPUT="$SCRIPT_DIR/data/pretrain/overfit.jsonl"
 OUTPUT_PREFIX="$SCRIPT_DIR/data/pretrain/overfit"
 TOKENIZER_MODEL="/datasets/megadata/hf_models/chimera-10b"
 WORKERS=8
+OPTIMIZED=false
+NUM_TOKENIZERS=""
+NUM_READERS=""
+NUM_WRITERS=""
+QUEUE_MEMORY_BUDGET_GB=""
 LOG_INTERVAL=1000
 LOG_INTERVAL_SECONDS=30
 PARQUET_BATCH_SIZE=1024
@@ -20,7 +25,13 @@ Options:
   --input PATH           A .jsonl/.parquet file, glob, or recursively scanned directory.
   --output-prefix PATH   Output prefix before _text_document.{bin,idx}.
   --tokenizer-model PATH HF Chimera tokenizer/model directory.
-  --workers N            Number of preprocessing workers.
+  --workers N            Legacy preprocessing workers (default: 8).
+  --optimized            Use dedicated reader/tokenizer/writer process pools.
+  --num-readers N        Reader processes (required with --optimized).
+  --num-tokenizers N     Tokenizer processes (required with --optimized).
+  --num-writers N        Writer/shard processes (required with --optimized).
+  --queue-memory-budget-gb N
+                         Queue-sizing memory budget (required with --optimized).
   --log-interval N       Check progress every N documents (default: 1000).
   --log-interval-seconds N
                          Minimum seconds between progress logs (default: 30).
@@ -36,6 +47,11 @@ while [[ $# -gt 0 ]]; do
         --output-prefix) OUTPUT_PREFIX="$2"; shift 2 ;;
         --tokenizer-model) TOKENIZER_MODEL="$2"; shift 2 ;;
         --workers) WORKERS="$2"; shift 2 ;;
+        --optimized) OPTIMIZED=true; shift ;;
+        --num-tokenizers) NUM_TOKENIZERS="$2"; shift 2 ;;
+        --num-readers) NUM_READERS="$2"; shift 2 ;;
+        --num-writers) NUM_WRITERS="$2"; shift 2 ;;
+        --queue-memory-budget-gb) QUEUE_MEMORY_BUDGET_GB="$2"; shift 2 ;;
         --log-interval) LOG_INTERVAL="$2"; shift 2 ;;
         --log-interval-seconds) LOG_INTERVAL_SECONDS="$2"; shift 2 ;;
         --parquet-batch-size) PARQUET_BATCH_SIZE="$2"; shift 2 ;;
@@ -65,6 +81,26 @@ mkdir -p "$(dirname "$OUTPUT_PREFIX")"
 COUNT_ARGS=()
 if [[ "$SKIP_DOCUMENT_COUNT" == true ]]; then
     COUNT_ARGS+=(--skip-document-count)
+fi
+
+if [[ "$OPTIMIZED" == true ]]; then
+    [[ -n "$NUM_READERS" ]] || { echo "--num-readers is required with --optimized"; exit 1; }
+    [[ -n "$NUM_TOKENIZERS" ]] || { echo "--num-tokenizers is required with --optimized"; exit 1; }
+    [[ -n "$NUM_WRITERS" ]] || { echo "--num-writers is required with --optimized"; exit 1; }
+    [[ -n "$QUEUE_MEMORY_BUDGET_GB" ]] || { echo "--queue-memory-budget-gb is required with --optimized"; exit 1; }
+    "$PYTHON_BIN" tools/preprocess_data_pipeline.py \
+        --input "$INPUT" \
+        --output-prefix "$OUTPUT_PREFIX" \
+        --tokenizer-type HuggingFaceTokenizer \
+        --tokenizer-model "$TOKENIZER_MODEL" \
+        --num-readers "$NUM_READERS" \
+        --num-tokenizers "$NUM_TOKENIZERS" \
+        --num-writers "$NUM_WRITERS" \
+        --queue-memory-budget-gb "$QUEUE_MEMORY_BUDGET_GB" \
+        --append-eod \
+        --log-interval-seconds "$LOG_INTERVAL_SECONDS"
+    echo "Data prefix: ${OUTPUT_PREFIX}_text_document"
+    exit 0
 fi
 
 "$PYTHON_BIN" tools/preprocess_data.py \

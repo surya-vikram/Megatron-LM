@@ -9,6 +9,8 @@ TOKENIZER_MODEL="${TOKENIZER_MODEL:-/datasets/megadata/hf_models/chimera-10b}"
 RUNS_ROOT="${RUNS_ROOT:-/datasets/megadata/chimera_440b_runs}"
 INTRA_DOC_MASKING="${INTRA_DOC_MASKING:-false}"
 LOAD_CHECKPOINT="${LOAD_CHECKPOINT:-}"
+OPTIMIZER="${OPTIMIZER:-muon}"
+MUON_NUM_NS_STEPS="${MUON_NUM_NS_STEPS:-6}"
 
 # Distributed launch settings.
 GPUS_PER_NODE="${GPUS_PER_NODE:-$(nvidia-smi -L | wc -l)}"
@@ -146,17 +148,25 @@ TRAINING_ARGS=(
     --manual-gc
     --manual-gc-interval 100
     --use-distributed-optimizer
-    --use-precision-aware-optimizer
-    --main-params-dtype fp32
-    --main-grads-dtype fp32
-    --exp-avg-dtype fp32
-    --exp-avg-sq-dtype fp32
+    --optimizer "$OPTIMIZER"
     --fused-linear-cross-entropy
     --cuda-graph-impl transformer_engine
     --cuda-graph-modules attn
     --overlap-grad-reduce
     # --overlap-param-gather
 )
+
+if [[ "$OPTIMIZER" == "muon" || "$OPTIMIZER" == "adaptive_muon" ]]; then
+    TRAINING_ARGS+=(--muon-num-ns-steps "$MUON_NUM_NS_STEPS")
+else
+    TRAINING_ARGS+=(
+        --use-precision-aware-optimizer
+        --main-params-dtype fp32
+        --main-grads-dtype fp32
+        --exp-avg-dtype fp32
+        --exp-avg-sq-dtype fp32
+    )
+fi
 
 PARALLEL_ARGS=(
     --tensor-model-parallel-size "$TP_SIZE"

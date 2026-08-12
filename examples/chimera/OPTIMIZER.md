@@ -163,11 +163,14 @@ Storing 1st-moment momentum $M_t$ in **BF16 (`bfloat16`)** with hybrid FP32 upca
 |---|---|---|---|---|---|
 | **AdamW Baseline** | `994.8 MB` | `2,754.0 MB` | `416.9 ms/step` | `6.2520` | `7.1090` |
 | **Muon FP32 Momentum (6-NS)** | `1,511.8 MB` | `3,271.0 MB` | `462.7 ms/step` | `5.8369` | `6.7816` |
+| **AdaMuon FP32 Momentum (M1)** | `1,511.8 MB` | `3,271.0 MB` | `461.2 ms/step` | `6.1611` | `7.0333` |
+| **AdaMuon BF16 Momentum (M1)** 🛡️ | **`1,449.3 MB`** 💾 | **`2,852.1 MB`** 🚀 | **`458.1 ms/step`** ⚡ | **`6.1602`** 🛡️ | **`7.0330`** 🛡️ |
 | **Muon BF16 Momentum (6-NS)** 🏆 | **`1,449.3 MB`** 💾 | **`2,852.1 MB`** 🚀 | **`448.2 ms/step`** ⚡ | **`5.8252`** 🏆 | **`6.7859`** 🏆 |
 
 ### 🚀 Production Highlights
-- **💾 Max Peak VRAM Savings**: Reduces peak step VRAM by **`418.9 MB`** on Tiny Chimera (**`-20 GB`** at 10B/440B scale).
+- **💾 Max Peak VRAM Savings**: Reduces peak step VRAM by **`418.9 MB`** across both Muon and AdaMuon on Tiny Chimera (**`-20 GB`** at 10B/440B scale).
 - **⚡ Step Execution Speedup**: **`3.1% faster step execution`** (`448.2 ms/step` vs `462.7 ms/step`) due to 50% lower memory bandwidth read/write volume.
 - **🛡️ Noise Tolerance Integrity**: Achieves identical loss recovery under 10% corrupted data without rank collapse or numerical instability.
+
 
 

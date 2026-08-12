@@ -16,6 +16,39 @@ from functools import partial
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
 import torch
+import torch.distributed
+
+def _make_safe_dist():
+    for name in ['barrier', 'all_reduce', 'broadcast', 'all_gather', 'all_gather_object', 'all_gather_into_tensor', 'reduce_scatter_tensor', 'broadcast_object_list']:
+        if hasattr(torch.distributed, name):
+            orig = getattr(torch.distributed, name)
+            def make_wrapper(fn_name, orig_fn):
+                def safe_fn(*args, **kwargs):
+                    group = kwargs.get('group', None)
+                    if torch.distributed.is_initialized() and torch.distributed.get_world_size(group=group) > 1:
+                        return orig_fn(*args, **kwargs)
+                    if fn_name == 'all_gather_object':
+                        obj_list = args[0] if len(args) > 0 else kwargs.get('object_list')
+                        obj = args[1] if len(args) > 1 else kwargs.get('obj')
+                        if obj_list is not None and len(obj_list) > 0:
+                            obj_list[0] = obj
+                    elif fn_name == 'all_gather':
+                        out_list = args[0] if len(args) > 0 else kwargs.get('tensor_list', kwargs.get('output_tensor_list', kwargs.get('output')))
+                        inp = args[1] if len(args) > 1 else kwargs.get('tensor', kwargs.get('input'))
+                        if isinstance(out_list, list) and len(out_list) > 0 and inp is not None:
+                            out_list[0].copy_(inp)
+                        elif hasattr(out_list, 'copy_') and inp is not None:
+                            out_list.copy_(inp)
+                    elif fn_name in ('all_gather_into_tensor', 'reduce_scatter_tensor'):
+                        out = args[0] if len(args) > 0 else kwargs.get('output')
+                        inp = args[1] if len(args) > 1 else kwargs.get('input')
+                        if out is not None and inp is not None:
+                            out.copy_(inp)
+                    return None
+                return safe_fn
+            setattr(torch.distributed, name, make_wrapper(name, orig))
+
+_make_safe_dist()
 
 from gpt_builders import gpt_builder
 from megatron.core.datasets.blended_megatron_dataset_builder import BlendedMegatronDatasetBuilder
@@ -46,30 +79,27 @@ except ImportError:
     HAS_NVIDIA_MODELOPT = False
 
 
-CHIMERA_YARN = {
-    "yarn_rotary_scaling_factor": 4.0,
-    "yarn_original_max_position_embeddings": 8192,
-    "yarn_beta_fast": 32.0,
-    "yarn_beta_slow": 1.0,
-    "yarn_mscale": None,
-    "yarn_mscale_all_dim": None,
-    "yarn_correction_range_round_to_int": False,
-}
-
-
 def apply_chimera_yarn_args(args):
     """Attach Chimera YaRN metadata to args for config creation and checkpoint metadata."""
-    for name, value in CHIMERA_YARN.items():
-        setattr(args, name, value)
+    scaling_factor = getattr(args, "rotary_scaling_factor", None)
+    if scaling_factor is None:
+        scaling_factor = 1.0
+    orig_max_pos = getattr(args, "max_position_embeddings", 8192)
+    mscale_val = getattr(args, "mscale", 1.0)
+    mscale_all_dim_val = getattr(args, "mscale_all_dim", 0.0)
 
-    # TransformerConfig also carries non-prefixed YaRN fields. Set both naming
-    # conventions because GPTModel currently reads the prefixed attributes.
-    args.rotary_scaling_factor = CHIMERA_YARN["yarn_rotary_scaling_factor"]
-    args.original_max_position_embeddings = CHIMERA_YARN["yarn_original_max_position_embeddings"]
-    args.beta_fast = CHIMERA_YARN["yarn_beta_fast"]
-    args.beta_slow = CHIMERA_YARN["yarn_beta_slow"]
-    args.mscale = CHIMERA_YARN["yarn_mscale"]
-    args.mscale_all_dim = CHIMERA_YARN["yarn_mscale_all_dim"]
+    args.yarn_rotary_scaling_factor = scaling_factor
+    args.yarn_original_max_position_embeddings = orig_max_pos
+    args.yarn_beta_fast = getattr(args, "yarn_beta_fast", 32.0)
+    args.yarn_beta_slow = getattr(args, "yarn_beta_slow", 1.0)
+    args.yarn_mscale = mscale_val
+    args.yarn_mscale_all_dim = mscale_all_dim_val
+    args.yarn_correction_range_round_to_int = False
+
+    args.rotary_scaling_factor = scaling_factor
+    args.original_max_position_embeddings = orig_max_pos
+    args.mscale = mscale_val
+    args.mscale_all_dim = mscale_all_dim_val
     return args
 
 
@@ -100,14 +130,18 @@ def chimera_builder(args, pre_process, post_process, vp_stage=None, config=None,
     if config is None:
         config = core_transformer_config_from_args(args)
 
-    for name, value in CHIMERA_YARN.items():
-        setattr(config, name, value)
-    config.rotary_scaling_factor = CHIMERA_YARN["yarn_rotary_scaling_factor"]
-    config.original_max_position_embeddings = CHIMERA_YARN["yarn_original_max_position_embeddings"]
-    config.beta_fast = CHIMERA_YARN["yarn_beta_fast"]
-    config.beta_slow = CHIMERA_YARN["yarn_beta_slow"]
-    config.mscale = CHIMERA_YARN["yarn_mscale"]
-    config.mscale_all_dim = CHIMERA_YARN["yarn_mscale_all_dim"]
+    config.yarn_rotary_scaling_factor = args.rotary_scaling_factor
+    config.yarn_original_max_position_embeddings = args.original_max_position_embeddings
+    config.yarn_beta_fast = getattr(args, "yarn_beta_fast", 32.0)
+    config.yarn_beta_slow = getattr(args, "yarn_beta_slow", 1.0)
+    config.yarn_mscale = args.mscale
+    config.yarn_mscale_all_dim = args.mscale_all_dim
+    config.yarn_correction_range_round_to_int = False
+
+    config.rotary_scaling_factor = args.rotary_scaling_factor
+    config.original_max_position_embeddings = args.original_max_position_embeddings
+    config.mscale = args.mscale
+    config.mscale_all_dim = args.mscale_all_dim
 
     return gpt_builder(args, pre_process, post_process, vp_stage=vp_stage, config=config, pg_collection=pg_collection)
 

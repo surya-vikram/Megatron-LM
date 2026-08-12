@@ -124,7 +124,7 @@ else
     DATA_ARGS+=(--no-create-attention-mask-in-dataloader)
 fi
 
-OPTIMIZER="${OPTIMIZER:-adam}"
+OPTIMIZER="${OPTIMIZER:-muon}"
 
 TRAINING_ARGS=(
     --micro-batch-size "$MICRO_BATCH_SIZE"

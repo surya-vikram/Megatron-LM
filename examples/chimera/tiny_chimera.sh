@@ -152,6 +152,17 @@ TRAINING_ARGS=(
     --fused-linear-cross-entropy
 )
 
+if [[ "$OPTIMIZER" == "muon" ]]; then
+    TRAINING_ARGS+=(--muon-num-ns-steps "${MUON_NUM_NS_STEPS:-6}")
+    if [[ -n "${MUON_SCALAR_OPTIMIZER:-}" ]]; then
+        TRAINING_ARGS+=(--muon-scalar-optimizer "$MUON_SCALAR_OPTIMIZER")
+    fi
+fi
+
+if [[ "$OPTIMIZER" == "adaptive_muon" ]]; then
+    TRAINING_ARGS+=(--adaptive-muon-moment2-method "${MOMENT2_METHOD:-adamuon}")
+fi
+
 if [[ "$OPTIMIZER" == "adam" ]]; then
     TRAINING_ARGS+=(
         --use-precision-aware-optimizer

@@ -111,3 +111,43 @@ TRAINING_ARGS=(
 
 > [!IMPORTANT]
 > The `--use-precision-aware-optimizer` flag in Megatron-LM is strictly AdamW-specific. It is automatically omitted when `--optimizer muon` or `--optimizer adaptive_muon` is selected.
+
+---
+
+## 💾 Algebraic VRAM Memory Breakdown (Per $N$ Parameters)
+
+For a parameter matrix of size $N$:
+
+### 1. AdamW (Precision-Aware BF16 States)
+- $\text{BF16 Model Weight} = 2N \text{ bytes}$
+- $\text{BF16 Model Gradient} = 2N \text{ bytes}$
+- $\text{FP32 Master Weight} = 4N \text{ bytes}$
+- $\text{BF16 1st Moment } (m_t) = 2N \text{ bytes}$
+- $\text{BF16 2nd Moment } (v_t) = 2N \text{ bytes}$
+- **Total Persistent VRAM (AdamW Precision-Aware)** = $2N + 2N + 4N + 2N + 2N = \mathbf{12N \text{ bytes}}$
+*(Standard AdamW without precision-aware uses FP32 states: $2N + 2N + 4N + 4N + 4N = \mathbf{16N \text{ bytes}}$).*
+
+### 2. Muon (2D Matrix Weight)
+- $\text{BF16 Model Weight} = 2N \text{ bytes}$
+- $\text{BF16 Model Gradient} = 2N \text{ bytes}$
+- $\text{FP32 Master Weight} = 4N \text{ bytes}$
+- $\text{FP32 1st Moment Momentum } (M_t) = 4N \text{ bytes}$
+- $\text{2nd Moment } (v_t) = \mathbf{0N \text{ bytes (Eliminated!)}}$
+- **Base Persistent VRAM (Muon)** = $2N + 2N + 4N + 4N + 0 = \mathbf{12N \text{ bytes}}$
+
+### 3. Transient Step Memory Breakdown
+During `optimizer.step()`, Newton-Schulz matrix orthogonalization allocates temporary matrix buffers $A, B, C$ of size $N$ to execute 5–6 matrix multiplications:
+- $\text{Transient Step Scratchpad} = +\mathbf{2N \text{ to } 4N \text{ bytes}}$ *(freed immediately after step completes)*.
+
+### 📊 Direct Side-by-Side Memory Comparison
+
+| Buffer Component | AdamW (Precision-Aware) | AdamW (Standard FP32) | **Muon (2D Matrix)** |
+|---|---|---|---|
+| **BF16 Model Weight** | $2N$ bytes | $2N$ bytes | **$2N$ bytes** |
+| **BF16 Model Gradient** | $2N$ bytes | $2N$ bytes | **$2N$ bytes** |
+| **FP32 Master Weight** | $4N$ bytes | $4N$ bytes | **$4N$ bytes** |
+| **1st Moment ($m_t$)** | $2N$ bytes (BF16) | $4N$ bytes (FP32) | **$4N$ bytes** (FP32) |
+| **2nd Moment ($v_t$)** | $2N$ bytes (BF16) | $4N$ bytes (FP32) | **$0N$ bytes** (Eliminated!) |
+| **Persistent Total VRAM** | **$12N$ bytes** | **$16N$ bytes** | **$12N$ bytes** |
+| **Step Peak (incl. Scratchpad)** | **$12N$ bytes** | **$16N$ bytes** | **$14N \text{ to } 16N$ bytes** *(during step only)* |
+

@@ -162,9 +162,9 @@ else
     TRAINING_ARGS+=(
         --use-precision-aware-optimizer
         --main-params-dtype fp32
-        --main-grads-dtype fp32
-        --exp-avg-dtype fp32
-        --exp-avg-sq-dtype fp32
+        --main-grads-dtype bf16
+        --exp-avg-dtype bf16
+        --exp-avg-sq-dtype bf16
     )
 fi
 

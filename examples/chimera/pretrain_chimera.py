@@ -84,7 +84,15 @@ def apply_chimera_yarn_args(args):
     scaling_factor = getattr(args, "rotary_scaling_factor", None)
     if scaling_factor is None:
         scaling_factor = 1.0
-    orig_max_pos = getattr(args, "max_position_embeddings", 8192)
+
+    orig_max_pos = getattr(args, "yarn_original_max_position_embeddings", None)
+    if orig_max_pos is None:
+        max_pos = getattr(args, "max_position_embeddings", 8192)
+        if scaling_factor > 1.0 and int(scaling_factor) > 0:
+            orig_max_pos = max_pos // int(scaling_factor)
+        else:
+            orig_max_pos = max_pos
+
     mscale_val = getattr(args, "mscale", 1.0)
     mscale_all_dim_val = getattr(args, "mscale_all_dim", 0.0)
 

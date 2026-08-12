@@ -396,10 +396,58 @@ class TensorParallelAdaptiveMuon(TensorParallelMuon, AdaptiveMuon):
             group.setdefault("beta2", beta2)
             group.setdefault("eps", eps)
 
-    @torch.no_grad()  # type: ignore[misc]
+    @torch.no_grad()
     def step(self, closure: Optional[Callable] = None) -> Optional[float]:
-        """Step function"""
-        return AdaptiveMuon.step(self, closure)
+        """Step function with optional BF16 momentum buffer support."""
+        if not getattr(self, "use_bf16_momentum", True):
+            return AdaptiveMuon.step(self, closure)
+
+        from emerging_optimizers.orthogonalized_optimizers import utils
+        loss = closure() if closure is not None else None
+        for group in self.param_groups:
+            self._init_group(group)
+
+            for p in group["params"]:
+                if p.dim() != 2:
+                    raise ValueError(f"{self.__class__.__name__} only supports 2D parameters")
+                grad = p.grad
+                if grad is None:
+                    continue
+                state = self.state[p]
+
+                exp_avg = state["momentum_buffer"]
+                if exp_avg.dtype != torch.bfloat16:
+                    exp_avg = exp_avg.to(torch.bfloat16)
+                    state["momentum_buffer"] = exp_avg
+
+                self._apply_weight_decay_inplace(
+                    p,
+                    grad,
+                    group["lr"],
+                    group["weight_decay"],
+                )
+
+                exp_avg.lerp_(grad.to(torch.bfloat16), 1 - group["momentum"])
+
+                if self.nesterov:
+                    m_grad = grad.to(torch.bfloat16).lerp(exp_avg, group["momentum"])
+                else:
+                    m_grad = exp_avg
+
+                with utils.fp32_matmul_precision(self.fp32_matmul_prec):
+                    group_kwargs = {k: v for k, v in group.items() if k != "params"}
+                    orth_grad = self.orthogonalize(p, m_grad, **group_kwargs)
+
+                update = self._apply_moment2_normalization(
+                    orth_grad=orth_grad.to(torch.float32),
+                    moment2=state["moment2_buffer"],
+                    beta2=group["beta2"],
+                    eps=group["eps"],
+                )
+
+                p.add_(update.to(p.dtype), alpha=-group["lr"])
+
+        return loss
 
 
 def _kwargs_from_config(optimizer_cls: type, prefix: str, config) -> Dict[str, Any]:

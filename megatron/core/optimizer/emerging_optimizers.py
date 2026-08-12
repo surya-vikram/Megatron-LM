@@ -191,8 +191,10 @@ class TensorParallelMuon(OrthogonalizedOptimizer):
             size = [grad.size(-2), grad.size(-1)]
             if partition_dim is not None:
                 size[partition_dim] *= get_pg_size(tp_group)
+            orig_dtype = grad.dtype
+            grad_fp32 = grad.to(torch.float32) if grad.dtype != torch.float32 else grad
             orth_grad = newton_schulz_tp(
-                grad,
+                grad_fp32,
                 steps=num_ns_steps,
                 coefficient_type=coefficient_type,
                 tp_group=tp_group,
@@ -200,7 +202,8 @@ class TensorParallelMuon(OrthogonalizedOptimizer):
                 tp_mode="duplicated" if tp_mode == "blockwise" else tp_mode,
             )
             scale_factor = get_muon_scale_factor(size[0], size[1], mode=scale_mode)
-            return orth_grad * scale_factor * extra_scale_factor
+            res = orth_grad * scale_factor * extra_scale_factor
+            return res.to(orig_dtype)
 
         self.pg_collection = pg_collection
         self.tp_mode = tp_mode
@@ -274,6 +277,45 @@ class TensorParallelMuon(OrthogonalizedOptimizer):
         else:
             grad = self.scaled_orthogonalize_fn(grad, tp_group, partition_dim)
         return grad
+
+    @torch.no_grad()
+    def step(self, closure: Optional[Callable] = None) -> Optional[float]:
+        """Step function with optional BF16 momentum buffer support."""
+        if not getattr(self, "use_bf16_momentum", True):
+            return OrthogonalizedOptimizer.step(self, closure)
+
+        from emerging_optimizers.orthogonalized_optimizers import utils
+        loss = closure() if closure is not None else None
+        for group in self.param_groups:
+            self._init_group(group)
+            for p in group["params"]:
+                if p.grad is None:
+                    continue
+                grad = p.grad
+                state = self.state[p]
+
+                self._apply_weight_decay_inplace(
+                    p, grad, group["lr"], group["weight_decay"]
+                )
+
+                if state["momentum_buffer"].dtype != torch.bfloat16:
+                    state["momentum_buffer"] = state["momentum_buffer"].to(torch.bfloat16)
+
+                state["momentum_buffer"].lerp_(grad.to(torch.bfloat16), 1 - group["momentum"])
+
+                if self.nesterov:
+                    m_grad = grad.to(torch.bfloat16).lerp(state["momentum_buffer"], group["momentum"])
+                else:
+                    m_grad = state["momentum_buffer"]
+
+                with utils.fp32_matmul_precision(self.fp32_matmul_prec):
+                    group_kwargs = {k: v for k, v in group.items() if k != "params"}
+                    orth_grad = self.orthogonalize(p, m_grad, **group_kwargs)
+
+                self.pre_weight_update_fn_inplace(p, orth_grad)
+                p.add_(orth_grad, alpha=-group["lr"])
+                self.post_weight_update_fn_inplace(p)
+        return loss
 
 
 class TensorParallelAdaptiveMuon(TensorParallelMuon, AdaptiveMuon):

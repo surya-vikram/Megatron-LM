@@ -70,6 +70,9 @@ MODEL_ARGS=(
     --position-embedding-type yarn
     --rotary-base 10000000
     --rotary-percent 1.0
+    --rotary-scaling-factor 1.0
+    --mscale 1.0
+    --mscale-all-dim 0.0
     --normalization RMSNorm
     --swiglu
     --disable-bias-linear

@@ -72,6 +72,9 @@ MODEL_ARGS=(
     --position-embedding-type yarn
     --rotary-base 10000000
     --rotary-percent 1.0
+    --rotary-scaling-factor 1.0
+    --mscale 1.0
+    --mscale-all-dim 0.0
     --normalization RMSNorm
     --swiglu
     --disable-bias-linear
@@ -149,12 +152,15 @@ TRAINING_ARGS=(
     --manual-gc-interval 100
     --use-distributed-optimizer
     --optimizer "$OPTIMIZER"
-    --fused-linear-cross-entropy
     --cuda-graph-impl transformer_engine
     --cuda-graph-modules attn
     --overlap-grad-reduce
     # --overlap-param-gather
 )
+
+if [[ "${FUSED_LINEAR_CROSS_ENTROPY:-true}" == "true" ]]; then
+    TRAINING_ARGS+=(--fused-linear-cross-entropy)
+fi
 
 if [[ "$OPTIMIZER" == "muon" || "$OPTIMIZER" == "adaptive_muon" ]]; then
     TRAINING_ARGS+=(--muon-num-ns-steps "$MUON_NUM_NS_STEPS")

@@ -65,6 +65,9 @@ MODEL_ARGS=(
     --position-embedding-type yarn
     --rotary-base 10000000
     --rotary-percent 1.0
+    --rotary-scaling-factor 1.0
+    --mscale 1.0
+    --mscale-all-dim 0.0
     --normalization RMSNorm
     --swiglu
     --disable-bias-linear
@@ -149,8 +152,11 @@ TRAINING_ARGS=(
     --cuda-graph-modules attn
     --cuda-graph-warmup-steps 1
     --use-distributed-optimizer
-    --fused-linear-cross-entropy
 )
+
+if [[ "${FUSED_LINEAR_CROSS_ENTROPY:-true}" == "true" ]]; then
+    TRAINING_ARGS+=(--fused-linear-cross-entropy)
+fi
 
 if [[ "$OPTIMIZER" == "muon" ]]; then
     TRAINING_ARGS+=(--muon-num-ns-steps "${MUON_NUM_NS_STEPS:-6}")

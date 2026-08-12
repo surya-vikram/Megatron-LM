@@ -159,9 +159,7 @@ if [[ "$OPTIMIZER" == "muon" ]]; then
     fi
 fi
 
-if [[ "$OPTIMIZER" == "adaptive_muon" ]]; then
-    TRAINING_ARGS+=(--adaptive-muon-moment2-method "${MOMENT2_METHOD:-adamuon}")
-fi
+# adaptive_muon defaults to adamuon internally
 
 if [[ "$OPTIMIZER" == "adam" ]]; then
     TRAINING_ARGS+=(

@@ -674,6 +674,13 @@ class MoEAlltoAllTokenDispatcher(MoETokenDispatcher):
         self.tokens_per_expert = self._maybe_dtoh_and_synchronize(
             "before_ep_alltoall", self.tokens_per_expert
         )
+        if self.ep_size == 1:
+            global_input_tokens = permutated_local_input_tokens
+            if self.shared_experts is not None:
+                self.shared_experts.linear_fc1_forward_and_act(global_input_tokens)
+            global_probs = permuted_probs
+            return global_input_tokens, global_probs
+
         global_input_tokens = all_to_all(
             self.ep_group,
             permutated_local_input_tokens,
@@ -726,7 +733,7 @@ class MoEAlltoAllTokenDispatcher(MoETokenDispatcher):
         self.tokens_per_expert = self._maybe_dtoh_and_synchronize(
             "before_permutation_2", self.tokens_per_expert
         )
-        if self.num_local_experts > 1:
+        if self.num_local_experts > 1 and (self.ep_size > 1 or self.tp_size > 1):
             if self.drop_and_pad:
                 global_input_tokens = (
                     global_input_tokens.view(
@@ -772,7 +779,7 @@ class MoEAlltoAllTokenDispatcher(MoETokenDispatcher):
         parallel dimension.
         """
         # Unpermutation 2: Unsort tokens by local expert.
-        if self.num_local_experts > 1:
+        if self.num_local_experts > 1 and (self.ep_size > 1 or self.tp_size > 1):
             if self.drop_and_pad:
                 hidden_states = (
                     hidden_states.view(
@@ -833,6 +840,13 @@ class MoEAlltoAllTokenDispatcher(MoETokenDispatcher):
             self.shared_experts.wait_current_stream()
         # Perform expert parallel AlltoAll communication
         # hidden_states: [SEQL, H] -> [SEQL, H/TP]
+        if self.ep_size == 1:
+            permutated_local_input_tokens = hidden_states
+            if self.shared_experts is not None:
+                self.shared_experts.linear_fc2_forward(permutated_local_input_tokens)
+                self.shared_experts.post_forward_comm()
+            return permutated_local_input_tokens
+
         permutated_local_input_tokens = all_to_all(
             self.ep_group,
             hidden_states,

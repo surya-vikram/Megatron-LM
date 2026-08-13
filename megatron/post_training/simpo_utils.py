@@ -73,68 +73,54 @@ def calculate_simpo_loss(
     nll = nll * loss_mask
     per_token_logps = -nll
     
-    # 2. Compute sequence-level average log probabilities (Length Normalization)
-    seq_avg_logps = []
-    pair_valid_masks = [] # Track which sequences are actually valid (mask sum > 0)
-    chosen_sft_losses = []
+    # 2. Compute sequence-level average log probabilities (Length Normalization) - Fully Vectorized
+    seq_lens = cu_seqlens[1:] - cu_seqlens[:-1]
+    num_seqs = len(seq_lens)
 
-    for i in range(len(cu_seqlens) - 1):
-        start_idx = cu_seqlens[i]
-        end_idx = cu_seqlens[i+1]
+    # Vectorized segment indices for each token
+    seq_idx = torch.repeat_interleave(
+        torch.arange(num_seqs, device=logits.device),
+        seq_lens
+    )
 
-        seq_logps = per_token_logps[start_idx:end_idx]
-        seq_mask = loss_mask[start_idx:end_idx]
+    # Scatter sum token loss_mask, per_token_logps, and nll across sequence segments
+    sum_mask = torch.zeros(num_seqs, device=logits.device, dtype=loss_mask.dtype).scatter_add(0, seq_idx, loss_mask)
+    sum_logps = torch.zeros(num_seqs, device=logits.device, dtype=per_token_logps.dtype).scatter_add(0, seq_idx, per_token_logps)
+    sum_nll = torch.zeros(num_seqs, device=logits.device, dtype=nll.dtype).scatter_add(0, seq_idx, nll)
 
-        sum_mask = seq_mask.sum()
-        if sum_mask > 0:
-            avg_logp = seq_logps.sum() / sum_mask
-            pair_valid_masks.append(True)
-            
-            # For Chosen sequences (even indices), we also collect the SFT loss component
-            if i % 2 == 0:
-                chosen_sft_losses.append(nll[start_idx:end_idx].sum() / sum_mask)
-        else:
-            # Dummy sequence or all-padding. Use -1e9 for metric but mark as invalid.
-            avg_logp = torch.tensor(-1e9, device=logits.device, dtype=logits.dtype)
-            pair_valid_masks.append(False)
+    valid_seq_mask = (sum_mask > 0)
+    seq_avg_logps = torch.where(
+        valid_seq_mask,
+        sum_logps / torch.clamp(sum_mask, min=1.0),
+        torch.tensor(-1e9, device=logits.device, dtype=logits.dtype)
+    )
+    seq_sft_losses = torch.where(
+        valid_seq_mask,
+        sum_nll / torch.clamp(sum_mask, min=1.0),
+        torch.tensor(0.0, device=logits.device, dtype=logits.dtype)
+    )
 
-        seq_avg_logps.append(avg_logp)
-
-    seq_avg_logps = torch.stack(seq_avg_logps)
-    
-    # 3. Group into Chosen and Rejected pairs
-    # Since SimPODataset packs [chosen, rejected] pairs, chosen are even indices, rejected are odd indices.
-    num_total_sequences = len(seq_avg_logps)
-    num_possible_pairs = num_total_sequences // 2
-    
-    valid_chosen_logps = []
-    valid_rejected_logps = []
-    valid_chosen_sft_losses = []
-    
-    for p in range(num_possible_pairs):
-        c_idx = 2 * p
-        r_idx = 2 * p + 1
-        if pair_valid_masks[c_idx] and pair_valid_masks[r_idx]:
-            valid_chosen_logps.append(seq_avg_logps[c_idx])
-            valid_rejected_logps.append(seq_avg_logps[r_idx])
-            # Match SFT loss index. SFT losses were only collected for even indices that were valid.
-            # We need to find the correct index in chosen_sft_losses.
-            # Simplified: calculate it here if valid.
-            start_idx = cu_seqlens[c_idx]
-            end_idx = cu_seqlens[c_idx+1]
-            sum_mask = loss_mask[start_idx:end_idx].sum()
-            valid_chosen_sft_losses.append(nll[start_idx:end_idx].sum() / sum_mask)
-
-    if len(valid_chosen_logps) == 0:
-        # No valid pairs in this microbatch. 
-        # Return 0 loss connected to graph to avoid in-place leaf variable errors.
+    # 3. Group into Chosen and Rejected pairs - Fully Vectorized
+    num_pairs = num_seqs // 2
+    if num_pairs == 0:
         from megatron.training import print_rank_0
         print_rank_0("WARNING: No valid SimPO pairs in this microbatch. Skipping loss calculation.")
         loss = (logits.sum() * 0.0)
         return loss, {}
 
-    chosen_logps = torch.stack(valid_chosen_logps)
-    rejected_logps = torch.stack(valid_rejected_logps)
+    chosen_valid = valid_seq_mask[: 2 * num_pairs : 2]
+    rejected_valid = valid_seq_mask[1 : 2 * num_pairs : 2]
+    valid_pairs = chosen_valid & rejected_valid
+
+    if not valid_pairs.any():
+        from megatron.training import print_rank_0
+        print_rank_0("WARNING: No valid SimPO pairs in this microbatch. Skipping loss calculation.")
+        loss = (logits.sum() * 0.0)
+        return loss, {}
+
+    chosen_logps = seq_avg_logps[: 2 * num_pairs : 2][valid_pairs]
+    rejected_logps = seq_avg_logps[1 : 2 * num_pairs : 2][valid_pairs]
+    valid_chosen_sft_losses = seq_sft_losses[: 2 * num_pairs : 2][valid_pairs]
     
     # 4. Calculate SimPO Margin Loss
     pi_logratios = chosen_logps - rejected_logps
@@ -152,7 +138,7 @@ def calculate_simpo_loss(
     # Combine with optional SFT loss to prevent logprob collapse
     sft_loss_val = torch.tensor(0.0, device=logits.device, dtype=logits.dtype)
     if args.simpo_sft_weight > 0.0 and len(valid_chosen_sft_losses) > 0:
-        sft_loss_val = torch.stack(valid_chosen_sft_losses).mean()
+        sft_loss_val = valid_chosen_sft_losses.mean()
         loss = loss + args.simpo_sft_weight * sft_loss_val
 
     # 5. Metrics Formatting

@@ -163,7 +163,8 @@ def _compile_dependencies():
             flush=True,
         )
 
-    torch.distributed.barrier()
+    if torch.distributed.get_world_size() > 1:
+        torch.distributed.barrier()
 
 def _initialize_tp_communicators():
     """initializing the communicators with user buffers for high-performance tensor-model-parallel

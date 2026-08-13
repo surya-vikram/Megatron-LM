@@ -1137,19 +1137,22 @@ def reduce_aux_losses_tracker_across_ranks(
         values = tracker[name]["values"]
         # TODO(Hepteract): delete the usage of the global parallel_state.
         # Collect aux losses across PP.
-        torch.distributed.all_reduce(values, group=pp_group)
+        if pp_group is not None and torch.distributed.get_world_size(group=pp_group) > 1:
+            torch.distributed.all_reduce(values, group=pp_group)
         # Reduce aux losses across ranks.
-        if tracker[name].get('reduce_group') is not None:
-            torch.distributed.all_reduce(values, group=tracker[name].get('reduce_group'))
+        rg = tracker[name].get('reduce_group')
+        if rg is not None and torch.distributed.get_world_size(group=rg) > 1:
+            torch.distributed.all_reduce(values, group=rg)
             # Need to conduct reduction across data parallel ranks. When the reduce_group
             # does not have 'dp' attribute, do it manually.
-            if not tracker[name].get('reduce_group_has_dp', False):
+            if not tracker[name].get('reduce_group_has_dp', False) and dp_group is not None and torch.distributed.get_world_size(group=dp_group) > 1:
                 torch.distributed.all_reduce(
                     values, group=dp_group, op=torch.distributed.ReduceOp.AVG
                 )
-        if tracker[name].get('avg_group') is not None:
+        ag = tracker[name].get('avg_group')
+        if ag is not None and torch.distributed.get_world_size(group=ag) > 1:
             torch.distributed.all_reduce(
-                values, group=tracker[name]['avg_group'], op=torch.distributed.ReduceOp.AVG
+                values, group=ag, op=torch.distributed.ReduceOp.AVG
             )
 
 
@@ -1272,11 +1275,12 @@ def get_updated_expert_bias(
     """
     with torch.no_grad():
         # All Reduce Across TPxCPxDP group
-        torch.distributed.all_reduce(
-            tokens_per_expert,
-            # TODO(Hepteract): delete the usage of the global parallel_state.
-            group=parallel_state.get_tensor_and_data_parallel_group(with_context_parallel=True),
-        )
+        tp_dp_group = parallel_state.get_tensor_and_data_parallel_group(with_context_parallel=True)
+        if tp_dp_group is not None and torch.distributed.get_world_size(group=tp_dp_group) > 1:
+            torch.distributed.all_reduce(
+                tokens_per_expert,
+                group=tp_dp_group,
+            )
         average_tokens = tokens_per_expert.sum(dim=-1, keepdim=True) / tokens_per_expert.shape[-1]
         offset = average_tokens - tokens_per_expert
         updated_expert_bias = expert_bias + torch.sign(offset) * expert_bias_update_rate

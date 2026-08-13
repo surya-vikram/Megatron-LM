@@ -147,7 +147,7 @@ class Timer(TimerBase):
             barrier (bool, optional): Synchronizes ranks before starting. Defaults to False.
         """
         assert not self._started, 'timer has already been started'
-        if barrier:
+        if barrier and torch.distributed.get_world_size(group=self._barrier_group) > 1:
             torch.distributed.barrier(group=self._barrier_group)
         torch.cuda.synchronize()
         self._start_time = time.time()
@@ -160,7 +160,7 @@ class Timer(TimerBase):
             barrier (bool, optional): Synchronizes ranks before stopping. Defaults to False.
         """
         assert self._started, 'timer is not started'
-        if barrier:
+        if barrier and torch.distributed.get_world_size(group=self._barrier_group) > 1:
             torch.distributed.barrier(group=self._barrier_group)
         torch.cuda.synchronize()
         elapsed = time.time() - self._start_time
@@ -287,12 +287,12 @@ class Timers:
         if len(names) == 0:
             return None
 
-        # First make sure all the callers are in sync.
-        if barrier:
-            torch.distributed.barrier()
-
         world_size = torch.distributed.get_world_size()
         rank = torch.distributed.get_rank()
+
+        # First make sure all the callers are in sync.
+        if barrier and world_size > 1:
+            torch.distributed.barrier()
 
         # Here we can use gather on the rank we want to print the
         # timing, however, there is no gather_base support in
@@ -311,7 +311,8 @@ class Timers:
                 rank_name_to_time[rank, i] = self._timers[name].elapsed(reset=reset)
 
         # See the note above for why we are not using gather.
-        dist_all_gather_func(rank_name_to_time.view(-1), rank_name_to_time[rank, :].view(-1))
+        if world_size > 1:
+            dist_all_gather_func(rank_name_to_time.view(-1), rank_name_to_time[rank, :].view(-1))
 
         return rank_name_to_time
 

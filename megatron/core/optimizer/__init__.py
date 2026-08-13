@@ -360,12 +360,13 @@ def _get_param_groups(
     # so we need to align the param groups across ranks, otherwise we may have
     # runtime error when loading the checkpoint or numerical error when resuming training.
     params_key = list(params_map.keys())
-    gathered_params_key = [None for _ in range(torch.distributed.get_world_size())]
-    torch.distributed.all_gather_object(gathered_params_key, params_key)
-    for keys in gathered_params_key:
-        for key in keys:
-            if key not in params_key:
-                params_key.append(key)
+    if torch.distributed.get_world_size() > 1:
+        gathered_params_key = [None for _ in range(torch.distributed.get_world_size())]
+        torch.distributed.all_gather_object(gathered_params_key, params_key)
+        for keys in gathered_params_key:
+            for key in keys:
+                if key not in params_key:
+                    params_key.append(key)
     # Need to pick one of the param_override_tuples to use for the param group.
     param_groups = []
     # Sort keys, None first.

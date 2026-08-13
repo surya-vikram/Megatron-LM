@@ -46,7 +46,7 @@ class VocabParallelCrossEntropy:
 
         # Create a mask of valid vocab ids (1 means it needs to be masked).
         target_mask = (target < vocab_start_index) | (target >= vocab_end_index)
-        masked_target = target.clone() - vocab_start_index
+        masked_target = target - vocab_start_index
         masked_target[target_mask] = 0
 
         # Get predicted-logits = logits[target].
@@ -57,7 +57,6 @@ class VocabParallelCrossEntropy:
         masked_target_1d = masked_target.view(-1)
         arange_1d = torch.arange(start=0, end=logits_2d.size()[0], device=logits_2d.device)
         predicted_logits_1d = logits_2d[arange_1d, masked_target_1d]
-        predicted_logits_1d = predicted_logits_1d.clone().contiguous()
         predicted_logits = predicted_logits_1d.view_as(target)
         predicted_logits[target_mask] = 0.0
 

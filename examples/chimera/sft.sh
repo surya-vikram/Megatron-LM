@@ -20,18 +20,23 @@ EP_SIZE="${EP_SIZE:-1}"
 CP_SIZE="${CP_SIZE:-1}"
 
 # Training settings.
-SEQ_LENGTH="${SEQ_LENGTH:-2048}"
+SEQ_LENGTH="${SEQ_LENGTH:-8192}"
 MICRO_BATCH_SIZE="${MICRO_BATCH_SIZE:-1}"
-GLOBAL_BATCH_SIZE="${GLOBAL_BATCH_SIZE:-96}"
+GLOBAL_BATCH_SIZE="${GLOBAL_BATCH_SIZE:-64}"
 TRAIN_EPOCHS="${TRAIN_EPOCHS:-1}"
 TRAIN_ITERS="${TRAIN_ITERS:-}"
-LR="${LR:-5e-6}"
-MIN_LR="${MIN_LR:-0}"
+LR="${LR:-2e-5}"
+MIN_LR="${MIN_LR:-2e-6}"
 LR_WARMUP_ITERS="${LR_WARMUP_ITERS:-}"
-SAVE_INTERVAL="${SAVE_INTERVAL:-1000}"
-EVAL_INTERVAL="${EVAL_INTERVAL:-1000}"
+SAVE_INTERVAL="${SAVE_INTERVAL:-}"
+EVAL_INTERVAL="${EVAL_INTERVAL:-}"
 EVAL_ITERS="${EVAL_ITERS:-0}"
 SAVE_WEIGHTS_ONLY="${SAVE_WEIGHTS_ONLY:-false}"
+PACK_SAMPLES="${PACK_SAMPLES:-true}"
+PACK_METADATA_PATH="${PACK_METADATA_PATH:-${DATA_PATH}.chimera_sft_packing}"
+OPTIMIZER="${OPTIMIZER:-muon}"
+MUON_NUM_NS_STEPS="${MUON_NUM_NS_STEPS:-6}"
+FUSED_LINEAR_CROSS_ENTROPY="${FUSED_LINEAR_CROSS_ENTROPY:-true}"
 
 RUN_STAMP="${RUN_STAMP:-$(TZ='Asia/Kolkata' date +%Y%m%d_%H%M%S)}"
 RUN_DIR="${RUNS_ROOT}/${RUN_STAMP}"
@@ -42,16 +47,31 @@ LOG_DIR="${RUN_DIR}/logs"
 
 [[ -f "$DATA_PATH" ]] || { echo "Missing SFT JSONL: $DATA_PATH"; exit 1; }
 [[ -d "$TOKENIZER_MODEL" || -f "$TOKENIZER_MODEL" ]] || { echo "Missing tokenizer model: $TOKENIZER_MODEL"; exit 1; }
-[[ -d "$MCORE_PATH" ]] || { echo "Missing MCore checkpoint path: $MCORE_PATH"; exit 1; }
 
 read -r DATASET_SAMPLES < <(wc -l < "$DATA_PATH")
 (( DATASET_SAMPLES > 0 )) || { echo "SFT JSONL is empty: $DATA_PATH"; exit 1; }
-if [[ -z "$TRAIN_ITERS" ]]; then
-    TRAIN_ITERS=$(( (DATASET_SAMPLES * TRAIN_EPOCHS + GLOBAL_BATCH_SIZE - 1) / GLOBAL_BATCH_SIZE ))
+SCHEDULE_SAMPLES=$DATASET_SAMPLES
+if [[ "$PACK_SAMPLES" == true ]]; then
+    if [[ ! -f "$PACK_METADATA_PATH/metadata.json" || ! -f "$PACK_METADATA_PATH/lengths.npy" || ! -f "$PACK_METADATA_PATH/row_offsets.npy" ]]; then
+        echo "Packing metadata missing. Automatically generating metadata in: $PACK_METADATA_PATH"
+        python3 "$SCRIPT_DIR/prepare_chat_data.py" \
+            --mode sft \
+            --input "$DATA_PATH" \
+            --output "$PACK_METADATA_PATH" \
+            --tokenizer-model "$TOKENIZER_MODEL" \
+            --workers "${PREPARE_WORKERS:-32}"
+    fi
+    SCHEDULE_SAMPLES=$(python3 "$SCRIPT_DIR/count_chat_packs.py" \
+        --metadata "$PACK_METADATA_PATH" --mode sft --sequence-length "$SEQ_LENGTH")
 fi
+if [[ -z "$TRAIN_ITERS" ]]; then
+    TRAIN_ITERS=$(( (SCHEDULE_SAMPLES * TRAIN_EPOCHS + GLOBAL_BATCH_SIZE - 1) / GLOBAL_BATCH_SIZE ))
+fi
+SAVE_INTERVAL="${SAVE_INTERVAL:-$TRAIN_ITERS}"
+EVAL_INTERVAL="${EVAL_INTERVAL:-$TRAIN_ITERS}"
 LR_DECAY_ITERS="$TRAIN_ITERS"
 if [[ -z "$LR_WARMUP_ITERS" ]]; then
-    LR_WARMUP_ITERS=$(( (TRAIN_ITERS * 5 + 99) / 100 ))
+    LR_WARMUP_ITERS=$(( (TRAIN_ITERS * 3 + 99) / 100 ))
     if (( LR_WARMUP_ITERS >= TRAIN_ITERS )); then
         LR_WARMUP_ITERS=$(( TRAIN_ITERS - 1 ))
     fi
@@ -67,21 +87,36 @@ DISTRIBUTED_ARGS=(
     --master_port "$MASTER_PORT"
 )
 
+NUM_LAYERS="${NUM_LAYERS:-25}"
+HIDDEN_SIZE="${HIDDEN_SIZE:-2048}"
+FFN_HIDDEN_SIZE="${FFN_HIDDEN_SIZE:-8192}"
+NUM_ATTENTION_HEADS="${NUM_ATTENTION_HEADS:-16}"
+NUM_QUERY_GROUPS="${NUM_QUERY_GROUPS:-2}"
+KV_CHANNELS="${KV_CHANNELS:-256}"
+NUM_EXPERTS="${NUM_EXPERTS:-64}"
+MOE_LAYER_FREQ="${MOE_LAYER_FREQ:-[0]*2+[1]*23}"
+MOE_ROUTER_TOPK="${MOE_ROUTER_TOPK:-4}"
+MOE_FFN_HIDDEN_SIZE="${MOE_FFN_HIDDEN_SIZE:-1024}"
+MOE_SHARED_EXPERT_INTERMEDIATE_SIZE="${MOE_SHARED_EXPERT_INTERMEDIATE_SIZE:-1024}"
+
 MODEL_ARGS=(
     --use-mcore-models
     --transformer-impl transformer_engine
-    --num-layers 25
-    --hidden-size 2048
-    --ffn-hidden-size 8192
-    --num-attention-heads 16
+    --num-layers "$NUM_LAYERS"
+    --hidden-size "$HIDDEN_SIZE"
+    --ffn-hidden-size "$FFN_HIDDEN_SIZE"
+    --num-attention-heads "$NUM_ATTENTION_HEADS"
     --group-query-attention
-    --num-query-groups 2
-    --kv-channels 256
+    --num-query-groups "$NUM_QUERY_GROUPS"
+    --kv-channels "$KV_CHANNELS"
     --seq-length "$SEQ_LENGTH"
-    --max-position-embeddings 32768
+    --max-position-embeddings "${MAX_POSITION_EMBEDDINGS:-8192}"
     --position-embedding-type yarn
     --rotary-base 10000000
     --rotary-percent 1.0
+    --rotary-scaling-factor "${ROTARY_SCALING_FACTOR:-1.0}"
+    --mscale 1.0
+    --mscale-all-dim 0.0
     --normalization RMSNorm
     --swiglu
     --disable-bias-linear
@@ -100,11 +135,11 @@ MODEL_ARGS=(
 )
 
 MOE_ARGS=(
-    --num-experts 64
-    --moe-layer-freq "[0]*2+[1]*23"
-    --moe-router-topk 4
-    --moe-ffn-hidden-size 1024
-    --moe-shared-expert-intermediate-size 1024
+    --num-experts "$NUM_EXPERTS"
+    --moe-layer-freq "$MOE_LAYER_FREQ"
+    --moe-router-topk "$MOE_ROUTER_TOPK"
+    --moe-ffn-hidden-size "$MOE_FFN_HIDDEN_SIZE"
+    --moe-shared-expert-intermediate-size "$MOE_SHARED_EXPERT_INTERMEDIATE_SIZE"
     --moe-router-load-balancing-type seq_aux_loss
     --moe-aux-loss-coeff 0.0001
     --moe-router-score-function sigmoid
@@ -130,6 +165,9 @@ DATA_ARGS=(
     --eod-mask-loss
     --no-create-attention-mask-in-dataloader
 )
+if [[ "$PACK_SAMPLES" == true ]]; then
+    DATA_ARGS+=(--pack-samples --pack-metadata-path "$PACK_METADATA_PATH")
+fi
 
 TRAINING_ARGS=(
     --micro-batch-size "$MICRO_BATCH_SIZE"
@@ -146,16 +184,28 @@ TRAINING_ARGS=(
     --adam-beta2 0.95
     --attention-softmax-in-fp32
     --manual-gc
-    --manual-gc-interval 100
+    --manual-gc-interval 1000
     --use-distributed-optimizer
-    --use-precision-aware-optimizer
-    --main-params-dtype fp32
-    --main-grads-dtype fp32
-    --exp-avg-dtype fp32
-    --exp-avg-sq-dtype fp32
-    --fused-linear-cross-entropy
     --overlap-grad-reduce
 )
+
+TRAINING_ARGS+=(--optimizer "$OPTIMIZER")
+
+if [[ "$OPTIMIZER" == "muon" || "$OPTIMIZER" == "adaptive_muon" ]]; then
+    TRAINING_ARGS+=(--muon-num-ns-steps "$MUON_NUM_NS_STEPS")
+else
+    TRAINING_ARGS+=(
+        --use-precision-aware-optimizer
+        --main-params-dtype fp32
+        --main-grads-dtype bf16
+        --exp-avg-dtype bf16
+        --exp-avg-sq-dtype bf16
+    )
+fi
+
+if [[ "$FUSED_LINEAR_CROSS_ENTROPY" == true ]]; then
+    TRAINING_ARGS+=(--fused-linear-cross-entropy)
+fi
 
 PARALLEL_ARGS=(
     --tensor-model-parallel-size "$TP_SIZE"
@@ -165,10 +215,6 @@ PARALLEL_ARGS=(
 )
 
 LOGGING_ARGS=(
-    --load "$MCORE_PATH"
-    --finetune
-    --no-load-optim
-    --no-load-rng
     --save "$SAVE_PATH"
     --tensorboard-dir "$TENSORBOARD_DIR"
     --save-interval "$SAVE_INTERVAL"
@@ -178,6 +224,14 @@ LOGGING_ARGS=(
     --log-throughput
     --exit-signal-handler
 )
+if [[ -n "${MCORE_PATH:-}" && -d "$MCORE_PATH" ]]; then
+    LOGGING_ARGS+=(
+        --load "$MCORE_PATH"
+        --finetune
+        --no-load-optim
+        --no-load-rng
+    )
+fi
 if [[ "$SAVE_WEIGHTS_ONLY" == true ]]; then
     LOGGING_ARGS+=(--no-save-optim --no-save-rng)
 fi
@@ -194,6 +248,9 @@ PP_SIZE=${PP_SIZE}
 EP_SIZE=${EP_SIZE}
 CP_SIZE=${CP_SIZE}
 DATASET_SAMPLES=${DATASET_SAMPLES}
+SCHEDULE_SAMPLES=${SCHEDULE_SAMPLES}
+PACK_SAMPLES=${PACK_SAMPLES}
+PACK_METADATA_PATH=${PACK_METADATA_PATH}
 TRAIN_EPOCHS=${TRAIN_EPOCHS}
 TRAIN_ITERS=${TRAIN_ITERS}
 MICRO_BATCH_SIZE=${MICRO_BATCH_SIZE}
@@ -209,10 +266,10 @@ echo "  Data JSONL:       $DATA_PATH"
 echo "  Load checkpoint:  $MCORE_PATH"
 echo "  Tokenizer:        $TOKENIZER_MODEL"
 echo "  Parallelism:      TP=$TP_SIZE PP=$PP_SIZE EP=$EP_SIZE ETP=1 CP=$CP_SIZE"
-echo "  Data schedule:    samples=$DATASET_SAMPLES epochs=$TRAIN_EPOCHS iters=$TRAIN_ITERS"
+echo "  Data schedule:    rows=$DATASET_SAMPLES samples=$SCHEDULE_SAMPLES epochs=$TRAIN_EPOCHS iters=$TRAIN_ITERS"
 echo "  Seq/batch:        seq=$SEQ_LENGTH micro=$MICRO_BATCH_SIZE global=$GLOBAL_BATCH_SIZE"
 echo "  Optimizer:        lr=$LR min_lr=$MIN_LR warmup=$LR_WARMUP_ITERS wd=0 states=fp32"
-echo "  Packing:          disabled"
+echo "  Packing:          $PACK_SAMPLES"
 
 exec python3 -m torch.distributed.run "${DISTRIBUTED_ARGS[@]}" \
     examples/chimera/pretrain_chimera.py \

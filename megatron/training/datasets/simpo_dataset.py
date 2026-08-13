@@ -10,6 +10,13 @@ import torch
 from megatron.core.datasets.gpt_dataset import GPTDatasetConfig
 from megatron.core.datasets.megatron_dataset import MegatronDataset
 from megatron.training import get_args, get_tokenizer
+from megatron.training.datasets.chat_packing import (
+    IndexedJsonlDataset,
+    build_pack_index,
+    fingerprint_tokenizer_path,
+    load_pack_lengths,
+    validate_metadata_source,
+)
 from megatron.training.datasets.sft_dataset import validate_chat_messages
 
 IGNORE_INDEX = -100
@@ -21,29 +28,65 @@ _warned_malformed  = set()
 
 class PackSamplesCollator:
     def __call__(self, batch):
-        tokens = torch.stack([item['tokens'] for item in batch])
-        labels = torch.stack([item['labels'] for item in batch])
-        loss_mask = torch.stack([item['loss_mask'] for item in batch])
-        position_ids = torch.stack([item['position_ids'] for item in batch])
-        
-        seq_len = tokens.shape[1]
-        cu_seqlens_list = []
-        for i, item in enumerate(batch):
-            cu_seqlens = item['cu_seqlens']
-            if i > 0:
-                shifted = cu_seqlens[1:] + i * seq_len
-                cu_seqlens_list.append(shifted)
-            else:
-                cu_seqlens_list.append(cu_seqlens)
-                
-        batched_cu_seqlens = torch.cat(cu_seqlens_list).unsqueeze(0)
-        max_seqlen = torch.stack([torch.as_tensor(item['max_seqlen']) for item in batch]).max().unsqueeze(0)
-        
+        if "real_length" not in batch[0]:
+            tokens = torch.stack([item['tokens'] for item in batch])
+            labels = torch.stack([item['labels'] for item in batch])
+            loss_mask = torch.stack([item['loss_mask'] for item in batch])
+            position_ids = torch.stack([item['position_ids'] for item in batch])
+            seq_len = tokens.shape[1]
+            boundaries = []
+            for item_index, item in enumerate(batch):
+                cu_seqlens = item['cu_seqlens']
+                boundaries.append(
+                    cu_seqlens if item_index == 0 else cu_seqlens[1:] + item_index * seq_len
+                )
+            batched_cu_seqlens = torch.cat(boundaries).unsqueeze(0)
+            max_seqlen = torch.stack(
+                [torch.as_tensor(item['max_seqlen']) for item in batch]
+            ).max().view(1)
+            return {
+                "tokens": tokens,
+                "labels": labels,
+                "loss_mask": loss_mask,
+                "position_ids": position_ids,
+                "cu_seqlens": batched_cu_seqlens,
+                "max_seqlen": max_seqlen,
+            }
+
+        seq_len = batch[0]['tokens'].numel()
+        real_slices = {key: [] for key in ('tokens', 'labels', 'loss_mask', 'position_ids')}
+        padding_slices = {key: [] for key in real_slices}
+        boundaries = [0]
+        cursor = 0
+
+        # Keep every chosen/rejected segment first and move per-pack padding to the end.
+        # This preserves even/odd SimPO pairing for micro-batch sizes greater than one.
+        for item in batch:
+            real_length = int(item['real_length'])
+            for key in real_slices:
+                real_slices[key].append(item[key][:real_length])
+                if real_length < seq_len:
+                    padding_slices[key].append(item[key][real_length:])
+            real_boundaries = item['cu_seqlens'][: 2 * int(item['num_pairs']) + 1]
+            for boundary in real_boundaries[1:]:
+                boundaries.append(cursor + int(boundary))
+            cursor += real_length
+
+        for item in batch:
+            padding_length = seq_len - int(item['real_length'])
+            if padding_length:
+                cursor += padding_length
+                boundaries.append(cursor)
+
+        tensors = {}
+        for key in real_slices:
+            pieces = real_slices[key] + padding_slices[key]
+            tensors[key] = torch.cat(pieces).view(len(batch), seq_len)
+
+        batched_cu_seqlens = torch.tensor(boundaries, dtype=torch.int32).unsqueeze(0)
+        max_seqlen = (batched_cu_seqlens[0, 1:] - batched_cu_seqlens[0, :-1]).max().view(1)
         return {
-            'tokens': tokens,
-            'labels': labels,
-            'loss_mask': loss_mask,
-            'position_ids': position_ids,
+            **tensors,
             'cu_seqlens': batched_cu_seqlens,
             'max_seqlen': max_seqlen
         }
@@ -101,12 +144,49 @@ class SimPODataset(MegatronDataset):
 
         args = get_args()
         pack_samples = getattr(args, "pack_samples", False)
+        metadata_path = getattr(args, "pack_metadata_path", None)
+        prompt_format = getattr(args, "sft_tokenizer_prompt_format", "default")
+        if pack_samples and prompt_format == "chimera" and metadata_path is None:
+            raise ValueError(
+                "packed Chimera SimPO requires --pack-metadata-path produced by "
+                "examples/chimera/prepare_chat_data.py"
+            )
+        indexed_packing = pack_samples and metadata_path is not None
+        self._pack_samples = indexed_packing
+        self._pack_index = None
         if (
             getattr(args, "simpo", False)
             and not pack_samples
             and getattr(args, "micro_batch_size", 1) != 1
         ):
             raise ValueError("Unpacked SimPO currently requires --micro-batch-size 1")
+        if indexed_packing:
+            context_parallel_size = getattr(config, "context_parallel_size", 1)
+            if context_parallel_size > 1:
+                raise NotImplementedError(
+                    "packed Chimera SimPO supports --context-parallel-size 1 only"
+                )
+            lengths, metadata = load_pack_lengths(
+                metadata_path, expected_mode="simpo", expected_rows=len(self.dataset)
+            )
+            validate_metadata_source(metadata, dataset_path)
+            if metadata.get("prompt_format") != prompt_format:
+                raise ValueError(
+                    f"chat packing metadata prompt format is {metadata.get('prompt_format')!r}, "
+                    f"expected {prompt_format!r}"
+                )
+            tokenizer_path = getattr(args, "tokenizer_model", None)
+            if tokenizer_path and metadata.get("tokenizer_fingerprint") != fingerprint_tokenizer_path(
+                tokenizer_path
+            ):
+                raise ValueError(
+                    "chat packing metadata tokenizer does not match --tokenizer-model; "
+                    "rerun examples/chimera/prepare_chat_data.py"
+                )
+            self._pack_lengths = lengths
+            self._pack_index = build_pack_index(
+                self.indices, self._pack_lengths, self.config.sequence_length
+            )
         if pack_samples:
             self.collate_fn = PackSamplesCollator()
 
@@ -118,10 +198,24 @@ class SimPODataset(MegatronDataset):
             )
         if os.environ.get("RANK", "0") == "0":
             requested = self.num_samples if self.num_samples is not None else len(self.indices)
+            pack_summary = ""
+            if self._pack_index is not None:
+                utilization = (
+                    100.0
+                    * self._pack_index.packed_token_count
+                    / (len(self._pack_index) * self.config.sequence_length)
+                )
+                pack_summary = (
+                    f" epoch_packs={len(self._pack_index)} "
+                    f"packed_rows={len(self._pack_index.row_indices)} "
+                    f"invalid_rows={self._pack_index.invalid_row_count} "
+                    f"oversized_rows={len(self._pack_index.oversized_row_indices)}"
+                    f" token_utilization={utilization:.2f}%"
+                )
             print(
                 f"[SimPODataset] split={index_split.name} path={dataset_path} "
                 f"physical_rows={len(self.dataset)} split_rows={len(self.indices)} "
-                f"requested_samples={requested} pack_samples={pack_samples}",
+                f"requested_samples={requested} pack_samples={pack_samples}{pack_summary}",
                 flush=True,
             )
 
@@ -131,12 +225,101 @@ class SimPODataset(MegatronDataset):
 
     @staticmethod
     def build_low_level_dataset(dataset_path: str, config: GPTDatasetConfig) -> Any:
+        args = get_args()
+        if getattr(args, "pack_samples", False) and getattr(args, "pack_metadata_path", None):
+            return IndexedJsonlDataset(dataset_path, getattr(args, "pack_metadata_path"))
         return JsonlLowLevelDataset(dataset_path)
 
     def __len__(self) -> int:
-        return self.num_samples if self.num_samples is not None else len(self.indices)
+        if self.num_samples is not None:
+            return self.num_samples
+        if self._pack_index is not None:
+            return len(self._pack_index)
+        return len(self.indices)
+
+    def _get_packed_item(self, idx: int) -> Dict[str, torch.Tensor]:
+        tokenizer = self.tokenizer
+        pad = tokenizer.pad
+        pack_length = self.config.sequence_length
+        epoch_pack_index = idx % len(self._pack_index)
+        row_indices = self._pack_index.rows_for_pack(epoch_pack_index)
+
+        pack_tokens = []
+        pack_targets = []
+        pack_positions = []
+        cu_seqlens = [0]
+
+        for row_index_value in row_indices:
+            row_index = int(row_index_value)
+            row = self.dataset[row_index]
+            if not isinstance(row, dict) or "chosen" not in row or "rejected" not in row:
+                raise RuntimeError(
+                    f"SimPO row {row_index} became invalid after packing metadata was built"
+                )
+
+            measured_pair_length = 0
+            for name in ("chosen", "rejected"):
+                conversation = row[name]
+                validation_error = validate_chat_messages(conversation)
+                if validation_error is not None:
+                    raise RuntimeError(
+                        f"SimPO row {row_index} {name} became invalid after packing metadata "
+                        f"was built: {validation_error}"
+                    )
+                tokens, targets = tokenizer.tokenize_conversation(
+                    conversation, return_target=True, add_generation_prompt=False
+                )
+                sequence_tokens = tokens[:-1].tolist()
+                sequence_targets = targets[1:].tolist()
+                measured_pair_length += len(sequence_tokens)
+                pack_tokens.extend(sequence_tokens)
+                pack_targets.extend(sequence_targets)
+                pack_positions.extend(range(len(sequence_tokens)))
+                cu_seqlens.append(len(pack_tokens))
+
+            expected_pair_length = int(self._pack_lengths[row_index])
+            if measured_pair_length != expected_pair_length:
+                raise RuntimeError(
+                    f"SimPO row {row_index} tokenized to {measured_pair_length} positions, "
+                    f"but packing metadata records {expected_pair_length}; rebuild the metadata"
+                )
+
+        real_length = len(pack_tokens)
+        padding_length = pack_length - real_length
+        if padding_length < 0:
+            raise RuntimeError(
+                f"SimPO pack {epoch_pack_index} exceeds capacity: {real_length} > {pack_length}"
+            )
+        if padding_length:
+            pack_tokens.extend([pad] * padding_length)
+            pack_targets.extend([pad] * padding_length)
+            pack_positions.extend(range(padding_length))
+            cu_seqlens.append(pack_length)
+
+        input_ids = torch.tensor(pack_tokens, dtype=torch.int64)
+        labels = torch.tensor(pack_targets, dtype=torch.int64)
+        position_ids = torch.tensor(pack_positions, dtype=torch.int64)
+        loss_mask = torch.ones(pack_length, dtype=torch.float32)
+        loss_mask[labels == pad] = 0.0
+        loss_mask[labels == IGNORE_INDEX] = 0.0
+        cu_seqlens = torch.tensor(cu_seqlens, dtype=torch.int32)
+        max_seqlen = (cu_seqlens[1:] - cu_seqlens[:-1]).max()
+
+        return {
+            "tokens": input_ids,
+            "labels": labels,
+            "loss_mask": loss_mask,
+            "position_ids": position_ids,
+            "cu_seqlens": cu_seqlens,
+            "max_seqlen": max_seqlen,
+            "real_length": real_length,
+            "num_pairs": len(row_indices),
+        }
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
+        if getattr(self, "_pack_samples", False):
+            return self._get_packed_item(idx)
+
         args = get_args()
         tokenizer = self.tokenizer
         pad = tokenizer.pad
@@ -168,7 +351,6 @@ class SimPODataset(MegatronDataset):
         max_rows_to_scan = len(self.indices)
         if pack_samples and pack_factor is not None:
             max_rows_to_scan = min(max_rows_to_scan, pack_factor)
-
         while curr_idx_offset < max_rows_to_scan and len(pack_tokens) < pack_length + 1:
             sample_idx = int(self.indices[(base_sample_idx + curr_idx_offset) % len(self.indices)])
             row = self.dataset[sample_idx]

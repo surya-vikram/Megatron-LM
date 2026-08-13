@@ -50,7 +50,9 @@ class PromptConfig:
 class SFTTokenizer:
     """SFT Tokenizer."""
 
-    def __init__(self, tokenizer_path: str, prompt_format: str):
+    def __init__(
+        self, tokenizer_path: str, prompt_format: str, load_model_config: bool = True
+    ):
         """
         Note: Currently, only HuggingFaceTokenizer is supported as the underlying text tokenizer.
 
@@ -60,8 +62,13 @@ class SFTTokenizer:
         """
         if HAVE_TRANSFORMERS:
             # Currently, only HuggingFace tokenizers are supported.
+            tokenizer_kwargs = {}
+            if not load_model_config:
+                # Tokenizer-only preprocessing must not require the model architecture
+                # to be registered in the installed Transformers package.
+                tokenizer_kwargs["config"] = transformers.PreTrainedConfig()
             tokenizer = transformers.AutoTokenizer.from_pretrained(
-                pretrained_model_name_or_path=tokenizer_path
+                pretrained_model_name_or_path=tokenizer_path, **tokenizer_kwargs
             )
         else:
             raise ImportError(

@@ -9,8 +9,9 @@ from megatron.core.datasets.gpt_dataset import GPTDataset
 from megatron.core.tokenizers.text.libraries.sft_tokenizer import SFTTokenizer
 from megatron.training.datasets import sft_dataset as sft_module
 from megatron.training.datasets import simpo_dataset as simpo_module
+from megatron.training.datasets.chat_packing import build_pack_index
 from megatron.training.datasets.sft_dataset import IGNORE_INDEX, SFTDataset
-from megatron.training.datasets.simpo_dataset import SimPODataset
+from megatron.training.datasets.simpo_dataset import PackSamplesCollator, SimPODataset
 
 
 class FakeTokenizer:
@@ -33,7 +34,7 @@ class FakeTokenizer:
 def dataset_args(**overrides):
     values = {
         "pack_samples": False,
-        "pack_factor": None,
+        "pack_metadata_path": None,
         "simpo": False,
         "debug_dataset": False,
         "log_dataset_stats": False,
@@ -64,6 +65,8 @@ def make_dataset(dataset_type, rows, num_samples=6, sequence_length=8):
         "skipped_oversized": 0,
         "skipped_malformed": 0,
     }
+    dataset._pack_samples = False
+    dataset._pack_index = None
     if dataset_type is SimPODataset:
         dataset.tokenizer = dataset.config.tokenizer
     return dataset
@@ -144,6 +147,72 @@ def test_simpo_skips_malformed_and_oversized_rows_without_looping(monkeypatch):
 
     with pytest.raises(RuntimeError, match="malformed=1, oversized=1"):
         dataset[0]
+
+
+def test_pack_index_carries_non_fitting_sample_into_next_pack():
+    pack_index = build_pack_index(np.arange(3), np.array([6, 6, 4]), capacity=10)
+
+    assert pack_index.rows_for_pack(0).tolist() == [0]
+    assert pack_index.rows_for_pack(1).tolist() == [1, 2]
+    assert np.concatenate(
+        [pack_index.rows_for_pack(i) for i in range(len(pack_index))]
+    ).tolist() == [0, 1, 2]
+
+
+def test_pack_index_only_skips_samples_larger_than_empty_pack():
+    pack_index = build_pack_index(np.arange(4), np.array([4, -1, 11, 6]), capacity=10)
+
+    assert pack_index.row_indices.tolist() == [0, 3]
+    assert pack_index.oversized_row_indices.tolist() == [2]
+    assert pack_index.invalid_row_count == 1
+    assert pack_index.packed_token_count == 10
+
+
+def test_packed_sft_resets_positions_and_shifts_each_conversation_independently():
+    dataset = make_dataset(
+        SFTDataset,
+        [conversation("first"), conversation("second"), conversation("first again")],
+        num_samples=None,
+        sequence_length=8,
+    )
+    dataset._pack_samples = True
+    dataset._pack_lengths = np.array([3, 3, 3], dtype=np.int32)
+    dataset._pack_index = build_pack_index(
+        dataset.indices, dataset._pack_lengths, dataset.config.sequence_length
+    )
+
+    item = dataset[0]
+
+    assert item["cu_seqlens"].tolist() == [0, 3, 6, 8]
+    assert item["position_ids"].tolist() == [0, 1, 2, 0, 1, 2, 0, 1]
+    assert item["labels"].tolist()[:6] == [IGNORE_INDEX, 20, 21, IGNORE_INDEX, 40, 41]
+    assert item["loss_mask"].tolist() == [0.0, 1.0, 1.0, 0.0, 1.0, 1.0, 0.0, 0.0]
+
+
+def test_packed_simpo_keeps_pairs_adjacent_across_microbatch_collation():
+    rows = [preference_pair("first"), preference_pair("second")] * 2
+    dataset = make_dataset(SimPODataset, rows, num_samples=None, sequence_length=16)
+    dataset._pack_samples = True
+    dataset._pack_lengths = np.full(4, 6, dtype=np.int32)
+    dataset._pack_index = build_pack_index(
+        dataset.indices, dataset._pack_lengths, dataset.config.sequence_length
+    )
+
+    first = dataset[0]
+    second = dataset[1]
+    batch = PackSamplesCollator()([first, second])
+
+    # Eight real sequences (four chosen/rejected pairs) precede both padding segments.
+    assert batch["cu_seqlens"].tolist() == [
+        [0, 3, 6, 9, 12, 15, 18, 21, 24, 28, 32]
+    ]
+    assert batch["position_ids"].reshape(-1).tolist()[:12] == [
+        0, 1, 2, 0, 1, 2, 0, 1, 2, 0, 1, 2
+    ]
+    for sequence_index in range(8):
+        start = batch["cu_seqlens"][0, sequence_index].item()
+        end = batch["cu_seqlens"][0, sequence_index + 1].item()
+        assert batch["loss_mask"].reshape(-1)[start:end].sum().item() == 2
 
 
 def test_chimera_masking_keeps_every_assistant_turn_active():

@@ -68,7 +68,7 @@ MODEL_ARGS=(
     --num-query-groups 2
     --kv-channels 256
     --seq-length 8192
-    --max-position-embeddings 32768
+    --max-position-embeddings 8192
     --position-embedding-type yarn
     --rotary-base 10000000
     --rotary-percent 1.0

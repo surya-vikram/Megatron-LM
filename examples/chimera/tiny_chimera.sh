@@ -60,12 +60,12 @@ MODEL_ARGS=(
     --group-query-attention
     --num-query-groups 2
     --kv-channels 64
-    --seq-length "${SEQ_LENGTH:-512}"
-    --max-position-embeddings "${MAX_POSITION_EMBEDDINGS:-2048}"
+    --seq-length "${SEQ_LENGTH:-8192}"
+    --max-position-embeddings "${MAX_POSITION_EMBEDDINGS:-8192}"
     --position-embedding-type yarn
     --rotary-base 10000000
     --rotary-percent 1.0
-    --rotary-scaling-factor 1.0
+    --rotary-scaling-factor "${ROTARY_SCALING_FACTOR:-1.0}"
     --mscale 1.0
     --mscale-all-dim 0.0
     --normalization RMSNorm

@@ -391,6 +391,9 @@ def _update_router_expert_bias(model: List[torch.nn.Module], config: Transformer
         for expert_bias, updated_expert_bias in zip(expert_bias_list, stacked_updated_expert_bias):
             expert_bias.copy_(updated_expert_bias)
     else:
+        if config.moe_router_bias_update_rate <= 0.0:
+            # Bias is frozen (e.g. SFT, RL, or annealed pre-training). Skip updates.
+            return
         tokens_per_expert_list = []
         expert_bias_list = []
         for model_chunk in model:

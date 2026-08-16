@@ -146,11 +146,11 @@ MOE_ARGS=(
     --moe-router-topk "$MOE_ROUTER_TOPK"
     --moe-ffn-hidden-size "$MOE_FFN_HIDDEN_SIZE"
     --moe-shared-expert-intermediate-size "$MOE_SHARED_EXPERT_INTERMEDIATE_SIZE"
-    --moe-router-load-balancing-type seq_aux_loss
-    --moe-aux-loss-coeff 0.0001
+    --moe-router-load-balancing-type "${MOE_ROUTER_LOAD_BALANCING_TYPE:-none}"
+    --moe-aux-loss-coeff "${MOE_AUX_LOSS_COEFF:-0.0}"
     --moe-router-score-function sigmoid
     --moe-router-enable-expert-bias
-    --moe-router-bias-update-rate 0.001
+    --moe-router-bias-update-rate "${MOE_ROUTER_BIAS_UPDATE_RATE:-0.0}"
     --moe-router-topk-scaling-factor 2.5
     --moe-router-dtype fp32
     --moe-z-loss-coeff 0.001

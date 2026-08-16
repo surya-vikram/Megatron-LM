@@ -1,23 +1,23 @@
 #!/bin/bash
 set -euo pipefail
 
-export NCCL_P2P_DISABLE=1
-export NCCL_IB_DISABLE=1
+export NCCL_P2P_DISABLE="${NCCL_P2P_DISABLE:-0}"
+export NCCL_IB_DISABLE="${NCCL_IB_DISABLE:-0}"
 export NCCL_GRAPH_REGISTER=0
 export CUDA_DEVICE_MAX_CONNECTIONS=1
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 # User inputs.
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-TRAIN_DATA_PATH="${TRAIN_DATA_PATH:-$SCRIPT_DIR/data/pretrain/overfit_text_document}"
+TRAIN_DATA_PATH="${TRAIN_DATA_PATH:-$SCRIPT_DIR/data/pretrain/fineweb_edu_text_document}"
 VALID_DATA_PATH="${VALID_DATA_PATH:-}"
-TOKENIZER_MODEL="${TOKENIZER_MODEL:-/datasets/megadata/hf_models/chimera-10b}"
-RUNS_ROOT="${RUNS_ROOT:-/datasets/megadata/tiny_chimera_runs}"
+TOKENIZER_MODEL="${TOKENIZER_MODEL:-/workspace/repos/transformers/src/transformers/models/chimera/tokenizer}"
+RUNS_ROOT="${RUNS_ROOT:-/workspace/scratch/tiny_chimera_runs}"
 INTRA_DOC_MASKING="${INTRA_DOC_MASKING:-false}"
 LOAD_CHECKPOINT="${LOAD_CHECKPOINT:-}"
 
-# Single Local GPU launch settings.
-GPUS_PER_NODE="${GPUS_PER_NODE:-1}"
+# GPU launch settings.
+GPUS_PER_NODE="${GPUS_PER_NODE:-$(nvidia-smi -L 2>/dev/null | wc -l || echo 1)}"
 NNODES="${NNODES:-1}"
 NODE_RANK="${NODE_RANK:-0}"
 MASTER_ADDR="${MASTER_ADDR:-localhost}"

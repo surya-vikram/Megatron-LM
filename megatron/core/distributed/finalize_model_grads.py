@@ -24,6 +24,7 @@ from .. import parallel_state
 from ..transformer.moe.moe_utils import (
     accumulate_router_balance_metrics,
     get_updated_expert_bias,
+    get_updated_expert_bias_qb,
 )
 from ..transformer.transformer_config import TransformerConfig
 from ..utils import (
@@ -323,7 +324,12 @@ def reset_model_temporary_tensors(config: TransformerConfig, model: List[torch.n
     for model_chunk in model:
         for module in get_attr_wrapped_model(model_chunk, 'modules')():
             if config.moe_router_enable_expert_bias and hasattr(module, 'expert_bias'):
-                module.local_tokens_per_expert.zero_()
+                if hasattr(module, 'local_tokens_per_expert') and module.local_tokens_per_expert is not None:
+                    module.local_tokens_per_expert.zero_()
+                if hasattr(module, 'local_qb_histogram') and module.local_qb_histogram is not None:
+                    module.local_qb_histogram.zero_()
+                if hasattr(module, 'local_token_count') and module.local_token_count is not None:
+                    module.local_token_count.zero_()
             if (
                 config.moe_router_load_balancing_type == "global_aux_loss"
                 or "global_aux_loss" in config.moe_router_load_balancing_type
@@ -334,34 +340,83 @@ def reset_model_temporary_tensors(config: TransformerConfig, model: List[torch.n
 def _update_router_expert_bias(model: List[torch.nn.Module], config: TransformerConfig):
     """
     Update the expert bias of the router for a global batch.
-    This requires all-reduce of local_tokens_per_expert across TPxCPxDP ranks
+    Supports both Quantile Balancing (Kimi K3) and DeepSeek Sign Update.
     """
-    tokens_per_expert_list = []
-    expert_bias_list = []
-    for model_chunk in model:
-        for module in get_attr_wrapped_model(model_chunk, 'modules')():
-            # Only update expert_bias if this module is in the training mode. There are special
-            # cases where only the student is in training mode but the teacher is in eval mode
-            # when using online knoweldge-distillation with Model-Optimizer. In this case, we want
-            # to avoid updating teacher's expert_bias.
-            if hasattr(module, 'expert_bias') and module.training:
-                tokens_per_expert_list.append(module.local_tokens_per_expert)
-                expert_bias_list.append(module.expert_bias)
-    # For hybrid models with both MoE and Dense layers, this list can be empty.
-    if len(expert_bias_list) == 0:
-        return
-    stacked_tokens_per_expert = torch.stack(tokens_per_expert_list, dim=0)
-    stacked_expert_bias = torch.stack(expert_bias_list, dim=0)
-    stacked_updated_expert_bias = get_updated_expert_bias(
-        stacked_tokens_per_expert, stacked_expert_bias, config.moe_router_bias_update_rate
+    is_qb = (
+        config.moe_router_load_balancing_type == "quantile_balancing"
+        or "quantile_balancing" in config.moe_router_load_balancing_type
+        or config.moe_router_load_balancing_type == "qb"
+        or "qb" in config.moe_router_load_balancing_type
     )
-    if config.moe_router_balance_logging_interval is not None:
-        accumulate_router_balance_metrics(
-            stacked_tokens_per_expert, stacked_updated_expert_bias
-        )
 
-    for expert_bias, updated_expert_bias in zip(expert_bias_list, stacked_updated_expert_bias):
-        expert_bias.copy_(updated_expert_bias)
+    if is_qb:
+        qb_hist_list = []
+        token_count_list = []
+        expert_bias_list = []
+        for model_chunk in model:
+            for module in get_attr_wrapped_model(model_chunk, 'modules')():
+                if hasattr(module, 'expert_bias') and hasattr(module, 'local_qb_histogram') and module.training:
+                    qb_hist_list.append(module.local_qb_histogram)
+                    token_count_list.append(module.local_token_count)
+                    expert_bias_list.append(module.expert_bias)
+        if len(expert_bias_list) == 0:
+            return
+        stacked_qb_hist = torch.stack(qb_hist_list, dim=0)
+        stacked_token_counts = torch.stack(token_count_list, dim=0)
+        stacked_expert_bias = torch.stack(expert_bias_list, dim=0)
+        stacked_updated_expert_bias = get_updated_expert_bias_qb(
+            stacked_qb_hist,
+            stacked_token_counts,
+            stacked_expert_bias,
+            topk=config.moe_router_topk,
+            num_bins=config.moe_qb_num_bins,
+            ema_decay=config.moe_qb_ema_decay,
+        )
+        if config.moe_router_balance_logging_interval is not None:
+            tokens_per_expert_list = [
+                module.local_tokens_per_expert
+                for model_chunk in model
+                for module in get_attr_wrapped_model(model_chunk, 'modules')()
+                if hasattr(module, 'local_tokens_per_expert') and module.training
+            ]
+            if len(tokens_per_expert_list) > 0:
+                stacked_tokens_per_expert = torch.stack(tokens_per_expert_list, dim=0)
+                tp_dp_group = parallel_state.get_tensor_and_data_parallel_group(with_context_parallel=True)
+                if tp_dp_group is not None and torch.distributed.get_world_size(group=tp_dp_group) > 1:
+                    torch.distributed.all_reduce(stacked_tokens_per_expert, group=tp_dp_group)
+                accumulate_router_balance_metrics(
+                    stacked_tokens_per_expert, stacked_updated_expert_bias
+                )
+
+        for expert_bias, updated_expert_bias in zip(expert_bias_list, stacked_updated_expert_bias):
+            expert_bias.copy_(updated_expert_bias)
+    else:
+        tokens_per_expert_list = []
+        expert_bias_list = []
+        for model_chunk in model:
+            for module in get_attr_wrapped_model(model_chunk, 'modules')():
+                # Only update expert_bias if this module is in the training mode. There are special
+                # cases where only the student is in training mode but the teacher is in eval mode
+                # when using online knoweldge-distillation with Model-Optimizer. In this case, we want
+                # to avoid updating teacher's expert_bias.
+                if hasattr(module, 'expert_bias') and module.training:
+                    tokens_per_expert_list.append(module.local_tokens_per_expert)
+                    expert_bias_list.append(module.expert_bias)
+        # For hybrid models with both MoE and Dense layers, this list can be empty.
+        if len(expert_bias_list) == 0:
+            return
+        stacked_tokens_per_expert = torch.stack(tokens_per_expert_list, dim=0)
+        stacked_expert_bias = torch.stack(expert_bias_list, dim=0)
+        stacked_updated_expert_bias = get_updated_expert_bias(
+            stacked_tokens_per_expert, stacked_expert_bias, config.moe_router_bias_update_rate
+        )
+        if config.moe_router_balance_logging_interval is not None:
+            accumulate_router_balance_metrics(
+                stacked_tokens_per_expert, stacked_updated_expert_bias
+            )
+
+        for expert_bias, updated_expert_bias in zip(expert_bias_list, stacked_updated_expert_bias):
+            expert_bias.copy_(updated_expert_bias)
 
 
 def _allreduce_non_tensor_model_parallel_grads(

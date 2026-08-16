@@ -170,7 +170,9 @@ class TopKRouter(Router):
         self.score_function = self.config.moe_router_score_function
         self.input_jitter = None
 
-        self.enable_expert_bias = self.config.moe_router_enable_expert_bias
+        self.enable_expert_bias = (
+            self.config.moe_router_enable_expert_bias or self.is_quantile_balancing
+        )
         if self.enable_expert_bias:
             self.register_buffer(
                 'local_tokens_per_expert',
@@ -189,6 +191,21 @@ class TopKRouter(Router):
                     device=torch.cuda.current_device(),
                 ),
             )
+            if self.is_quantile_balancing:
+                self.register_buffer(
+                    'local_qb_histogram',
+                    torch.zeros(
+                        (self.config.num_moe_experts, self.config.moe_qb_num_bins),
+                        dtype=torch.float32,
+                        device=torch.cuda.current_device(),
+                    ),
+                    persistent=False,
+                )
+                self.register_buffer(
+                    'local_token_count',
+                    torch.zeros(1, dtype=torch.float32, device=torch.cuda.current_device()),
+                    persistent=False,
+                )
         else:
             self.local_tokens_per_expert = None
             self.expert_bias = None
@@ -219,7 +236,7 @@ class TopKRouter(Router):
 
     def _maintain_float32_expert_bias(self):
         """
-        Maintain the expert bias in float32.
+        Maintain the expert bias and QB buffers in float32.
 
         When using bf16/fp16, the expert bias gets converted to lower precision in Float16Module.
         We keep it in float32 to avoid routing errors when updating the expert_bias.
@@ -227,6 +244,12 @@ class TopKRouter(Router):
         if hasattr(self, 'expert_bias') and self.expert_bias is not None:
             if self.expert_bias.dtype != torch.float32:
                 self.expert_bias.data = self.expert_bias.data.to(torch.float32)
+        if hasattr(self, 'local_qb_histogram') and self.local_qb_histogram is not None:
+            if self.local_qb_histogram.dtype != torch.float32:
+                self.local_qb_histogram.data = self.local_qb_histogram.data.to(torch.float32)
+        if hasattr(self, 'local_token_count') and self.local_token_count is not None:
+            if self.local_token_count.dtype != torch.float32:
+                self.local_token_count.data = self.local_token_count.data.to(torch.float32)
 
     def sinkhorn_load_balancing(self, logits: torch.Tensor):
         """Apply sinkhorn routing to the logits tensor.
@@ -571,6 +594,17 @@ class TopKRouter(Router):
         else:
             return input
 
+    @property
+    def is_quantile_balancing(self) -> bool:
+        """Check if Quantile Balancing (QB) load balancing is enabled."""
+        if self.routing_type is None:
+            return False
+        if isinstance(self.routing_type, str):
+            return self.routing_type in ("quantile_balancing", "qb")
+        if isinstance(self.routing_type, (list, tuple)):
+            return any(t in ("quantile_balancing", "qb") for t in self.routing_type)
+        return False
+
     @jit_fuser
     def _apply_expert_bias(
         self, routing_map: torch.Tensor, padding_mask: Optional[torch.Tensor] = None
@@ -584,6 +618,49 @@ class TopKRouter(Router):
                 if padding_mask is not None:
                     routing_map = routing_map & (~padding_mask)
                 self.local_tokens_per_expert += routing_map.sum(dim=0)
+
+    def _apply_expert_bias_qb(
+        self,
+        scores: torch.Tensor,
+        cutoff: torch.Tensor,
+        padding_mask: Optional[torch.Tensor] = None,
+    ):
+        """
+        Accumulate required bias r_{i,j} = alpha_i - s_{i,j} into local histogram for Quantile Balancing.
+        See Kimi K3 paper (arXiv:2607.24653) Appendix D.
+        """
+        if self.is_quantile_balancing and torch.is_grad_enabled():
+            with torch.no_grad():
+                num_tokens, num_experts = scores.shape
+                num_bins = self.config.moe_qb_num_bins
+
+                # Dynamic bin range based on current expert bias
+                b_min = self.expert_bias.min()
+                b_max = self.expert_bias.max()
+                r_min = b_min - 1.0
+                r_max = b_max + 1.0
+                bin_width = (r_max - r_min) / float(num_bins)
+
+                # Required bias: r_{i,j} = alpha_i - s_{i,j}
+                r = cutoff.unsqueeze(-1) - scores  # [num_tokens, num_experts]
+                bin_idx = ((r - r_min) / bin_width).long().clamp(0, num_bins - 1)  # [num_tokens, num_experts]
+
+                # Transpose to [num_experts, num_tokens] for vectorized scatter-add
+                bin_idx_t = bin_idx.t().contiguous().to(self.local_qb_histogram.device)
+                weights = torch.ones(
+                    bin_idx_t.shape,
+                    dtype=self.local_qb_histogram.dtype,
+                    device=self.local_qb_histogram.device,
+                )
+                if padding_mask is not None:
+                    valid_mask = (~padding_mask).unsqueeze(0).expand(num_experts, num_tokens)
+                    weights = weights * valid_mask.to(dtype=self.local_qb_histogram.dtype, device=self.local_qb_histogram.device)
+                    valid_tokens = float((~padding_mask).sum().item())
+                else:
+                    valid_tokens = float(num_tokens)
+
+                self.local_qb_histogram.scatter_add_(1, bin_idx_t, weights)
+                self.local_token_count += valid_tokens
 
     def routing(self, logits: torch.Tensor, padding_mask: Optional[torch.Tensor] = None):
         """Top-k routing function
@@ -600,6 +677,7 @@ class TopKRouter(Router):
                 with shape [num_tokens, num_experts].
         """
         seq_length, bsz = logits.shape[:2]
+        num_tokens = logits.shape[0] * logits.shape[1]
         logits = logits.view(-1, self.config.num_moe_experts)
 
         # Flatten padding_mask to [num_tokens] if provided
@@ -612,6 +690,52 @@ class TopKRouter(Router):
         # Calculate probs and routing_map for token dispatching
         if self.routing_type == "sinkhorn":
             probs, routing_map = self.sinkhorn_load_balancing(logits)
+        elif self.is_quantile_balancing:
+            # Quantile Balancing (Kimi K3) Top-(k+1) selection & margin extraction
+            if self.score_function == "sigmoid":
+                scores = torch.sigmoid(logits.float())
+            elif self.score_function == "sqrtsoftplus":
+                scores = torch.nn.functional.softplus(logits.float()).sqrt()
+            else:
+                scores = torch.sigmoid(logits.float())
+
+            scores_for_routing = scores + self.expert_bias.float()
+
+            # Top-(k+1) routing on biased scores
+            # 1st to k-th entries: actual routes taken
+            # (k+1)-th entry: cutoff alpha_i
+            topk1_vals, topk1_indices = torch.topk(scores_for_routing, k=self.topk + 1, dim=-1)
+            top_indices = topk1_indices[:, :self.topk]
+            cutoff = topk1_vals[:, self.topk]
+
+            selected_scores = torch.gather(scores, dim=1, index=top_indices)
+            probs = (
+                selected_scores / (selected_scores.sum(dim=-1, keepdim=True) + 1e-20)
+                if self.topk > 1
+                else selected_scores
+            )
+            if self.config.moe_router_topk_scaling_factor:
+                probs = probs * self.config.moe_router_topk_scaling_factor
+            probs = probs.type_as(logits)
+
+            if torch.are_deterministic_algorithms_enabled():
+                routing_probs = torch.zeros_like(logits)
+                rows = torch.arange(num_tokens, device=logits.device).unsqueeze(1)
+                routing_probs.index_put_((rows, top_indices), probs, accumulate=False)
+
+                routing_map = torch.zeros_like(logits, dtype=logits.dtype)
+                routing_map.index_put_(
+                    (rows, top_indices), torch.ones_like(probs, dtype=routing_map.dtype), accumulate=False
+                )
+                routing_map = routing_map.bool()
+            else:
+                routing_probs = torch.zeros_like(logits).scatter(1, top_indices, probs)
+                routing_map = torch.zeros_like(logits).int().scatter(1, top_indices, 1).bool()
+
+            probs = routing_probs
+
+            # Record required bias into local histogram for Quantile Balancing
+            self._apply_expert_bias_qb(scores, cutoff, padding_mask=padding_mask)
         else:
             probs, routing_map = topk_routing_with_score_function(
                 logits,

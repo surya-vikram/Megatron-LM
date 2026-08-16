@@ -90,11 +90,13 @@ MOE_ARGS=(
     --moe-router-topk 2
     --moe-ffn-hidden-size 256
     --moe-shared-expert-intermediate-size 256
-    --moe-router-load-balancing-type seq_aux_loss
-    --moe-aux-loss-coeff 0.0001
+    --moe-router-load-balancing-type "${MOE_ROUTER_LOAD_BALANCING_TYPE:-quantile_balancing}"
+    --moe-aux-loss-coeff "${MOE_AUX_LOSS_COEFF:-0.0}"
+    --moe-qb-num-bins "${MOE_QB_NUM_BINS:-1000}"
+    --moe-qb-ema-decay "${MOE_QB_EMA_DECAY:-0.0}"
     --moe-router-score-function sigmoid
     --moe-router-enable-expert-bias
-    --moe-router-bias-update-rate 0.001
+    --moe-router-bias-update-rate "${MOE_ROUTER_BIAS_UPDATE_RATE:-0.001}"
     --moe-router-topk-scaling-factor 2.5
     --moe-router-dtype fp32
     --moe-z-loss-coeff "${MOE_Z_LOSS_COEFF:-0.001}"
@@ -103,6 +105,7 @@ MOE_ARGS=(
     --moe-permute-fusion
     --moe-router-fusion
     --moe-shared-expert-overlap
+    --moe-router-balance-logging-interval "${MOE_ROUTER_BALANCE_LOGGING_INTERVAL:-1}"
 )
 
 if [[ "${ENABLE_PER_LAYER_LOGGING:-true}" == "true" ]]; then
@@ -137,8 +140,8 @@ TRAINING_ARGS=(
     --min-lr 1e-4
     --lr-decay-style WSD
     --lr-wsd-decay-style minus_sqrt
-    --lr-wsd-decay-iters 20
-    --lr-warmup-iters 5
+    --lr-wsd-decay-iters "${LR_WSD_DECAY_ITERS:-20}"
+    --lr-warmup-iters "${LR_WARMUP_ITERS:-5}"
     --weight-decay 0.1
     --clip-grad 1.0
     --optimizer "$OPTIMIZER"
@@ -190,16 +193,22 @@ PARALLEL_ARGS=(
 
 LOGGING_ARGS=(
     --tensorboard-dir "$TENSORBOARD_DIR"
-    --save-interval 10000
+    --save-interval "${SAVE_INTERVAL:-10000}"
     --eval-interval 10000
     --eval-iters 0
     --log-interval 1
     --log-throughput
     --exit-signal-handler
+    --ckpt-format "${CKPT_FORMAT:-torch}"
 )
-if [[ -n "$LOAD_CHECKPOINT" ]]; then
+if [[ -n "${SAVE_DIR:-}" ]]; then
     LOGGING_ARGS+=(
-        --load "$LOAD_CHECKPOINT"
+        --save "$SAVE_DIR"
+    )
+fi
+if [[ -n "${LOAD_CHECKPOINT:-}" || -n "${LOAD_DIR:-}" ]]; then
+    LOGGING_ARGS+=(
+        --load "${LOAD_CHECKPOINT:-${LOAD_DIR:-}}"
         --exit-on-missing-checkpoint
     )
 fi

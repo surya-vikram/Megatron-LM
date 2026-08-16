@@ -735,6 +735,14 @@ class TransformerConfig(ModelParallelConfig):
     and decreased for the experts with more assigned tokens.
     The default value 1e-3 is same as that used in DeepSeekV3."""
 
+    moe_qb_num_bins: int = 1000
+    """Number of histogram bins per expert for Quantile Balancing (QB) load balancing.
+    See Kimi K3 paper (arXiv:2607.24653) Appendix D."""
+
+    moe_qb_ema_decay: float = 0.0
+    """EMA decay factor for Quantile Balancing expert bias updates across global steps.
+    0.0 means direct coordinate update without smoothing. Default is 0.0."""
+
     moe_router_force_load_balancing: bool = False
     """[Experimental] Force load balancing with random logits for MoE router, supports naive topk 
     and group-limited topk. This is an experimental feature and only for benchmark."""
@@ -2016,6 +2024,18 @@ class TransformerConfig(ModelParallelConfig):
             assert (
                 self.expert_tensor_parallel_size == 1
             ), "Bias in Moe is only supported when ETP==1"
+
+        if (
+            self.moe_router_load_balancing_type == "quantile_balancing"
+            or "quantile_balancing" in self.moe_router_load_balancing_type
+            or self.moe_router_load_balancing_type == "qb"
+            or "qb" in self.moe_router_load_balancing_type
+        ):
+            self.moe_router_enable_expert_bias = True
+            if self.moe_qb_num_bins <= 0:
+                raise ValueError("moe_qb_num_bins must be a positive integer")
+            if not (0.0 <= self.moe_qb_ema_decay < 1.0):
+                raise ValueError("moe_qb_ema_decay must be in [0.0, 1.0)")
 
         if self.moe_router_enable_expert_bias and self.moe_router_score_function not in (
             "sigmoid",

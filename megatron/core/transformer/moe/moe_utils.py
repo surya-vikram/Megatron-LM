@@ -1287,6 +1287,103 @@ def get_updated_expert_bias(
         return updated_expert_bias
 
 
+def get_updated_expert_bias_qb(
+    qb_histograms: torch.Tensor,
+    token_counts: torch.Tensor,
+    expert_bias: torch.Tensor,
+    topk: int,
+    num_bins: int = 1000,
+    ema_decay: float = 0.0,
+) -> torch.Tensor:
+    """Update expert bias using Quantile Balancing (QB).
+    See Kimi K3 paper: arXiv:2607.24653 (Moonshot AI), Section 2.3.3 and Appendix D.
+
+    Args:
+        qb_histograms (torch.Tensor): Local histogram of required bias r_{i,j},
+            shape [num_layers, num_experts, num_bins] or [num_experts, num_bins].
+        token_counts (torch.Tensor): Total token count per layer,
+            shape [num_layers, 1] or [1].
+        expert_bias (torch.Tensor): Current expert bias,
+            shape [num_layers, num_experts] or [num_experts].
+        topk (int): Number of experts selected per token (Top-K).
+        num_bins (int): Number of histogram bins B. Default is 1000.
+        ema_decay (float): EMA decay factor for bias updates across global steps. Default 0.0.
+
+    Returns:
+        torch.Tensor: The updated expert bias.
+    """
+    with torch.no_grad():
+        # 1. All-Reduce across TP x CP x DP process group
+        if parallel_state.is_initialized():
+            tp_dp_group = parallel_state.get_tensor_and_data_parallel_group(with_context_parallel=True)
+            if tp_dp_group is not None and torch.distributed.get_world_size(group=tp_dp_group) > 1:
+                torch.distributed.all_reduce(
+                    qb_histograms,
+                    group=tp_dp_group,
+                )
+                torch.distributed.all_reduce(
+                    token_counts,
+                    group=tp_dp_group,
+                )
+
+        is_1d = expert_bias.dim() == 1
+        if is_1d:
+            qb_histograms = qb_histograms.unsqueeze(0)
+            token_counts = token_counts.unsqueeze(0)
+            expert_bias = expert_bias.unsqueeze(0)
+
+        num_layers, num_experts = expert_bias.shape
+        num_bins = qb_histograms.shape[-1]
+
+        # 2. Target load per expert across full Global Batch: q = (m * k) / n
+        global_m = token_counts.float()  # [num_layers, 1]
+        q = (global_m * float(topk)) / float(num_experts)  # [num_layers, 1]
+
+        # 3. Dynamic bin range derived from current expert bias
+        b_min = expert_bias.min(dim=-1, keepdim=True).values  # [num_layers, 1]
+        b_max = expert_bias.max(dim=-1, keepdim=True).values  # [num_layers, 1]
+        r_min = b_min - 1.0
+        r_max = b_max + 1.0
+        bin_width = (r_max - r_min) / float(num_bins)  # [num_layers, 1]
+
+        # 4. Cumulative count along bin dimension: [num_layers, num_experts, num_bins]
+        cum_counts = torch.cumsum(qb_histograms, dim=-1)
+
+        # 5. Find target bin containing q
+        # Target bin is the first bin where cum_counts >= q
+        target_bin_mask = cum_counts >= q.unsqueeze(-1)  # [num_layers, num_experts, num_bins]
+        has_any = target_bin_mask.any(dim=-1)  # [num_layers, num_experts]
+        target_bin_idx = target_bin_mask.int().argmax(dim=-1)  # [num_layers, num_experts]
+        target_bin_idx = torch.where(has_any, target_bin_idx, torch.zeros_like(target_bin_idx))
+
+        # Extract counts before target bin and counts inside target bin
+        prev_idx = (target_bin_idx - 1).clamp(min=0).unsqueeze(-1)
+        cum_before = torch.gather(cum_counts, -1, prev_idx).squeeze(-1)
+        cum_before = torch.where(target_bin_idx == 0, torch.zeros_like(cum_before), cum_before)
+        bin_counts = torch.gather(qb_histograms, -1, target_bin_idx.unsqueeze(-1)).squeeze(-1)
+
+        # Linear interpolation fraction: (q - c_j) / h_j
+        frac = (q - cum_before) / (bin_counts + 1e-12)
+        frac = frac.clamp(min=0.0, max=1.0)
+
+        # Recover estimated quantile: \hat{b}_j
+        hat_bias = r_min + (target_bin_idx.float() + frac) * bin_width
+
+        # 6. Mean-center: remove common offset (Paper Eq. 14)
+        hat_bias = hat_bias - hat_bias.mean(dim=-1, keepdim=True)
+
+        # 7. Optional EMA smoothing across global steps
+        if ema_decay > 0.0:
+            updated_bias = ema_decay * expert_bias + (1.0 - ema_decay) * hat_bias
+        else:
+            updated_bias = hat_bias
+
+        if is_1d:
+            updated_bias = updated_bias.squeeze(0)
+
+        return updated_bias
+
+
 def maybe_move_tensor_to_cpu(
     tensor: torch.Tensor, as_numpy: bool = False, record_stream: bool = False
 ) -> torch.Tensor:

@@ -17,36 +17,42 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")
 
 import torch
 import torch.distributed
+import torch.distributed.distributed_c10d as c10d
 
 def _make_safe_dist():
-    for name in ['barrier', 'all_reduce', 'broadcast', 'all_gather', 'all_gather_object', 'all_gather_into_tensor', 'reduce_scatter_tensor', 'broadcast_object_list']:
-        if hasattr(torch.distributed, name):
-            orig = getattr(torch.distributed, name)
-            def make_wrapper(fn_name, orig_fn):
-                def safe_fn(*args, **kwargs):
-                    group = kwargs.get('group', None)
-                    if torch.distributed.is_initialized() and torch.distributed.get_world_size(group=group) > 1:
-                        return orig_fn(*args, **kwargs)
-                    if fn_name == 'all_gather_object':
-                        obj_list = args[0] if len(args) > 0 else kwargs.get('object_list')
-                        obj = args[1] if len(args) > 1 else kwargs.get('obj')
-                        if obj_list is not None and len(obj_list) > 0:
-                            obj_list[0] = obj
-                    elif fn_name == 'all_gather':
-                        out_list = args[0] if len(args) > 0 else kwargs.get('tensor_list', kwargs.get('output_tensor_list', kwargs.get('output')))
-                        inp = args[1] if len(args) > 1 else kwargs.get('tensor', kwargs.get('input'))
-                        if isinstance(out_list, list) and len(out_list) > 0 and inp is not None:
-                            out_list[0].copy_(inp)
-                        elif hasattr(out_list, 'copy_') and inp is not None:
-                            out_list.copy_(inp)
-                    elif fn_name in ('all_gather_into_tensor', 'reduce_scatter_tensor'):
-                        out = args[0] if len(args) > 0 else kwargs.get('output')
-                        inp = args[1] if len(args) > 1 else kwargs.get('input')
-                        if out is not None and inp is not None:
-                            out.copy_(inp)
-                    return None
-                return safe_fn
-            setattr(torch.distributed, name, make_wrapper(name, orig))
+    for mod in [torch.distributed, c10d]:
+        for name in ['barrier', 'all_reduce', 'broadcast', 'all_gather', 'all_gather_object', 'all_gather_into_tensor', 'reduce_scatter_tensor', 'broadcast_object_list']:
+            if hasattr(mod, name):
+                orig = getattr(mod, name)
+                def make_wrapper(fn_name, orig_fn):
+                    def safe_fn(*args, **kwargs):
+                        group = kwargs.get('group', None)
+                        if torch.distributed.is_initialized():
+                            try:
+                                if torch.distributed.get_world_size(group=group) > 1:
+                                    return orig_fn(*args, **kwargs)
+                            except Exception:
+                                pass
+                        if fn_name == 'all_gather_object':
+                            obj_list = args[0] if len(args) > 0 else kwargs.get('object_list')
+                            obj = args[1] if len(args) > 1 else kwargs.get('obj')
+                            if obj_list is not None and len(obj_list) > 0:
+                                obj_list[0] = obj
+                        elif fn_name == 'all_gather':
+                            out_list = args[0] if len(args) > 0 else kwargs.get('tensor_list', kwargs.get('output_tensor_list', kwargs.get('output')))
+                            inp = args[1] if len(args) > 1 else kwargs.get('tensor', kwargs.get('input'))
+                            if isinstance(out_list, list) and len(out_list) > 0 and inp is not None:
+                                out_list[0].copy_(inp)
+                            elif hasattr(out_list, 'copy_') and inp is not None:
+                                out_list.copy_(inp)
+                        elif fn_name in ('all_gather_into_tensor', 'reduce_scatter_tensor'):
+                            out = args[0] if len(args) > 0 else kwargs.get('output')
+                            inp = args[1] if len(args) > 1 else kwargs.get('input')
+                            if out is not None and inp is not None:
+                                out.copy_(inp)
+                        return None
+                    return safe_fn
+                setattr(mod, name, make_wrapper(name, orig))
 
 _make_safe_dist()
 

@@ -464,6 +464,133 @@ def validate_hf_weights(path: Path, config: dict[str, Any]) -> int:
     return len(actual)
 
 
+def hf_dtype_manifest(path: Path, config: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return and validate the canonical mixed-precision HF storage policy."""
+    key_map = _safetensor_key_map(path)
+    expected_bias_count = (
+        config["num_hidden_layers"]
+        - config["first_k_dense_replace"]
+        - config.get("last_k_dense_replace", 0)
+    )
+    manifest: list[dict[str, Any]] = []
+    failures: list[str] = []
+    bias_count = 0
+    for key in sorted(key_map):
+        tensor = _load_safetensor(key_map[key], key)
+        is_router_bias = key.endswith(".gate.e_score_correction_bias")
+        expected_dtype = "torch.float32" if is_router_bias else "torch.bfloat16"
+        actual_dtype = str(tensor.dtype)
+        if is_router_bias:
+            bias_count += 1
+        if actual_dtype != expected_dtype:
+            failures.append(f"{key}: expected {expected_dtype}, found {actual_dtype}")
+        manifest.append(
+            {
+                "key": key,
+                "shape": list(tensor.shape),
+                "dtype": actual_dtype,
+                "category": "router_expert_bias" if is_router_bias else "model_weight",
+            }
+        )
+    if bias_count != expected_bias_count:
+        failures.append(
+            f"router expert-bias count: expected {expected_bias_count}, found {bias_count}"
+        )
+    if failures:
+        raise ValueError("HF dtype policy violation:\n- " + "\n- ".join(failures[:50]))
+    return manifest
+
+
+def _resolve_mcore_iteration(path: Path) -> Path:
+    if path.name.startswith("iter_") and path.is_dir():
+        return path
+    iterations = sorted(path.glob("iter_*"))
+    if not iterations:
+        raise FileNotFoundError(f"No iter_* checkpoint directory found under {path}")
+    return iterations[-1]
+
+
+def mcore_dtype_manifest(
+    path: Path, profile: str = "auto"
+) -> tuple[str, list[dict[str, Any]]]:
+    """Read DCP metadata and validate router storage dtypes without loading tensors."""
+    from torch.distributed.checkpoint import FileSystemReader
+
+    iteration = _resolve_mcore_iteration(path)
+    config_root = path if (path / "run_config.yaml").is_file() else iteration
+    profile_name = validate_run_config(config_root, profile)
+    expected_router_count = sum(PROFILES[profile_name]["moe_layer_freq"])
+    metadata = FileSystemReader(str(iteration)).read_metadata()
+    manifest: list[dict[str, Any]] = []
+    router_weights: list[dict[str, Any]] = []
+    router_biases: list[dict[str, Any]] = []
+    for key, value in sorted(metadata.state_dict_metadata.items()):
+        properties = getattr(value, "properties", None)
+        size = getattr(value, "size", None)
+        if properties is None or size is None:
+            continue
+        entry = {
+            "key": key,
+            "shape": list(size),
+            "dtype": str(properties.dtype),
+        }
+        manifest.append(entry)
+        if key.endswith(".mlp.router.weight"):
+            router_weights.append(entry)
+        elif key.endswith(".mlp.router.expert_bias"):
+            router_biases.append(entry)
+
+    failures: list[str] = []
+    if len(router_weights) != expected_router_count:
+        failures.append(
+            f"router weight count: expected {expected_router_count}, found {len(router_weights)}"
+        )
+    if len(router_biases) != expected_router_count:
+        failures.append(
+            f"router expert-bias count: expected {expected_router_count}, found {len(router_biases)}"
+        )
+    failures.extend(
+        f"{entry['key']}: expected torch.bfloat16, found {entry['dtype']}"
+        for entry in router_weights
+        if entry["dtype"] != "torch.bfloat16"
+    )
+    failures.extend(
+        f"{entry['key']}: expected torch.float32, found {entry['dtype']}"
+        for entry in router_biases
+        if entry["dtype"] != "torch.float32"
+    )
+    if failures:
+        raise ValueError(
+            "MCore dtype policy violation:\n- " + "\n- ".join(failures[:50])
+        )
+    return profile_name, manifest
+
+
+def write_dtype_manifest(
+    kind: str, path: Path, output: Path, profile: str = "auto"
+) -> tuple[str, int]:
+    if kind == "hf":
+        profile_name, config = validate_hf_config(path, profile)
+        validate_hf_weights(path, config)
+        manifest = hf_dtype_manifest(path, config)
+    else:
+        profile_name, manifest = mcore_dtype_manifest(path, profile)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with output.open("w", encoding="utf-8") as handle:
+        json.dump(
+            {
+                "kind": kind,
+                "profile": profile_name,
+                "tensor_count": len(manifest),
+                "tensors": manifest,
+            },
+            handle,
+            indent=2,
+        )
+        handle.write("\n")
+    return profile_name, len(manifest)
+
+
 def _tensor_sha256(tensor: Any) -> str:
     tensor = tensor.detach().cpu().contiguous()
     byte_view = tensor.view(dtype=__import__("torch").uint8)
@@ -733,6 +860,14 @@ def main() -> int:
     repo_parser = subparsers.add_parser("validate-repo")
     repo_parser.add_argument("path", type=Path, nargs="?", default=Path.cwd())
 
+    dtype_parser = subparsers.add_parser("dtype-manifest")
+    dtype_parser.add_argument("kind", choices=["hf", "mcore"])
+    dtype_parser.add_argument("path", type=Path)
+    dtype_parser.add_argument(
+        "--profile", choices=["auto", "full", "tiny"], default="auto"
+    )
+    dtype_parser.add_argument("--output", type=Path, required=True)
+
     args = parser.parse_args()
     if args.command == "validate-hf":
         profile, config = validate_hf_config(args.path, args.profile)
@@ -752,6 +887,14 @@ def main() -> int:
         profile, _ = validate_hf_config(args.path)
         print(
             f"Set load_with_bias={args.value} for validated HF Chimera profile={profile}"
+        )
+    elif args.command == "dtype-manifest":
+        profile, count = write_dtype_manifest(
+            args.kind, args.path, args.output, args.profile
+        )
+        print(
+            f"Validated {args.kind.upper()} Chimera dtype policy profile={profile} "
+            f"tensors={count} manifest={args.output}"
         )
     else:
         count = validate_repo_scripts(args.path)

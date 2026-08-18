@@ -55,11 +55,17 @@ HF_A="$WORK_DIR/hf_roundtrip"
 MCORE_B="$WORK_DIR/mcore_roundtrip"
 HF_B="$WORK_DIR/mcore_roundtrip_hf"
 
+"$PYTHON_BIN" "$SCRIPT_DIR/architecture_contract.py" dtype-manifest hf \
+    "$HF_SOURCE" --output "$WORK_DIR/hf_source_dtype_manifest.json"
+
 bash "$SCRIPT_DIR/import.sh" \
     --hf-model "$HF_SOURCE" \
     --mcore-path "$MCORE_A" \
     --bridge-path "$BRIDGE_PATH" \
     --python "$PYTHON_BIN"
+
+"$PYTHON_BIN" "$SCRIPT_DIR/architecture_contract.py" dtype-manifest mcore \
+    "$MCORE_A" --output "$WORK_DIR/hf_to_mcore_dtype_manifest.json"
 
 bash "$SCRIPT_DIR/export.sh" \
     --hf-reference "$HF_SOURCE" \
@@ -67,6 +73,9 @@ bash "$SCRIPT_DIR/export.sh" \
     --hf-path "$HF_A" \
     --bridge-path "$BRIDGE_PATH" \
     --python "$PYTHON_BIN"
+
+"$PYTHON_BIN" "$SCRIPT_DIR/architecture_contract.py" dtype-manifest hf \
+    "$HF_A" --output "$WORK_DIR/hf_roundtrip_dtype_manifest.json"
 
 "$PYTHON_BIN" "$SCRIPT_DIR/architecture_contract.py" compare-hf \
     "$HF_SOURCE" "$HF_A" --report "$WORK_DIR/hf_to_mcore_to_hf_exact.json"
@@ -77,12 +86,18 @@ bash "$SCRIPT_DIR/import.sh" \
     --bridge-path "$BRIDGE_PATH" \
     --python "$PYTHON_BIN"
 
+"$PYTHON_BIN" "$SCRIPT_DIR/architecture_contract.py" dtype-manifest mcore \
+    "$MCORE_B" --output "$WORK_DIR/mcore_roundtrip_dtype_manifest.json"
+
 bash "$SCRIPT_DIR/export.sh" \
     --hf-reference "$HF_A" \
     --mcore-path "$MCORE_B" \
     --hf-path "$HF_B" \
     --bridge-path "$BRIDGE_PATH" \
     --python "$PYTHON_BIN"
+
+"$PYTHON_BIN" "$SCRIPT_DIR/architecture_contract.py" dtype-manifest hf \
+    "$HF_B" --output "$WORK_DIR/mcore_roundtrip_hf_dtype_manifest.json"
 
 "$PYTHON_BIN" "$SCRIPT_DIR/architecture_contract.py" compare-hf \
     "$HF_A" "$HF_B" --report "$WORK_DIR/mcore_to_hf_to_mcore_to_hf_exact.json"

@@ -407,6 +407,26 @@ $PYTHON examples/chimera/verify_pretrain.py \
   --expected " A careful researcher traced the river path through the valley and marked each bridge with a blue lantern.<EOS>"
 ```
 
+For stateless interactive Transformers inference, load the model once and
+enter independent prompts. Both commands use the same checkpoint and frozen
+bias tensors; only their use during expert selection changes in memory:
+
+```bash
+$PYTHON "$TRANSFORMERS/src/transformers/models/chimera/scripts/infer.py" \
+  --model "$HF_PRETRAIN" --interactive --chat --stream \
+  --load-with-bias true --dtype bfloat16 --device-map auto
+
+$PYTHON "$TRANSFORMERS/src/transformers/models/chimera/scripts/infer.py" \
+  --model "$HF_PRETRAIN" --interactive --chat --stream \
+  --load-with-bias false --dtype bfloat16 --device-map auto
+```
+
+Use `/exit`, `/quit`, Ctrl-C, or Ctrl-D to stop. An optional fixed
+`--system-prompt` is reapplied independently to every prompt; earlier user and
+assistant turns are never retained. Generation is greedy by default. Add, for
+example, `--do-sample --temperature 0.7 --top-p 0.9 --top-k 50
+--repetition-penalty 1.1` to enable sampling.
+
 ## 7. SFT
 
 SFT reads JSONL directly. Each checked fixture row contains exactly one

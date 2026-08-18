@@ -9,7 +9,8 @@ TOKENIZER_MODEL="${TOKENIZER_MODEL:-/datasets/megadata/hf_models/chimera-10b}"
 RUNS_ROOT="${RUNS_ROOT:-/datasets/megadata/chimera_440b_runs}"
 INTRA_DOC_MASKING="${INTRA_DOC_MASKING:-false}"
 LOAD_CHECKPOINT="${LOAD_CHECKPOINT:-}"
-OPTIMIZER="${OPTIMIZER:-muon}"
+TRAIN_ITERS="${TRAIN_ITERS:-26855}"
+OPTIMIZER="${OPTIMIZER:-adam}"
 MUON_NUM_NS_STEPS="${MUON_NUM_NS_STEPS:-6}"
 
 # Distributed launch settings.
@@ -22,8 +23,15 @@ TP_SIZE="${TP_SIZE:-1}"
 PP_SIZE="${PP_SIZE:-1}"
 EP_SIZE="${EP_SIZE:-1}"
 CP_SIZE="${CP_SIZE:-1}"
-MICRO_BATCH_SIZE="${MICRO_BATCH_SIZE:-4}"
-GLOBAL_BATCH_SIZE="${GLOBAL_BATCH_SIZE:-576}"
+MICRO_BATCH_SIZE="${MICRO_BATCH_SIZE:-2}"
+GLOBAL_BATCH_SIZE="${GLOBAL_BATCH_SIZE:-2000}"
+
+# WSD ratios: warm up for 0.3%, hold through 75%, then linearly anneal to zero.
+LR_WARMUP_ITERS=$((TRAIN_ITERS * 3 / 1000))
+LR_WSD_ANNEAL_START_ITERS=$((TRAIN_ITERS * 3 / 4))
+LR_WSD_DECAY_ITERS=$((TRAIN_ITERS - LR_WSD_ANNEAL_START_ITERS))
+TOKENS_PER_ITER=$((8192 * GLOBAL_BATCH_SIZE))
+TOTAL_TOKENS=$((TOKENS_PER_ITER * TRAIN_ITERS))
 
 RUN_STAMP="${RUN_STAMP:-$(TZ='Asia/Kolkata' date +%Y%m%d_%H%M%S)}"
 RUN_DIR="${RUNS_ROOT}/${RUN_STAMP}"
@@ -43,8 +51,8 @@ if [[ -n "$LOAD_CHECKPOINT" && ! -f "$LOAD_CHECKPOINT/latest_checkpointed_iterat
     echo "Invalid checkpoint root: $LOAD_CHECKPOINT"
     exit 1
 fi
-if [[ "$GLOBAL_BATCH_SIZE" -ne 576 ]]; then
-    echo "Warning: the 440B iteration and WSD schedule is calibrated for GLOBAL_BATCH_SIZE=576; recalculate schedule iterations for $GLOBAL_BATCH_SIZE." >&2
+if [[ "$GLOBAL_BATCH_SIZE" -ne 2000 || "$TRAIN_ITERS" -ne 26855 ]]; then
+    echo "Warning: the nominal 440B token budget is calibrated for GLOBAL_BATCH_SIZE=2000 and TRAIN_ITERS=26855; current settings produce $TOTAL_TOKENS tokens." >&2
 fi
 
 mkdir -p "$SAVE_PATH" "$TENSORBOARD_DIR" "$DATA_CACHE_PATH" "$LOG_DIR"
@@ -76,6 +84,7 @@ MODEL_ARGS=(
     --mscale 1.0
     --mscale-all-dim 0.0
     --normalization RMSNorm
+    --qk-layernorm
     --swiglu
     --disable-bias-linear
     --untie-embeddings-and-output-weights
@@ -92,16 +101,17 @@ MODEL_ARGS=(
 )
 
 MOE_ARGS=(
-    --num-experts 64
+    --num-experts 32
     --moe-layer-freq "[0]*2+[1]*23"
     --moe-router-topk 4
-    --moe-ffn-hidden-size 1024
-    --moe-shared-expert-intermediate-size 1024
-    --moe-router-load-balancing-type seq_aux_loss
-    --moe-aux-loss-coeff 0.0001
+    --moe-ffn-hidden-size 2048
+    --moe-router-load-balancing-type quantile_balancing
+    --moe-aux-loss-coeff 0.0
+    --moe-qb-num-bins 1000
+    --moe-qb-ema-decay 0.0
     --moe-router-score-function sigmoid
     --moe-router-enable-expert-bias
-    --moe-router-bias-update-rate 0.001
+    --moe-router-bias-update-rate 0.0
     --moe-router-topk-scaling-factor 2.5
     --moe-router-dtype fp32
     --moe-z-loss-coeff 0.001
@@ -109,9 +119,8 @@ MOE_ARGS=(
     --moe-token-dispatcher-type alltoall
     --moe-permute-fusion
     --moe-router-fusion
-    --moe-shared-expert-overlap
     --moe-per-layer-logging
-    --moe-router-balance-logging-interval 1000
+    --moe-router-balance-logging-interval 1
 )
 
 DATA_ARGS=(
@@ -135,13 +144,13 @@ fi
 TRAINING_ARGS=(
     --micro-batch-size "$MICRO_BATCH_SIZE"
     --global-batch-size "$GLOBAL_BATCH_SIZE"
-    --train-iters 93249
-    --lr 3e-4
-    --min-lr 3e-6
+    --train-iters "$TRAIN_ITERS"
+    --lr 1e-3
+    --min-lr 1e-6
     --lr-decay-style WSD
-    --lr-wsd-decay-style minus_sqrt
-    --lr-wsd-decay-iters 18650
-    --lr-warmup-iters 373
+    --lr-wsd-decay-style linear
+    --lr-wsd-decay-iters "$LR_WSD_DECAY_ITERS"
+    --lr-warmup-iters "$LR_WARMUP_ITERS"
     --weight-decay 0.1
     --clip-grad 1.0
     --adam-beta1 0.9
@@ -164,14 +173,16 @@ fi
 
 if [[ "$OPTIMIZER" == "muon" || "$OPTIMIZER" == "adaptive_muon" ]]; then
     TRAINING_ARGS+=(--muon-num-ns-steps "$MUON_NUM_NS_STEPS")
+    OPTIMIZER_SUMMARY="$OPTIMIZER ns_steps=$MUON_NUM_NS_STEPS"
 else
     TRAINING_ARGS+=(
         --use-precision-aware-optimizer
         --main-params-dtype fp32
-        --main-grads-dtype bf16
-        --exp-avg-dtype bf16
-        --exp-avg-sq-dtype bf16
+        --main-grads-dtype fp32
+        --exp-avg-dtype fp32
+        --exp-avg-sq-dtype fp32
     )
+    OPTIMIZER_SUMMARY="$OPTIMIZER beta1=0.9 beta2=0.95 eps=1e-8 wd=0.1 states=fp32"
 fi
 
 PARALLEL_ARGS=(
@@ -220,6 +231,12 @@ MASTER_ADDR=${MASTER_ADDR}
 MASTER_PORT=${MASTER_PORT}
 INTRA_DOC_MASKING=${INTRA_DOC_MASKING}
 LOAD_CHECKPOINT=${LOAD_CHECKPOINT}
+TRAIN_ITERS=${TRAIN_ITERS}
+LR_WARMUP_ITERS=${LR_WARMUP_ITERS}
+LR_WSD_ANNEAL_START_ITERS=${LR_WSD_ANNEAL_START_ITERS}
+LR_WSD_DECAY_ITERS=${LR_WSD_DECAY_ITERS}
+OPTIMIZER=${OPTIMIZER}
+MUON_NUM_NS_STEPS=${MUON_NUM_NS_STEPS}
 TP_SIZE=${TP_SIZE}
 PP_SIZE=${PP_SIZE}
 EP_SIZE=${EP_SIZE}
@@ -242,13 +259,13 @@ echo "  Valid prefix:     ${VALID_DATA_PATH:-disabled}"
 echo "  Tokenizer:        $TOKENIZER_MODEL"
 echo "  GPUs per node:    $GPUS_PER_NODE"
 echo "  Parallelism:      TP=$TP_SIZE PP=$PP_SIZE EP=$EP_SIZE ETP=1 CP=$CP_SIZE"
-echo "  Architecture:     layers=25 moe_layer_freq=[0]*2+[1]*23"
-echo "  Router:           seq_aux_loss aux=1e-4 bias_rate=1e-3 scale=2.5 z_loss=1e-3"
-echo "  Router logging:   inline interval=1000 raw_expert_files=false"
-echo "  Seq/batch/iters:  seq=8192 micro=$MICRO_BATCH_SIZE global=$GLOBAL_BATCH_SIZE iters=93249"
-echo "  LR schedule:      WSD peak=3e-4 min=3e-6 warmup=373 decay=18650 style=minus_sqrt"
-echo "  Optimizer:        AdamW beta1=0.9 beta2=0.95 eps=1e-8 wd=0.1 states=fp32"
-echo "  Token budget:     approximately 440B at global_batch=576"
+echo "  Architecture:     layers=25 moe_layer_freq=[0]*2+[1]*23 norm=RMSNorm qk_norm=RMSNorm swiglu=true experts=32 active=4 expert_intermediate=2048 shared_experts=0"
+echo "  Router:           quantile_balancing bins=1000 ema=0 aux=0 bias_rate=0 scale=2.5 z_loss=1e-3"
+echo "  Router logging:   inline interval=1 raw_expert_files=false"
+echo "  Seq/batch/iters:  seq=8192 micro=$MICRO_BATCH_SIZE global=$GLOBAL_BATCH_SIZE iters=$TRAIN_ITERS"
+echo "  LR schedule:      WSD peak=1e-3 min=1e-6 warmup=$LR_WARMUP_ITERS constant_through=$LR_WSD_ANNEAL_START_ITERS decay=$LR_WSD_DECAY_ITERS style=linear"
+echo "  Optimizer:        $OPTIMIZER_SUMMARY"
+echo "  Token budget:     tokens_per_iter=$TOKENS_PER_ITER total_tokens=$TOTAL_TOKENS (439.99232B with defaults)"
 echo "  Attention:        backend=flash external_flash_attn=false cuda_graph=TE:attn"
 echo "  Intra-doc mask:   $INTRA_DOC_MASKING"
 echo "  Document loss:    predict_eos=true post_eos_target=false"

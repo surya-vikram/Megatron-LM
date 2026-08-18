@@ -210,10 +210,6 @@ if [[ -n "$LOAD_CHECKPOINT" ]]; then
         --exit-on-missing-checkpoint
     )
 fi
-if [[ "${SAVE_WEIGHTS_ONLY:-false}" == "true" ]]; then
-    LOGGING_ARGS+=(--no-save-optim --no-save-rng)
-fi
-
 if [[ "$NODE_RANK" == 0 ]]; then
 cat > "${RUN_DIR}/run_paths.env" <<EOF
 TRAIN_DATA_PATH=${TRAIN_DATA_PATH}

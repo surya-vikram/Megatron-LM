@@ -405,7 +405,6 @@ LR_DECAY_STYLE=cosine \
 LR_WARMUP_ITERS=0 \
 WEIGHT_DECAY=0.0 \
 SAVE_INTERVAL=400 \
-SAVE_WEIGHTS_ONLY=true \
 TP_SIZE=1 PP_SIZE=1 EP_SIZE=1 CP_SIZE=1 \
 bash examples/chimera/train.sh
 ```

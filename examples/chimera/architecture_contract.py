@@ -134,8 +134,16 @@ def validate_training_args(args: Any) -> str:
         "moe_shared_expert_intermediate_size",
         errors,
     )
+    if hasattr(args, "untie_embeddings_and_output_weights"):
+        share_embeddings_and_output_weights = not bool(
+            args.untie_embeddings_and_output_weights
+        )
+    else:
+        share_embeddings_and_output_weights = getattr(
+            args, "share_embeddings_and_output_weights", True
+        )
     _require(
-        getattr(args, "share_embeddings_and_output_weights", True),
+        share_embeddings_and_output_weights,
         False,
         "share_embeddings_and_output_weights",
         errors,
@@ -674,6 +682,10 @@ def compare_hf_weights(
 
     report: list[dict[str, Any]] = []
     failures: list[str] = []
+    compared_elements = 0
+    difference_sum = 0.0
+    difference_min = float("inf")
+    difference_max = 0.0
     for key in sorted(expected):
         left = _load_safetensor(expected[key], key)
         right = _load_safetensor(actual[key], key)
@@ -684,6 +696,26 @@ def compare_hf_weights(
             and left.dtype == right.dtype
             and torch.equal(left, right)
         )
+        tensor_difference: dict[str, float] | None = None
+        if left.shape == right.shape:
+            numel = left.numel()
+            compared_elements += numel
+            if equal or numel == 0:
+                tensor_difference = {"min": 0.0, "mean": 0.0, "max": 0.0}
+                difference_min = min(difference_min, 0.0)
+            else:
+                difference = (left.float() - right.float()).abs()
+                tensor_min = float(difference.min()) if numel else 0.0
+                tensor_max = float(difference.max()) if numel else 0.0
+                tensor_sum = float(difference.sum(dtype=torch.float64))
+                tensor_difference = {
+                    "min": tensor_min,
+                    "mean": tensor_sum / numel if numel else 0.0,
+                    "max": tensor_max,
+                }
+                difference_sum += tensor_sum
+                difference_min = min(difference_min, tensor_min)
+                difference_max = max(difference_max, tensor_max)
         report.append(
             {
                 "key": key,
@@ -691,6 +723,7 @@ def compare_hf_weights(
                 "dtype": str(left.dtype),
                 "expected_sha256": left_hash,
                 "actual_sha256": right_hash,
+                "absolute_difference": tensor_difference,
                 "equal": equal,
             }
         )
@@ -700,7 +733,22 @@ def compare_hf_weights(
         report_path.parent.mkdir(parents=True, exist_ok=True)
         with report_path.open("w", encoding="utf-8") as handle:
             json.dump(
-                {"tensor_count": len(report), "tensors": report}, handle, indent=2
+                {
+                    "tensor_count": len(report),
+                    "compared_elements": compared_elements,
+                    "absolute_difference": {
+                        "min": 0.0
+                        if difference_min == float("inf")
+                        else difference_min,
+                        "mean": difference_sum / compared_elements
+                        if compared_elements
+                        else 0.0,
+                        "max": difference_max,
+                    },
+                    "tensors": report,
+                },
+                handle,
+                indent=2,
             )
             handle.write("\n")
     if failures:

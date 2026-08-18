@@ -55,6 +55,11 @@ masks. `train.sh` passes `--eod-mask-loss`; because Megatron shifts labels by
 one token, this keeps the loss that learns to predict `<EOS>` and masks the
 artificial target immediately after an EOS document boundary.
 
+The two-document overfit command in `RUNBOOK.md` deliberately overrides this
+with `INTRA_DOC_MASKING=true`. That makes each bare verification prefix an
+independent training context while leaving the production launcher default
+unchanged.
+
 `train.sh` emits globally aggregated router CV, worst load, dead expert-slot,
 and bias magnitude metrics on the standard log line every 1,000 iterations.
 It does not enable raw per-rank tokens-per-expert file logging.

@@ -342,9 +342,9 @@ SFT and SimPO do not use this preprocessing step.
 `train.sh` is the production 8k script. It accepts schedule overrides through
 the environment, so the validated 2-GPU smoke does not edit tracked files.
 
-Use 400 iterations for this two-document check. At 200 iterations the
-teacher-forced loss was low, but the bare A and B prefixes still tied on their
-first continuation token and did not both generate correctly.
+Use 800 iterations at sequence length 128 for this full-model two-document
+check. A 400-iteration run at sequence length 512 reached low teacher-forced
+loss but did not reproduce the complete B continuation from its bare prefix.
 
 Run random-init pretraining:
 
@@ -353,16 +353,17 @@ export PRETRAIN_RUNS=$DATA_ROOT/pretrain_runs
 TRAIN_DATA_PATH="$DATA_PREFIX" \
 TOKENIZER_MODEL="$HF_REFERENCE" \
 RUNS_ROOT="$PRETRAIN_RUNS" \
+INTRA_DOC_MASKING=true \
 MICRO_BATCH_SIZE=1 \
 GLOBAL_BATCH_SIZE=2 \
-SEQ_LENGTH=512 \
-TRAIN_ITERS=400 \
+SEQ_LENGTH=128 \
+TRAIN_ITERS=800 \
 LR=1e-3 \
 MIN_LR=1e-4 \
 LR_DECAY_STYLE=cosine \
 LR_WARMUP_ITERS=0 \
 WEIGHT_DECAY=0.0 \
-SAVE_INTERVAL=400 \
+SAVE_INTERVAL=800 \
 SAVE_WEIGHTS_ONLY=true \
 TP_SIZE=1 PP_SIZE=1 EP_SIZE=1 CP_SIZE=1 \
 bash examples/chimera/train.sh
@@ -370,6 +371,11 @@ bash examples/chimera/train.sh
 export PRETRAIN_RUN_DIR=$(ls -td "$PRETRAIN_RUNS"/* | head -n 1)
 export PRETRAIN_CHECKPOINT=$PRETRAIN_RUN_DIR/checkpoints
 ```
+
+The production default remains `INTRA_DOC_MASKING=false`. This two-document
+memorization test enables it so the bare A and B prefixes are each trained as
+independent contexts; otherwise B is only observed after A in the packed
+sequence and standalone B generation is not a valid memorization check.
 
 With two visible GPUs this is DP=2. On a measured OOM, first add
 `MAIN_GRADS_DTYPE=bf16 EXP_AVG_DTYPE=bf16 EXP_AVG_SQ_DTYPE=bf16`. If that still
@@ -425,7 +431,7 @@ MICRO_BATCH_SIZE=1 \
 GLOBAL_BATCH_SIZE=2 \
 TRAIN_ITERS=120 \
 LR=1e-3 MIN_LR=1e-4 LR_WARMUP_ITERS=0 LR_DECAY_ITERS=120 \
-SAVE_INTERVAL=1000 EVAL_INTERVAL=1000 EVAL_ITERS=0 \
+SAVE_INTERVAL=120 EVAL_INTERVAL=1000 EVAL_ITERS=0 \
 SAVE_WEIGHTS_ONLY=true \
 bash examples/chimera/sft.sh
 
@@ -547,7 +553,7 @@ MICRO_BATCH_SIZE=1 \
 GLOBAL_BATCH_SIZE=2 \
 TRAIN_ITERS=40 \
 LR=5e-4 MIN_LR=5e-5 LR_WARMUP_ITERS=0 LR_DECAY_ITERS=40 \
-SAVE_INTERVAL=1000 EVAL_INTERVAL=1000 EVAL_ITERS=0 \
+SAVE_INTERVAL=40 EVAL_INTERVAL=1000 EVAL_ITERS=0 \
 SAVE_WEIGHTS_ONLY=true \
 SIMPO_SFT_WEIGHT=1.0 \
 bash examples/chimera/simpo.sh

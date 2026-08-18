@@ -530,14 +530,17 @@ SimPO also reads JSONL directly and does not use `preprocess.sh`:
 {"chosen":[{"role":"system","content":"..."},{"role":"user","content":"..."},{"role":"assistant","content":"preferred"}],"rejected":[{"role":"system","content":"..."},{"role":"user","content":"..."},{"role":"assistant","content":"rejected"}]}
 ```
 
-The checked file contains two unique preference pairs. `SimPODataset` reports
-both the physical row count and requested logical sample count, and wraps over
-the two physical rows until the requested training length is satisfied. Do not
-duplicate the JSONL for a smoke run:
+The checked file contains two unique C/D preference pairs plus two explicit
+A/B retention-replay pairs. The replay rows keep the accepted SFT responses as
+their chosen answers; `SIMPO_SFT_WEIGHT` alone is not a retention mechanism,
+because it applies chosen-answer loss only to rows in the SimPO dataset.
+`SimPODataset` reports both the physical row count and requested logical sample
+count and wraps over the four physical rows until the requested training length
+is satisfied. Do not duplicate the JSONL for a smoke run:
 
 ```bash
 export SIMPO_DATA=$MEGATRON_LM/examples/chimera/data/simpo/overfit.jsonl
-test "$(wc -l < "$SIMPO_DATA")" -eq 2
+test "$(wc -l < "$SIMPO_DATA")" -eq 4
 ```
 
 Run SimPO from the SFT checkpoint. Packing is disabled:
@@ -551,9 +554,9 @@ RUNS_ROOT="$SIMPO_RUNS" \
 SEQ_LENGTH=128 \
 MICRO_BATCH_SIZE=1 \
 GLOBAL_BATCH_SIZE=2 \
-TRAIN_ITERS=40 \
-LR=5e-4 MIN_LR=5e-5 LR_WARMUP_ITERS=0 LR_DECAY_ITERS=40 \
-SAVE_INTERVAL=40 EVAL_INTERVAL=1000 EVAL_ITERS=0 \
+TRAIN_ITERS=80 \
+LR=5e-4 MIN_LR=5e-5 LR_WARMUP_ITERS=0 LR_DECAY_ITERS=80 \
+SAVE_INTERVAL=80 EVAL_INTERVAL=1000 EVAL_ITERS=0 \
 SAVE_WEIGHTS_ONLY=true \
 SIMPO_SFT_WEIGHT=1.0 \
 bash examples/chimera/simpo.sh
@@ -599,6 +602,10 @@ Expected completion:
 CHIMERA_SIMPO_CHOSEN_C: amber maps reward careful answers.<end_of_turn>
 CHIMERA_SIMPO_CHOSEN_D: violet signals favor steady choices.<end_of_turn>
 ```
+
+Also rerun the SFT A and B prompts from section 7. Both accepted SFT responses
+must remain exact after SimPO; a C/D-only fixture can pass preference accuracy
+while catastrophically forgetting them.
 
 ## 9. Completion Criteria
 

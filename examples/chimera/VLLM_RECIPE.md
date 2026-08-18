@@ -16,8 +16,10 @@ The Docker host must have:
   expert container.
 - The `vllm/vllm-openai:v0.22.0` image.
 
-The checkpoint does not need to be re-exported. The compatibility change does
-not alter configuration fields, tensor shapes, or checkpoint key names. Stock
+The checkpoint does not need to be re-exported. Every checkpoint contains the
+frozen router correction-bias tensors. The `load_with_bias` config field only
+chooses whether routing applies those tensors; changing it must not alter any
+tensor shape, key, or shard hash. Stock
 Transformers 5.9.0 does not register Chimera, so expose the complete fork via
 `PYTHONPATH`. Do not copy individual files into the container's installed
 Transformers package, and do not modify vLLM itself.
@@ -29,11 +31,32 @@ Set host paths to the exported checkpoint and Transformers checkout:
 ```bash
 export MODEL_DIR=/path/to/hf_sft_overfit
 export TRANSFORMERS_DIR=/path/to/transformers
+export MEGATRON_LM=/path/to/Megatron-LM
 
 test -f "$MODEL_DIR/config.json"
 test -f "$MODEL_DIR/model.safetensors.index.json"
 test -f "$TRANSFORMERS_DIR/src/transformers/models/chimera/modeling_chimera.py"
+
+python3 "$MEGATRON_LM/examples/chimera/architecture_contract.py" \
+  validate-hf "$MODEL_DIR" --profile full --weights
 ```
+
+The validation requires QK norm, 32×2048 routed experts, no shared expert,
+8K/factor-1 YaRN, every expected model key, and every router bias. To test the
+bias-bypassed mode with byte-identical weights, create a metadata-only variant:
+
+```bash
+export MODEL_DIR_NO_BIAS=/path/to/hf_sft_overfit_no_bias
+test ! -e "$MODEL_DIR_NO_BIAS"
+cp -al "$MODEL_DIR" "$MODEL_DIR_NO_BIAS"
+python3 "$MEGATRON_LM/examples/chimera/architecture_contract.py" \
+  set-load-with-bias "$MODEL_DIR_NO_BIAS" false
+python3 "$MEGATRON_LM/examples/chimera/architecture_contract.py" \
+  validate-hf "$MODEL_DIR_NO_BIAS" --profile full --weights
+```
+
+Use `MODEL_DIR` for `load_with_bias=true` and `MODEL_DIR_NO_BIAS` for false.
+The hard-linked safetensors shards prove both modes use the same weights.
 
 Start the container:
 
@@ -63,6 +86,13 @@ docker run -d \
 Expert parallelism is intentionally disabled for this one-GPU configuration.
 `--enforce-eager` makes the first correctness check easier to diagnose by
 disabling `torch.compile` and CUDA graphs.
+
+Run the server and the checks below once per model directory. Loader logs must
+contain no missing or unexpected keys. For identical prompts, temperature 0,
+and token limits, compare the exact generated token IDs with Transformers run
+using `infer.py --expect-load-with-bias true` or `false`. Require
+Transformers-vLLM equality within each mode; enabled and disabled modes are
+allowed to differ from each other because they intentionally route differently.
 
 ## Verify Startup
 
@@ -166,10 +196,10 @@ docker rm -f chimera-vllm
 
 ### 32k Context
 
-- Complete the 32k context-extension training stage from the validated 8k
-  checkpoint.
-- Verify the exported YaRN configuration retains an 8k original context, a
-  32k maximum context, and factor 4.
+- This work is deferred. The active configuration supports only an 8k maximum
+  and original context with YaRN factor 1.
+- In a future context-extension change, train from the validated 8k checkpoint
+  before emitting a 32k maximum and factor 4.
 - Compare HF and vLLM greedy output at short context before long-context tests.
 - Exercise prompt lengths near 8k, 16k, and 32k and check generation and KV
   cache behavior.

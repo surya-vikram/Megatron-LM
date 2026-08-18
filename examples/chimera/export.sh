@@ -7,7 +7,8 @@ HF_PATH="/datasets/megadata/hf_exports/chimera-overfit-hf"
 BRIDGE_PATH="/workspace/repos/Megatron-Bridge"
 PYTHON_BIN=""
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-RUN_CONFIG_SOURCE="$SCRIPT_DIR/run_config.yaml"
+RUN_CONFIG_SOURCE=""
+LOAD_WITH_BIAS=""
 
 usage() {
     cat <<'USAGE'
@@ -18,7 +19,9 @@ Options:
   --mcore-path PATH     Trained Megatron-Core checkpoint root or iteration directory.
   --hf-path PATH        Output HF model directory.
   --bridge-path PATH    Megatron-Bridge repository path.
-  --run-config PATH     Bridge run_config.yaml to install if checkpoint does not have one.
+  --run-config PATH     Explicit fallback run_config.yaml for a legacy checkpoint.
+  --load-with-bias      Export config applies the frozen router correction bias.
+  --no-load-with-bias   Export config bypasses the frozen bias but preserves its tensor.
   --python PATH         Python executable.
 USAGE
 }
@@ -30,6 +33,8 @@ while [[ $# -gt 0 ]]; do
         --hf-path) HF_PATH="$2"; shift 2 ;;
         --bridge-path) BRIDGE_PATH="$2"; shift 2 ;;
         --run-config) RUN_CONFIG_SOURCE="$2"; shift 2 ;;
+        --load-with-bias) LOAD_WITH_BIAS="true"; shift ;;
+        --no-load-with-bias) LOAD_WITH_BIAS="false"; shift ;;
         --python) PYTHON_BIN="$2"; shift 2 ;;
         -h|--help) usage; exit 0 ;;
         *) echo "Unknown argument: $1"; usage; exit 1 ;;
@@ -48,6 +53,8 @@ fi
 [[ -d "$MCORE_PATH" ]] || { echo "Missing MCore checkpoint: $MCORE_PATH"; exit 1; }
 [[ -d "$BRIDGE_PATH" ]] || { echo "Missing Megatron-Bridge repo: $BRIDGE_PATH"; exit 1; }
 
+"$PYTHON_BIN" "$SCRIPT_DIR/architecture_contract.py" validate-hf "$HF_REFERENCE"
+
 CHECKPOINT_ROOT="$MCORE_PATH"
 CHECKPOINT_ITER=""
 if [[ "$(basename "$MCORE_PATH")" == iter_* ]]; then
@@ -58,17 +65,31 @@ else
 fi
 
 if [[ ! -f "$CHECKPOINT_ROOT/run_config.yaml" ]]; then
-    [[ -f "$RUN_CONFIG_SOURCE" ]] || {
-        echo "Missing Bridge run config: $RUN_CONFIG_SOURCE" >&2
-        echo "Pass --run-config PATH or keep examples/chimera/run_config.yaml available." >&2
-        exit 1
-    }
-    cp "$RUN_CONFIG_SOURCE" "$CHECKPOINT_ROOT/run_config.yaml"
+    if [[ -n "$CHECKPOINT_ITER" && -f "$CHECKPOINT_ITER/run_config.yaml" ]]; then
+        "$PYTHON_BIN" "$SCRIPT_DIR/architecture_contract.py" validate-run-config "$CHECKPOINT_ITER/run_config.yaml"
+        cp "$CHECKPOINT_ITER/run_config.yaml" "$CHECKPOINT_ROOT/run_config.yaml"
+    else
+        [[ -n "$RUN_CONFIG_SOURCE" && -f "$RUN_CONFIG_SOURCE" ]] || {
+            echo "Missing checkpoint-generated run_config.yaml under $CHECKPOINT_ROOT." >&2
+            echo "For a reviewed legacy checkpoint only, pass --run-config PATH explicitly." >&2
+            exit 1
+        }
+        "$PYTHON_BIN" "$SCRIPT_DIR/architecture_contract.py" validate-run-config "$RUN_CONFIG_SOURCE"
+        cp "$RUN_CONFIG_SOURCE" "$CHECKPOINT_ROOT/run_config.yaml"
+    fi
 fi
+"$PYTHON_BIN" "$SCRIPT_DIR/architecture_contract.py" validate-run-config "$CHECKPOINT_ROOT/run_config.yaml"
 echo "Using Bridge run config: $CHECKPOINT_ROOT/run_config.yaml"
 
 if [[ -n "$CHECKPOINT_ITER" && ! -f "$CHECKPOINT_ITER/run_config.yaml" ]]; then
     cp "$CHECKPOINT_ROOT/run_config.yaml" "$CHECKPOINT_ITER/run_config.yaml"
+fi
+if [[ -n "$CHECKPOINT_ITER" ]]; then
+    "$PYTHON_BIN" "$SCRIPT_DIR/architecture_contract.py" validate-run-config "$CHECKPOINT_ITER/run_config.yaml"
+    cmp -s "$CHECKPOINT_ROOT/run_config.yaml" "$CHECKPOINT_ITER/run_config.yaml" || {
+        echo "Checkpoint root and iteration run_config.yaml files differ." >&2
+        exit 1
+    }
     echo "Using Bridge run config: $CHECKPOINT_ITER/run_config.yaml"
 fi
 
@@ -81,6 +102,12 @@ export PYTHONPATH="$BRIDGE_PATH/src:${PYTHONPATH:-}"
     --megatron-path "$MCORE_PATH" \
     --hf-path "$HF_PATH" \
     --trust-remote-code
+
+if [[ -n "$LOAD_WITH_BIAS" ]]; then
+    "$PYTHON_BIN" "$SCRIPT_DIR/architecture_contract.py" set-load-with-bias "$HF_PATH" "$LOAD_WITH_BIAS"
+fi
+
+"$PYTHON_BIN" "$SCRIPT_DIR/architecture_contract.py" validate-hf "$HF_PATH" --weights
 
 for name in \
     tokenizer.json \

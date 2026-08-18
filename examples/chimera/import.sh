@@ -5,6 +5,7 @@ HF_MODEL="/datasets/megadata/hf_models/chimera-10b"
 MCORE_PATH="/datasets/megadata/chimera_bridge_validation/megatron_import"
 BRIDGE_PATH="/workspace/repos/Megatron-Bridge"
 PYTHON_BIN=""
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 
 usage() {
     cat <<'USAGE'
@@ -40,6 +41,8 @@ fi
 [[ -d "$HF_MODEL" ]] || { echo "Missing HF model: $HF_MODEL"; exit 1; }
 [[ -d "$BRIDGE_PATH" ]] || { echo "Missing Megatron-Bridge repo: $BRIDGE_PATH"; exit 1; }
 
+"$PYTHON_BIN" "$SCRIPT_DIR/architecture_contract.py" validate-hf "$HF_MODEL" --weights
+
 mkdir -p "$(dirname "$MCORE_PATH")"
 
 export PYTHONPATH="$BRIDGE_PATH/src:${PYTHONPATH:-}"
@@ -50,5 +53,9 @@ export PYTHONPATH="$BRIDGE_PATH/src:${PYTHONPATH:-}"
     --torch-dtype bfloat16 \
     --device-map auto \
     --trust-remote-code
+
+RUN_CONFIG=$(find "$MCORE_PATH" -name run_config.yaml -type f -print -quit)
+[[ -n "$RUN_CONFIG" ]] || { echo "Conversion did not produce run_config.yaml under $MCORE_PATH"; exit 1; }
+"$PYTHON_BIN" "$SCRIPT_DIR/architecture_contract.py" validate-run-config "$RUN_CONFIG"
 
 echo "MCore checkpoint: $MCORE_PATH"

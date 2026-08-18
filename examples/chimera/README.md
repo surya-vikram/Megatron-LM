@@ -13,11 +13,27 @@ MoE layers:           remaining 23
 Megatron pattern:     [0]*2+[1]*23
 HF dense fields:      first_k_dense_replace=2, last_k_dense_replace=0
 vocabulary size:      50176
-context:              8k training baseline, 32k YaRN model limit
+hidden / dense FFN:   2048 / 8192
+attention:            16 heads, 2 query groups, head dim 256, QK RMSNorm
+MoE:                  32 routed, top-4, expert FFN 2048, no shared expert
+router pretraining:   sigmoid, scale 2.5, QB bins 1000, EMA 0, aux 0, z 0.001
+context:              8k maximum/original, YaRN factor 1, RoPE base 10000000
 ```
 
-The production baseline is TP=1, PP=1, EP=1, ETP=1, CP=1. The two-GPU smoke
-configuration temporarily changes EP to 2.
+The production baseline is TP=1, PP=1, EP=1, ETP=1, CP=1. Two-GPU validation
+starts with DP=2. If that full model does not fit, first use BF16 optimizer
+moments; only then use one fallback axis, EP=2 or TP=2, while keeping the other
+at 1. Never request TP=2 and EP=2 together on two GPUs.
+
+Every checkpoint contains the frozen router `e_score_correction_bias` tensors.
+`load_with_bias=true` applies them during expert selection;
+`load_with_bias=false` bypasses them without changing any checkpoint key or
+tensor. SFT and SimPO use load balancing `none` and bias update rate 0 so the
+pretrained biases remain bitwise frozen.
+
+`tiny_chimera.sh` is the reduced canonical profile: 8 layers (`[0]*2+[1]*6`),
+hidden size 512, 8 heads/2 query groups/head dim 64, 8 routed experts, top-2,
+expert FFN 256, QK norm, no shared expert, and the same router/context rules.
 
 ## Data
 
@@ -77,8 +93,10 @@ details.
 - `simpo.sh`: SimPO preference tuning from an MCore checkpoint.
 - `import.sh`: convert a complete HF checkpoint to MCore.
 - `export.sh`: convert an MCore checkpoint to HF.
+- `architecture_contract.py`: validate full/tiny HF and MCore metadata, require the exact HF key set, switch bias-use metadata, and compare every tensor exactly.
+- `verify_conversion.sh`: run both conversion cycles and write per-key exactness/hash reports.
 - `pretrain_chimera.py`: Megatron training entry point shared by all stages.
-- `run_config.yaml`: architecture metadata consumed by Megatron-Bridge export.
+- `run_config.yaml`: template used to write effective, profile-specific checkpoint metadata at launch.
 - `verify_pretrain.py`: assert a plain-text pretraining overfit completion.
 - `VLLM_RECIPE.md`: serve an exported Chimera HF checkpoint with vLLM 0.22.
 

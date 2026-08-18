@@ -69,6 +69,7 @@ MODEL_ARGS=(
     --mscale 1.0
     --mscale-all-dim 0.0
     --normalization RMSNorm
+    --qk-layernorm
     --swiglu
     --disable-bias-linear
     --untie-embeddings-and-output-weights
@@ -89,14 +90,13 @@ MOE_ARGS=(
     --moe-layer-freq "[0]*2+[1]*6"
     --moe-router-topk 2
     --moe-ffn-hidden-size 256
-    --moe-shared-expert-intermediate-size 256
     --moe-router-load-balancing-type "${MOE_ROUTER_LOAD_BALANCING_TYPE:-quantile_balancing}"
     --moe-aux-loss-coeff "${MOE_AUX_LOSS_COEFF:-0.0}"
     --moe-qb-num-bins "${MOE_QB_NUM_BINS:-1000}"
     --moe-qb-ema-decay "${MOE_QB_EMA_DECAY:-0.0}"
     --moe-router-score-function sigmoid
     --moe-router-enable-expert-bias
-    --moe-router-bias-update-rate "${MOE_ROUTER_BIAS_UPDATE_RATE:-0.001}"
+    --moe-router-bias-update-rate "${MOE_ROUTER_BIAS_UPDATE_RATE:-0.0}"
     --moe-router-topk-scaling-factor 2.5
     --moe-router-dtype fp32
     --moe-z-loss-coeff "${MOE_Z_LOSS_COEFF:-0.001}"
@@ -104,7 +104,6 @@ MOE_ARGS=(
     --moe-token-dispatcher-type alltoall
     --moe-permute-fusion
     --moe-router-fusion
-    --moe-shared-expert-overlap
     --moe-router-balance-logging-interval "${MOE_ROUTER_BALANCE_LOGGING_INTERVAL:-1}"
 )
 
@@ -192,8 +191,9 @@ PARALLEL_ARGS=(
 )
 
 LOGGING_ARGS=(
+    --save "${SAVE_DIR:-$SAVE_PATH}"
     --tensorboard-dir "$TENSORBOARD_DIR"
-    --save-interval "${SAVE_INTERVAL:-10000}"
+    --save-interval "${SAVE_INTERVAL:-${TRAIN_ITERS:-100}}"
     --eval-interval 10000
     --eval-iters 0
     --log-interval 1
@@ -201,11 +201,6 @@ LOGGING_ARGS=(
     --exit-signal-handler
     --ckpt-format "${CKPT_FORMAT:-torch}"
 )
-if [[ -n "${SAVE_DIR:-}" ]]; then
-    LOGGING_ARGS+=(
-        --save "$SAVE_DIR"
-    )
-fi
 if [[ -n "${LOAD_CHECKPOINT:-}" || -n "${LOAD_DIR:-}" ]]; then
     LOGGING_ARGS+=(
         --load "${LOAD_CHECKPOINT:-${LOAD_DIR:-}}"
@@ -251,9 +246,9 @@ echo "  Train prefix:     $TRAIN_DATA_PATH"
 echo "  Tokenizer:        $TOKENIZER_MODEL"
 echo "  GPUs per node:    $GPUS_PER_NODE"
 echo "  Parallelism:      TP=$TP_SIZE PP=$PP_SIZE EP=$EP_SIZE ETP=1 CP=$CP_SIZE"
-echo "  Architecture:     layers=8 moe_layer_freq=[0]*2+[1]*6 hidden=512 ffn=2048"
-echo "  Router:           seq_aux_loss aux=1e-4 bias_rate=1e-3 scale=2.5 z_loss=1e-3"
-echo "  Seq/batch/iters:  seq=512 micro=$MICRO_BATCH_SIZE global=$GLOBAL_BATCH_SIZE iters=100"
+echo "  Architecture:     layers=8 moe_layer_freq=[0]*2+[1]*6 hidden=512 ffn=2048 experts=8 topk=2 expert_ffn=256 shared=0 qk_norm=true"
+echo "  Router:           ${MOE_ROUTER_LOAD_BALANCING_TYPE:-quantile_balancing} bins=${MOE_QB_NUM_BINS:-1000} ema=${MOE_QB_EMA_DECAY:-0.0} aux=${MOE_AUX_LOSS_COEFF:-0.0} bias_rate=${MOE_ROUTER_BIAS_UPDATE_RATE:-0.0} scale=2.5 z_loss=${MOE_Z_LOSS_COEFF:-0.001}"
+echo "  Seq/batch/iters:  seq=${SEQ_LENGTH:-8192} micro=$MICRO_BATCH_SIZE global=$GLOBAL_BATCH_SIZE iters=${TRAIN_ITERS:-100}"
 
 exec python3 -m torch.distributed.run "${DISTRIBUTED_ARGS[@]}" \
     examples/chimera/pretrain_chimera.py \

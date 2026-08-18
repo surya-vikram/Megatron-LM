@@ -228,7 +228,7 @@ validate_topology() {
     (( GPUS_PER_NODE > 0 )) || die "GPUS_PER_NODE must be positive when ENABLE_GPU=true"
     local model_parallel=$((TP_SIZE * PP_SIZE * CP_SIZE))
     (( WORLD_SIZE % model_parallel == 0 )) || die "WORLD_SIZE=$WORLD_SIZE is not divisible by TP*PP*CP=$model_parallel"
-    (( 64 % EP_SIZE == 0 )) || die "EP_SIZE=$EP_SIZE must divide 64 experts"
+    (( 32 % EP_SIZE == 0 )) || die "EP_SIZE=$EP_SIZE must divide 32 experts"
     (( WORLD_SIZE % (EP_SIZE * PP_SIZE) == 0 )) || die "WORLD_SIZE=$WORLD_SIZE is incompatible with EP_SIZE=$EP_SIZE and PP_SIZE=$PP_SIZE"
 
     [[ "$GLOBAL_BATCH_SIZE" =~ ^[1-9][0-9]*$ ]] || die "GLOBAL_BATCH_SIZE must be a positive integer"

@@ -32,7 +32,7 @@ SAVE_INTERVAL="${SAVE_INTERVAL:-}"
 EVAL_INTERVAL="${EVAL_INTERVAL:-}"
 EVAL_ITERS="${EVAL_ITERS:-0}"
 SAVE_WEIGHTS_ONLY="${SAVE_WEIGHTS_ONLY:-false}"
-PACK_SAMPLES="${PACK_SAMPLES:-true}"
+PACK_SAMPLES="${PACK_SAMPLES:-false}"
 PACK_METADATA_PATH="${PACK_METADATA_PATH:-${DATA_PATH}.chimera_simpo_packing}"
 OPTIMIZER="${OPTIMIZER:-muon}"
 MUON_NUM_NS_STEPS="${MUON_NUM_NS_STEPS:-6}"
@@ -53,6 +53,17 @@ LOG_DIR="${RUN_DIR}/logs"
 
 [[ -f "$DATA_PATH" ]] || { echo "Missing SimPO JSONL: $DATA_PATH"; exit 1; }
 [[ -d "$TOKENIZER_MODEL" || -f "$TOKENIZER_MODEL" ]] || { echo "Missing tokenizer model: $TOKENIZER_MODEL"; exit 1; }
+[[ -d "$MCORE_PATH" ]] || { echo "Missing source MCore checkpoint: $MCORE_PATH"; exit 1; }
+if [[ -d "$MCORE_PATH" ]]; then
+    SOURCE_RUN_CONFIG="$MCORE_PATH/run_config.yaml"
+    if [[ ! -f "$SOURCE_RUN_CONFIG" ]]; then
+        SOURCE_RUN_CONFIG=$(find "$MCORE_PATH" -name run_config.yaml -type f -print -quit)
+    fi
+    [[ -n "$SOURCE_RUN_CONFIG" && -f "$SOURCE_RUN_CONFIG" ]] || {
+        echo "Missing checkpoint run_config.yaml under $MCORE_PATH"; exit 1;
+    }
+    python3 "$SCRIPT_DIR/architecture_contract.py" validate-run-config "$SOURCE_RUN_CONFIG" --profile full
+fi
 
 read -r DATASET_SAMPLES < <(wc -l < "$DATA_PATH")
 (( DATASET_SAMPLES > 0 )) || { echo "SimPO JSONL is empty: $DATA_PATH"; exit 1; }
@@ -99,11 +110,10 @@ FFN_HIDDEN_SIZE="${FFN_HIDDEN_SIZE:-8192}"
 NUM_ATTENTION_HEADS="${NUM_ATTENTION_HEADS:-16}"
 NUM_QUERY_GROUPS="${NUM_QUERY_GROUPS:-2}"
 KV_CHANNELS="${KV_CHANNELS:-256}"
-NUM_EXPERTS="${NUM_EXPERTS:-64}"
+NUM_EXPERTS="${NUM_EXPERTS:-32}"
 MOE_LAYER_FREQ="${MOE_LAYER_FREQ:-[0]*2+[1]*23}"
 MOE_ROUTER_TOPK="${MOE_ROUTER_TOPK:-4}"
-MOE_FFN_HIDDEN_SIZE="${MOE_FFN_HIDDEN_SIZE:-1024}"
-MOE_SHARED_EXPERT_INTERMEDIATE_SIZE="${MOE_SHARED_EXPERT_INTERMEDIATE_SIZE:-1024}"
+MOE_FFN_HIDDEN_SIZE="${MOE_FFN_HIDDEN_SIZE:-2048}"
 
 MODEL_ARGS=(
     --use-mcore-models
@@ -124,6 +134,7 @@ MODEL_ARGS=(
     --mscale 1.0
     --mscale-all-dim 0.0
     --normalization RMSNorm
+    --qk-layernorm
     --swiglu
     --disable-bias-linear
     --untie-embeddings-and-output-weights
@@ -145,9 +156,10 @@ MOE_ARGS=(
     --moe-layer-freq "$MOE_LAYER_FREQ"
     --moe-router-topk "$MOE_ROUTER_TOPK"
     --moe-ffn-hidden-size "$MOE_FFN_HIDDEN_SIZE"
-    --moe-shared-expert-intermediate-size "$MOE_SHARED_EXPERT_INTERMEDIATE_SIZE"
     --moe-router-load-balancing-type "${MOE_ROUTER_LOAD_BALANCING_TYPE:-none}"
     --moe-aux-loss-coeff "${MOE_AUX_LOSS_COEFF:-0.0}"
+    --moe-qb-num-bins "${MOE_QB_NUM_BINS:-1000}"
+    --moe-qb-ema-decay "${MOE_QB_EMA_DECAY:-0.0}"
     --moe-router-score-function sigmoid
     --moe-router-enable-expert-bias
     --moe-router-bias-update-rate "${MOE_ROUTER_BIAS_UPDATE_RATE:-0.0}"
@@ -158,7 +170,6 @@ MOE_ARGS=(
     --moe-token-dispatcher-type alltoall
     --moe-permute-fusion
     --moe-router-fusion
-    --moe-shared-expert-overlap
     --moe-per-layer-logging
 )
 
@@ -277,9 +288,11 @@ echo "  Data JSONL:       $DATA_PATH"
 echo "  Load checkpoint:  $MCORE_PATH"
 echo "  Tokenizer:        $TOKENIZER_MODEL"
 echo "  Parallelism:      TP=$TP_SIZE PP=$PP_SIZE EP=$EP_SIZE ETP=1 CP=$CP_SIZE"
+echo "  Architecture:     layers=25 moe_layer_freq=[0]*2+[1]*23 hidden=2048 ffn=8192 experts=32 topk=4 expert_ffn=2048 shared=0 qk_norm=true"
+echo "  Router:           ${MOE_ROUTER_LOAD_BALANCING_TYPE:-none} bins=${MOE_QB_NUM_BINS:-1000} ema=${MOE_QB_EMA_DECAY:-0.0} aux=${MOE_AUX_LOSS_COEFF:-0.0} bias_rate=${MOE_ROUTER_BIAS_UPDATE_RATE:-0.0} scale=2.5 z_loss=0.001"
 echo "  Data schedule:    rows=$DATASET_SAMPLES samples=$SCHEDULE_SAMPLES epochs=$TRAIN_EPOCHS iters=$TRAIN_ITERS"
 echo "  Seq/batch:        seq=$SEQ_LENGTH micro=$MICRO_BATCH_SIZE global=$GLOBAL_BATCH_SIZE"
-echo "  Optimizer:        lr=$LR min_lr=$MIN_LR warmup=$LR_WARMUP_ITERS wd=0 states=fp32"
+echo "  Optimizer:        type=$OPTIMIZER lr=$LR min_lr=$MIN_LR warmup=$LR_WARMUP_ITERS wd=0"
 echo "  SimPO:            beta=$SIMPO_BETA gamma=$SIMPO_GAMMA loss=$SIMPO_LOSS_TYPE sft_weight=$SIMPO_SFT_WEIGHT"
 echo "  Packing:          $PACK_SAMPLES"
 

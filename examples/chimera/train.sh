@@ -23,6 +23,23 @@ CP_SIZE="${CP_SIZE:-1}"
 MICRO_BATCH_SIZE="${MICRO_BATCH_SIZE:-4}"
 GLOBAL_BATCH_SIZE="${GLOBAL_BATCH_SIZE:-576}"
 
+# Production defaults can be overridden for documented smoke/overfit runs
+# without editing this canonical launcher.
+SEQ_LENGTH="${SEQ_LENGTH:-8192}"
+TRAIN_ITERS="${TRAIN_ITERS:-423856}"
+LR="${LR:-3e-4}"
+MIN_LR="${MIN_LR:-3e-6}"
+LR_DECAY_STYLE="${LR_DECAY_STYLE:-WSD}"
+LR_WSD_DECAY_STYLE="${LR_WSD_DECAY_STYLE:-minus_sqrt}"
+LR_WSD_DECAY_ITERS="${LR_WSD_DECAY_ITERS:-84771}"
+LR_WARMUP_ITERS="${LR_WARMUP_ITERS:-1695}"
+WEIGHT_DECAY="${WEIGHT_DECAY:-0.1}"
+SAVE_INTERVAL="${SAVE_INTERVAL:-5000}"
+EVAL_INTERVAL="${EVAL_INTERVAL:-1000}"
+MAIN_GRADS_DTYPE="${MAIN_GRADS_DTYPE:-fp32}"
+EXP_AVG_DTYPE="${EXP_AVG_DTYPE:-fp32}"
+EXP_AVG_SQ_DTYPE="${EXP_AVG_SQ_DTYPE:-fp32}"
+
 RUN_STAMP="${RUN_STAMP:-$(TZ='Asia/Kolkata' date +%Y%m%d_%H%M%S)}"
 RUN_DIR="${RUNS_ROOT}/${RUN_STAMP}"
 SAVE_PATH="${RUN_DIR}/checkpoints"
@@ -65,7 +82,7 @@ MODEL_ARGS=(
     --group-query-attention
     --num-query-groups 2
     --kv-channels 256
-    --seq-length 8192
+    --seq-length "$SEQ_LENGTH"
     --max-position-embeddings 8192
     --position-embedding-type yarn
     --rotary-base 10000000
@@ -74,6 +91,7 @@ MODEL_ARGS=(
     --mscale 1.0
     --mscale-all-dim 0.0
     --normalization RMSNorm
+    --qk-layernorm
     --swiglu
     --disable-bias-linear
     --untie-embeddings-and-output-weights
@@ -90,16 +108,17 @@ MODEL_ARGS=(
 )
 
 MOE_ARGS=(
-    --num-experts 64
+    --num-experts 32
     --moe-layer-freq "[0]*2+[1]*23"
     --moe-router-topk 4
-    --moe-ffn-hidden-size 1024
-    --moe-shared-expert-intermediate-size 1024
-    --moe-router-load-balancing-type seq_aux_loss
-    --moe-aux-loss-coeff 0.0001
+    --moe-ffn-hidden-size 2048
+    --moe-router-load-balancing-type quantile_balancing
+    --moe-aux-loss-coeff 0.0
+    --moe-qb-num-bins 1000
+    --moe-qb-ema-decay 0.0
     --moe-router-score-function sigmoid
     --moe-router-enable-expert-bias
-    --moe-router-bias-update-rate 0.001
+    --moe-router-bias-update-rate 0.0
     --moe-router-topk-scaling-factor 2.5
     --moe-router-dtype fp32
     --moe-z-loss-coeff 0.001
@@ -107,9 +126,8 @@ MOE_ARGS=(
     --moe-token-dispatcher-type alltoall
     --moe-permute-fusion
     --moe-router-fusion
-    --moe-shared-expert-overlap
     --moe-per-layer-logging
-    --moe-router-balance-logging-interval 1000
+    --moe-router-balance-logging-interval 1
 )
 
 DATA_ARGS=(
@@ -133,14 +151,12 @@ fi
 TRAINING_ARGS=(
     --micro-batch-size "$MICRO_BATCH_SIZE"
     --global-batch-size "$GLOBAL_BATCH_SIZE"
-    --train-iters 423856
-    --lr 3e-4
-    --min-lr 3e-6
-    --lr-decay-style WSD
-    --lr-wsd-decay-style minus_sqrt
-    --lr-wsd-decay-iters 84771
-    --lr-warmup-iters 1695
-    --weight-decay 0.1
+    --train-iters "$TRAIN_ITERS"
+    --lr "$LR"
+    --min-lr "$MIN_LR"
+    --lr-decay-style "$LR_DECAY_STYLE"
+    --lr-warmup-iters "$LR_WARMUP_ITERS"
+    --weight-decay "$WEIGHT_DECAY"
     --clip-grad 1.0
     --adam-beta1 0.9
     --adam-beta2 0.95
@@ -151,15 +167,21 @@ TRAINING_ARGS=(
     --use-distributed-optimizer
     --use-precision-aware-optimizer
     --main-params-dtype fp32
-    --main-grads-dtype fp32
-    --exp-avg-dtype fp32
-    --exp-avg-sq-dtype fp32
+    --main-grads-dtype "$MAIN_GRADS_DTYPE"
+    --exp-avg-dtype "$EXP_AVG_DTYPE"
+    --exp-avg-sq-dtype "$EXP_AVG_SQ_DTYPE"
     --fused-linear-cross-entropy
     --cuda-graph-impl transformer_engine
     --cuda-graph-modules attn
     --overlap-grad-reduce
     # --overlap-param-gather
 )
+if [[ "$LR_DECAY_STYLE" == "WSD" ]]; then
+    TRAINING_ARGS+=(
+        --lr-wsd-decay-style "$LR_WSD_DECAY_STYLE"
+        --lr-wsd-decay-iters "$LR_WSD_DECAY_ITERS"
+    )
+fi
 
 PARALLEL_ARGS=(
     --tensor-model-parallel-size "$TP_SIZE"
@@ -171,8 +193,8 @@ PARALLEL_ARGS=(
 LOGGING_ARGS=(
     --save "$SAVE_PATH"
     --tensorboard-dir "$TENSORBOARD_DIR"
-    --save-interval 5000
-    --eval-interval 1000
+    --save-interval "$SAVE_INTERVAL"
+    --eval-interval "$EVAL_INTERVAL"
     --log-interval 1
     --log-throughput
     --exit-signal-handler
@@ -187,6 +209,9 @@ if [[ -n "$LOAD_CHECKPOINT" ]]; then
         --load "$LOAD_CHECKPOINT"
         --exit-on-missing-checkpoint
     )
+fi
+if [[ "${SAVE_WEIGHTS_ONLY:-false}" == "true" ]]; then
+    LOGGING_ARGS+=(--no-save-optim --no-save-rng)
 fi
 
 if [[ "$NODE_RANK" == 0 ]]; then
@@ -213,6 +238,16 @@ EP_SIZE=${EP_SIZE}
 CP_SIZE=${CP_SIZE}
 MICRO_BATCH_SIZE=${MICRO_BATCH_SIZE}
 GLOBAL_BATCH_SIZE=${GLOBAL_BATCH_SIZE}
+SEQ_LENGTH=${SEQ_LENGTH}
+TRAIN_ITERS=${TRAIN_ITERS}
+LR=${LR}
+MIN_LR=${MIN_LR}
+LR_DECAY_STYLE=${LR_DECAY_STYLE}
+LR_WARMUP_ITERS=${LR_WARMUP_ITERS}
+WEIGHT_DECAY=${WEIGHT_DECAY}
+MAIN_GRADS_DTYPE=${MAIN_GRADS_DTYPE}
+EXP_AVG_DTYPE=${EXP_AVG_DTYPE}
+EXP_AVG_SQ_DTYPE=${EXP_AVG_SQ_DTYPE}
 EOF
 
     cp "$0" "${RUN_DIR}/train.sh"
@@ -229,13 +264,13 @@ echo "  Valid prefix:     ${VALID_DATA_PATH:-disabled}"
 echo "  Tokenizer:        $TOKENIZER_MODEL"
 echo "  GPUs per node:    $GPUS_PER_NODE"
 echo "  Parallelism:      TP=$TP_SIZE PP=$PP_SIZE EP=$EP_SIZE ETP=1 CP=$CP_SIZE"
-echo "  Architecture:     layers=25 moe_layer_freq=[0]*2+[1]*23"
-echo "  Router:           seq_aux_loss aux=1e-4 bias_rate=1e-3 scale=2.5 z_loss=1e-3"
-echo "  Router logging:   inline interval=1000 raw_expert_files=false"
-echo "  Seq/batch/iters:  seq=8192 micro=$MICRO_BATCH_SIZE global=$GLOBAL_BATCH_SIZE iters=423856"
-echo "  LR schedule:      WSD peak=3e-4 min=3e-6 warmup=1695 decay=84771 style=minus_sqrt"
-echo "  Optimizer:        AdamW beta1=0.9 beta2=0.95 eps=1e-8 wd=0.1 states=fp32"
-echo "  Token budget:     approximately 2.0T at global_batch=576"
+echo "  Architecture:     layers=25 moe_layer_freq=[0]*2+[1]*23 hidden=2048 experts=32 topk=4 expert_ffn=2048 shared=0 qk_norm=true"
+echo "  Router:           quantile_balancing bins=1000 ema=0 aux=0 bias_rate=0 scale=2.5 z_loss=1e-3"
+echo "  Router logging:   inline interval=1 raw_expert_files=false"
+echo "  Seq/batch/iters:  seq=$SEQ_LENGTH max_position=8192 micro=$MICRO_BATCH_SIZE global=$GLOBAL_BATCH_SIZE iters=$TRAIN_ITERS"
+echo "  LR schedule:      $LR_DECAY_STYLE peak=$LR min=$MIN_LR warmup=$LR_WARMUP_ITERS wsd_decay=$LR_WSD_DECAY_ITERS wsd_style=$LR_WSD_DECAY_STYLE"
+echo "  Optimizer:        AdamW beta1=0.9 beta2=0.95 eps=1e-8 wd=$WEIGHT_DECAY main_params=fp32 main_grads=$MAIN_GRADS_DTYPE exp_avg=$EXP_AVG_DTYPE exp_avg_sq=$EXP_AVG_SQ_DTYPE"
+echo "  Production budget: approximately 2.0T at global_batch=576 with the default schedule"
 echo "  Attention:        backend=flash external_flash_attn=false cuda_graph=TE:attn"
 echo "  Intra-doc mask:   $INTRA_DOC_MASKING"
 echo "  Document loss:    predict_eos=true post_eos_target=false"

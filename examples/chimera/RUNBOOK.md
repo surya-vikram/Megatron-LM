@@ -163,6 +163,13 @@ cfg = AutoConfig.from_pretrained(p, trust_remote_code=True)
 tok = AutoTokenizer.from_pretrained(p, use_fast=True, trust_remote_code=True)
 assert cfg.architectures == ["ChimeraForCausalLM"]
 assert (cfg.first_k_dense_replace, cfg.last_k_dense_replace) == (2, 0)
+assert (cfg.n_routed_experts, cfg.num_experts_per_tok, cfg.moe_intermediate_size) == (32, 4, 2048)
+assert cfg.n_shared_experts == 0 and cfg.shared_expert_intermediate_size == 0
+assert cfg.qk_layernorm and cfg.max_position_embeddings == 8192
+assert cfg.rope_parameters["factor"] == 1.0
+assert cfg.router_load_balancing_type == "quantile_balancing"
+assert (cfg.moe_qb_num_bins, cfg.moe_qb_ema_decay) == (1000, 0.0)
+assert cfg.load_with_bias is True
 assert cfg.vocab_size == len(tok) == 50176
 assert tok.convert_tokens_to_ids("<start_of_turn>") == 2
 assert tok.convert_tokens_to_ids("<end_of_turn>") == 3
@@ -200,6 +207,8 @@ test -f "$MCORE_IMPORT/iter_0000000/run_config.yaml"
 
 This import validates the conversion path. Pretraining below intentionally
 starts from Megatron random initialization and does not load this checkpoint.
+For both conversion cycles and exact key/shape/dtype/value/SHA256 reports, use
+`examples/chimera/verify_conversion.sh` as documented in the workflow skill.
 
 ## 4. Pretraining Data
 
@@ -330,44 +339,12 @@ SFT and SimPO do not use this preprocessing step.
 
 ## 5. Pretraining Overfit
 
-`train.sh` is the production 8k script. On the disposable container checkout,
-temporarily change it to the validated 2-GPU smoke configuration:
+`train.sh` is the production 8k script. It accepts schedule overrides through
+the environment, so the validated 2-GPU smoke does not edit tracked files.
 
 Use 400 iterations for this two-document check. At 200 iterations the
 teacher-forced loss was low, but the bare A and B prefixes still tied on their
 first continuation token and did not both generate correctly.
-
-```bash
-cd "$MEGATRON_LM"
-cp examples/chimera/train.sh /tmp/chimera_train.sh.before_smoke
-
-$PYTHON - <<'PY'
-from pathlib import Path
-
-p = Path("examples/chimera/train.sh")
-s = p.read_text()
-replacements = {
-    "--seq-length 8192": "--seq-length 512",
-    "--train-iters 423856": "--train-iters 400",
-    "--lr 3e-4": "--lr 1e-3",
-    "--min-lr 3e-6": "--min-lr 1e-4",
-    "--lr-decay-style WSD": "--lr-decay-style cosine",
-    "    --lr-wsd-decay-style minus_sqrt\n": "",
-    "    --lr-wsd-decay-iters 84771\n": "",
-    "--lr-warmup-iters 1695": "--lr-warmup-iters 0",
-    "--weight-decay 0.1": "--weight-decay 0.0",
-    "--save-interval 5000": "--save-interval 1000\n    --no-save-optim\n    --no-save-rng",
-    "seq=8192 micro=$MICRO_BATCH_SIZE global=$GLOBAL_BATCH_SIZE iters=423856": "seq=512 micro=$MICRO_BATCH_SIZE global=$GLOBAL_BATCH_SIZE iters=400",
-}
-for old, new in replacements.items():
-    if old not in s:
-        raise SystemExit(f"Expected train.sh text is missing: {old}")
-    s = s.replace(old, new)
-p.write_text(s)
-PY
-
-bash -n examples/chimera/train.sh
-```
 
 Run random-init pretraining:
 
@@ -378,19 +355,28 @@ TOKENIZER_MODEL="$HF_REFERENCE" \
 RUNS_ROOT="$PRETRAIN_RUNS" \
 MICRO_BATCH_SIZE=1 \
 GLOBAL_BATCH_SIZE=2 \
-EP_SIZE=2 \
+SEQ_LENGTH=512 \
+TRAIN_ITERS=400 \
+LR=1e-3 \
+MIN_LR=1e-4 \
+LR_DECAY_STYLE=cosine \
+LR_WARMUP_ITERS=0 \
+WEIGHT_DECAY=0.0 \
+SAVE_INTERVAL=400 \
+SAVE_WEIGHTS_ONLY=true \
+TP_SIZE=1 PP_SIZE=1 EP_SIZE=1 CP_SIZE=1 \
 bash examples/chimera/train.sh
 
 export PRETRAIN_RUN_DIR=$(ls -td "$PRETRAIN_RUNS"/* | head -n 1)
 export PRETRAIN_CHECKPOINT=$PRETRAIN_RUN_DIR/checkpoints
 ```
 
-Restore the production script immediately after the smoke run:
-
-```bash
-cp /tmp/chimera_train.sh.before_smoke examples/chimera/train.sh
-git diff --exit-code -- examples/chimera/train.sh
-```
+With two visible GPUs this is DP=2. On a measured OOM, first add
+`MAIN_GRADS_DTYPE=bf16 EXP_AVG_DTYPE=bf16 EXP_AVG_SQ_DTYPE=bf16`. If that still
+fails, use exactly one fallback axis, `EP_SIZE=2` or `TP_SIZE=2`, keeping the
+other at 1. Never use EP=2 and TP=2 together on two GPUs. Since the smoke uses
+environment-only overrides, `git diff --exit-code -- examples/chimera/train.sh`
+must remain clean afterward.
 
 ## 6. Export And Verify Pretraining
 
@@ -616,4 +602,4 @@ CHIMERA_SIMPO_CHOSEN_D: violet signals favor steady choices.<end_of_turn>
 - Random-init pretraining loss converges and the exported HF model memorizes A and B through `<EOS>`.
 - SFT raw inference emits the exact A and B answers followed by `<end_of_turn>`.
 - SimPO reward accuracy reaches 1.0 and raw inference emits the chosen C and D answers.
-- `examples/chimera/train.sh` is restored to the committed 8k configuration.
+- `examples/chimera/train.sh` remains unchanged; smoke overrides are recorded in `run_paths.env`.

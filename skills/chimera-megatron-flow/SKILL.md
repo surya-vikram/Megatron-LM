@@ -19,8 +19,22 @@ guide consistent.
 - No final dense layer
 - HF config: `first_k_dense_replace=2`, `last_k_dense_replace=0`
 - Megatron pattern: `--moe-layer-freq "[0]*2+[1]*23"`
+- Hidden size 2048, dense FFN size 8192
+- 16 attention heads, 2 query groups, head dimension 256, QK RMSNorm enabled
+- 32 routed experts, top-4, expert FFN size 2048, no shared expert
+- Sigmoid routing with scaling factor 2.5
+- Pretraining uses quantile balancing, 1000 bins, EMA 0.0, aux 0.0, and z-loss 0.001
+- Every checkpoint contains frozen `e_score_correction_bias` tensors; `load_with_bias` controls use, not loading
+- SFT and SimPO use load balancing `none` and bias update rate 0.0
+- Maximum/original context 8192, YaRN factor 1.0, `mscale=1.0`, `mscale_all_dim=0.0`
 - Stable pretraining baseline: TP=1, PP=1, EP=1, ETP=1, CP=1
-- 2-GPU smoke validation: TP=1, PP=1, EP=2, ETP=1, CP=1
+- 2-GPU validation starts as DP=2 with TP=1, PP=1, EP=1, ETP=1, CP=1
+- On measured OOM, first reduce optimizer moments to BF16; then use EP=2 or TP=2 as one fallback axis, never both
+
+The reduced canonical tiny profile is 8 layers (`[0]*2+[1]*6`), hidden 512,
+dense FFN 2048, 8 heads, 2 query groups, head dimension 64, 8 routed experts,
+top-2, expert FFN 256, and the same QK norm, no-shared-expert, bias, QB, and
+8K/factor-1 behavior.
 
 Keep this layout consistent in:
 
@@ -162,6 +176,13 @@ $PYTHON - <<'PY'
 from transformers import ChimeraConfig, ChimeraForCausalLM
 cfg = ChimeraConfig()
 assert (cfg.first_k_dense_replace, cfg.last_k_dense_replace) == (2, 0)
+assert (cfg.n_routed_experts, cfg.num_experts_per_tok, cfg.moe_intermediate_size) == (32, 4, 2048)
+assert cfg.n_shared_experts == 0 and cfg.shared_expert_intermediate_size == 0
+assert cfg.qk_layernorm and cfg.max_position_embeddings == 8192
+assert cfg.rope_parameters["factor"] == 1.0
+assert cfg.router_load_balancing_type == "quantile_balancing"
+assert (cfg.moe_qb_num_bins, cfg.moe_qb_ema_decay) == (1000, 0.0)
+assert cfg.load_with_bias is True
 print("chimera_transformers_ok", cfg.model_type, cfg.first_k_dense_replace, cfg.last_k_dense_replace)
 PY
 ```
@@ -173,7 +194,7 @@ cd /workspace/repos/Megatron-Bridge
 $PYTHON -m pytest -q tests/unit_tests/models/chimera/test_chimera_bridge.py
 ```
 
-Validated result: `8 passed`.
+Validated result after the architecture migration: `12 passed`.
 
 ## Create HF Artifacts
 
@@ -203,6 +224,13 @@ assert cfg.architectures == ["ChimeraForCausalLM"]
 assert cfg.vocab_size == 50176
 assert len(tok) == 50176
 assert (cfg.first_k_dense_replace, cfg.last_k_dense_replace) == (2, 0)
+assert (cfg.n_routed_experts, cfg.num_experts_per_tok, cfg.moe_intermediate_size) == (32, 4, 2048)
+assert cfg.n_shared_experts == 0 and cfg.shared_expert_intermediate_size == 0
+assert cfg.qk_layernorm and cfg.max_position_embeddings == 8192
+assert cfg.rope_parameters["factor"] == 1.0
+assert cfg.router_load_balancing_type == "quantile_balancing"
+assert (cfg.moe_qb_num_bins, cfg.moe_qb_ema_decay) == (1000, 0.0)
+assert cfg.load_with_bias is True
 assert tok.convert_tokens_to_ids("<start_of_turn>") == 2
 assert tok.convert_tokens_to_ids("<end_of_turn>") == 3
 assert tok.unk_token is None
@@ -219,6 +247,14 @@ vocab_size=50176
 tokenizer length=50176
 first_k_dense_replace=2
 last_k_dense_replace=0
+n_routed_experts=32
+num_experts_per_tok=4
+moe_intermediate_size=2048
+n_shared_experts=0
+qk_layernorm=true
+max_position_embeddings=8192
+YaRN factor=1
+load_with_bias=true
 <start_of_turn> id=2
 <end_of_turn> id=3
 <DUMMY_2> through <DUMMY_9> reserved at ids 4 through 11
@@ -257,6 +293,17 @@ Expected:
 
 ```text
 $MCORE_IMPORT/iter_0000000/run_config.yaml
+```
+
+The import preflight validates the complete HF architecture and exact key set.
+For both conversion cycles plus exact per-key tensor/hash reports, run:
+
+```bash
+bash examples/chimera/verify_conversion.sh \
+  --hf-source "$HF_RANDOM_FULL" \
+  --work-dir "$DATA_ROOT/exact_conversion" \
+  --bridge-path "$MEGATRON_BRIDGE" \
+  --python "$PYTHON"
 ```
 
 ## Pretraining Data Format
@@ -332,57 +379,12 @@ DOC_1_DECODED='CHIMERA_OVERFIT_KEY_B: A careful researcher traced the river path
 
 ## 2-GPU Smoke Overfit
 
-The committed `train.sh` is the real pretraining script. For a 2-GPU smoke test, temporarily edit only the container copy and restore it afterward.
+The committed `train.sh` accepts smoke-only schedule overrides through the
+environment; do not edit the canonical launcher.
 
 Use 400 iterations for the two-document smoke. A 200-iteration run can show low
 teacher-forced loss while the bare A and B prefixes still tie on their first
 continuation token, causing one document to generate the other.
-
-Apply the validated smoke edits:
-
-```bash
-cd "$MEGATRON_LM"
-cp examples/chimera/train.sh /tmp/chimera_train.sh.before_smoke
-
-$PYTHON - <<'PY'
-from pathlib import Path
-
-p = Path("examples/chimera/train.sh")
-s = p.read_text()
-repls = {
-    "--seq-length 8192": "--seq-length 512",
-    "--train-iters 423856": "--train-iters 400",
-    "--lr 3e-4": "--lr 1e-3",
-    "--min-lr 3e-6": "--min-lr 1e-4",
-    "--lr-decay-style WSD": "--lr-decay-style cosine",
-    "    --lr-wsd-decay-style minus_sqrt\n": "",
-    "    --lr-wsd-decay-iters 84771\n": "",
-    "--lr-warmup-iters 1695": "--lr-warmup-iters 0",
-    "--weight-decay 0.1": "--weight-decay 0.0",
-    "--save-interval 5000": "--save-interval 1000\n    --no-save-optim\n    --no-save-rng",
-    "seq=8192 micro=$MICRO_BATCH_SIZE global=$GLOBAL_BATCH_SIZE iters=423856": "seq=512 micro=$MICRO_BATCH_SIZE global=$GLOBAL_BATCH_SIZE iters=400",
-}
-for old, new in repls.items():
-    if old not in s:
-        raise SystemExit(f"missing expected text in train.sh: {old}")
-    s = s.replace(old, new)
-p.write_text(s)
-PY
-
-bash -n examples/chimera/train.sh
-```
-
-The resulting temporary diff should contain:
-
-- `--seq-length 512`
-- `--train-iters 400`
-- `--lr 1e-3`
-- `--min-lr 1e-4`
-- `--lr-decay-style cosine`
-- `--lr-warmup-iters 0`
-- `--weight-decay 0.0`
-- Add `--no-save-optim` and `--no-save-rng`
-- Keep `--save-interval 1000`, `--eval-interval 1000`, `--eval-iters 0`
 
 Run:
 
@@ -395,9 +397,24 @@ TOKENIZER_MODEL="$HF_REFERENCE" \
 RUNS_ROOT="$RUNS_ROOT" \
 MICRO_BATCH_SIZE=1 \
 GLOBAL_BATCH_SIZE=2 \
-EP_SIZE=2 \
+SEQ_LENGTH=512 \
+TRAIN_ITERS=400 \
+LR=1e-3 \
+MIN_LR=1e-4 \
+LR_DECAY_STYLE=cosine \
+LR_WARMUP_ITERS=0 \
+WEIGHT_DECAY=0.0 \
+SAVE_INTERVAL=400 \
+SAVE_WEIGHTS_ONLY=true \
+TP_SIZE=1 PP_SIZE=1 EP_SIZE=1 CP_SIZE=1 \
 bash examples/chimera/train.sh
 ```
+
+With two visible GPUs this is DP=2. If it fails specifically from GPU memory,
+retry first with `MAIN_GRADS_DTYPE=bf16 EXP_AVG_DTYPE=bf16
+EXP_AVG_SQ_DTYPE=bf16`. If that still fails, use exactly one fallback:
+`EP_SIZE=2` or `TP_SIZE=2`. Keep the other size at 1 and record the OOM and
+selected fallback in the validation report.
 
 Capture the run paths dynamically:
 
@@ -418,21 +435,14 @@ checkpoint: checkpoints/iter_0000400
 checkpoint size: about 19G
 ```
 
-Restore the committed training script after the pretraining smoke run. This restore only applies to the temporary `train.sh` edits above:
-
-```bash
-cd "$MEGATRON_LM"
-if [ -f /tmp/chimera_train.sh.before_smoke ]; then
-  cp /tmp/chimera_train.sh.before_smoke examples/chimera/train.sh
-else
-  git restore examples/chimera/train.sh
-fi
-git status --short
-```
+No source restoration is needed because smoke settings are environment-only.
+Verify `git status --short` remains unchanged after the run.
 
 ## Export To HF
 
-`examples/chimera/export.sh` must install `run_config.yaml` in both:
+Training now writes a validated, effective `run_config.yaml` at checkpoint
+root. `examples/chimera/export.sh` refuses to invent metadata for a checkpoint;
+it validates that file and copies it to the selected iteration when needed:
 
 ```text
 <checkpoints>/run_config.yaml
@@ -481,6 +491,11 @@ tok = AutoTokenizer.from_pretrained(p, use_fast=True, trust_remote_code=True)
 assert cfg.architectures == ["ChimeraForCausalLM"]
 assert (cfg.first_k_dense_replace, cfg.last_k_dense_replace) == (2, 0)
 assert cfg.num_hidden_layers == 25
+assert (cfg.n_routed_experts, cfg.num_experts_per_tok, cfg.moe_intermediate_size) == (32, 4, 2048)
+assert cfg.n_shared_experts == 0 and cfg.shared_expert_intermediate_size == 0
+assert cfg.qk_layernorm and cfg.max_position_embeddings == 8192
+assert cfg.rope_parameters["factor"] == 1.0
+assert cfg.load_with_bias is True
 assert len(tok) == 50176
 assert tok.convert_tokens_to_ids("<start_of_turn>") == 2
 assert tok.convert_tokens_to_ids("<end_of_turn>") == 3
@@ -820,6 +835,9 @@ CHIMERA_SIMPO_CHOSEN_D: violet signals favor steady choices.<end_of_turn>
 - SFT and SimPO smoke runs are unpacked; do not pass `--pack-samples`.
 - Keep real pretraining checkpoints resumable; use `--no-save-optim` and `--no-save-rng` only for short smoke runs.
 - Do not write large artifacts to root overlay if persistent storage exists.
-- Restore temporary `train.sh` edits after smoke validation.
+- Keep smoke schedule changes in environment variables; do not edit `train.sh` in place.
 - If export fails with missing architecture, regenerate HF reference from a Transformers commit where no-weight export writes `architectures=["ChimeraForCausalLM"]`.
-- If export fails with `model type None not supported`, ensure `run_config.yaml` exists in both checkpoint root and latest `iter_*`.
+- If export reports missing architecture metadata, require the checkpoint-generated
+  `run_config.yaml` at root, validate it with `architecture_contract.py`, and let
+  `export.sh` copy that validated file to the latest `iter_*`. Never substitute
+  the static template silently.

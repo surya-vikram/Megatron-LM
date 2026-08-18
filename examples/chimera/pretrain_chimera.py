@@ -12,6 +12,7 @@ import os
 import sys
 import time
 from functools import partial
+from pathlib import Path
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
@@ -57,6 +58,7 @@ def _make_safe_dist():
 _make_safe_dist()
 
 from gpt_builders import gpt_builder
+from architecture_contract import validate_training_args, write_runtime_run_config
 from megatron.core.datasets.blended_megatron_dataset_builder import BlendedMegatronDatasetBuilder
 from megatron.core.enums import ModelType
 from megatron.core.utils import get_attr_wrapped_model
@@ -235,6 +237,10 @@ if __name__ == "__main__":
         args_defaults={"tokenizer_type": "GPT2BPETokenizer"},
     )
     args = apply_chimera_yarn_args(args)
+    profile_name = validate_training_args(args)
+    run_config_path = write_runtime_run_config(args, Path(__file__).with_name("run_config.yaml"))
+    if run_config_path is not None:
+        print(f"Wrote validated Chimera {profile_name} architecture metadata: {run_config_path}")
     full_config = pretrain_cfg_container_from_args(args)
 
     if getattr(args, "simpo", False):

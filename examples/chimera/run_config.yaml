@@ -116,7 +116,7 @@ logger:
   wandb_save_dir: null
 mixed_precision: null
 model:
-  _target_: megatron.bridge.models.gpt_provider.GPTModelProvider
+  _target_: megatron.bridge.models.chimera.chimera_bridge.ChimeraModelProvider
   account_for_embedding_in_pipeline_split: false
   account_for_loss_in_pipeline_split: false
   activation_func:
@@ -227,6 +227,7 @@ model:
   hetereogenous_dist_checkpoint: false
   heterogeneous_block_specs: false
   hf_model_id: chimera
+  chimera_load_with_bias: true
   hidden_dropout: 0.0
   hidden_size: 2048
   hierarchical_context_parallel_sizes: null
@@ -287,12 +288,12 @@ model:
   mlp_chunks_for_prefill: 1
   mlp_chunks_for_training: 1
   moe_apply_probs_on_input: false
-  moe_aux_loss_coeff: 0.0001
+  moe_aux_loss_coeff: 0.0
   moe_deepep_num_sms: 20
   moe_enable_deepep: false
   moe_enable_routing_replay: false
   moe_expert_capacity_factor: null
-  moe_ffn_hidden_size: 1024
+  moe_ffn_hidden_size: 2048
   moe_flex_dispatcher_backend: deepep
   moe_grouped_gemm: true
   moe_hybridep_num_blocks_permute: null
@@ -334,14 +335,16 @@ model:
   moe_per_layer_logging: true
   moe_permute_fusion: true
   moe_permute_fusion_into_hybridep: false
-  moe_router_bias_update_rate: 0.001
+  moe_qb_ema_decay: 0.0
+  moe_qb_num_bins: 1000
+  moe_router_bias_update_rate: 0.0
   moe_router_dtype: fp32
   moe_router_enable_expert_bias: true
   moe_router_force_biased: null
   moe_router_force_load_balancing: false
   moe_router_fusion: false
   moe_router_group_topk: 1
-  moe_router_load_balancing_type: seq_aux_loss
+  moe_router_load_balancing_type: quantile_balancing
   moe_router_num_groups: 1
   moe_router_padding_for_fp8: false
   moe_router_padding_for_quantization: false
@@ -351,8 +354,8 @@ model:
   moe_router_topk_limited_devices: null
   moe_router_topk_scaling_factor: 2.5
   moe_shared_expert_gate: false
-  moe_shared_expert_intermediate_size: 1024
-  moe_shared_expert_overlap: true
+  moe_shared_expert_intermediate_size: null
+  moe_shared_expert_overlap: false
   moe_single_grouped_bias: false
   moe_single_grouped_weight: false
   moe_token_dispatcher_type: alltoall
@@ -384,7 +387,7 @@ model:
   num_layers_in_first_pipeline_stage: null
   num_layers_in_last_pipeline_stage: null
   num_microbatches_with_partial_activation_checkpoints: null
-  num_moe_experts: 64
+  num_moe_experts: 32
   num_query_groups: 2
   offload_modules: []
   output_layer_init_method:
@@ -413,7 +416,7 @@ model:
   qk_clip_alpha: 0.5
   qk_clip_threshold: 100
   qk_l2_norm: false
-  qk_layernorm: false
+  qk_layernorm: true
   quant_recipe: null
   recompute_granularity: null
   recompute_method: null
@@ -429,7 +432,7 @@ model:
   rotary_scaling_factor: null
   scatter_embedding_sequence_parallel: true
   seq_len_interpolation_factor: null
-  seq_length: 32768
+  seq_length: 8192
   sequence_parallel: false
   share_embeddings_and_output_weights: false
   should_pad_vocab: false
@@ -483,10 +486,10 @@ model:
   yarn_beta_fast: 32.0
   yarn_beta_slow: 1.0
   yarn_correction_range_round_to_int: false
-  yarn_mscale: null
-  yarn_mscale_all_dim: null
+  yarn_mscale: 1.0
+  yarn_mscale_all_dim: 0.0
   yarn_original_max_position_embeddings: 8192
-  yarn_rotary_scaling_factor: 4.0
+  yarn_rotary_scaling_factor: 1.0
 nvrx_straggler: null
 optimizer:
   _target_: megatron.core.optimizer.optimizer_config.OptimizerConfig

@@ -437,7 +437,8 @@ conversation:
 ```
 
 The loss mask trains assistant content and `<end_of_turn>`, while masking the
-system turn, user turn, and assistant header. Packing is disabled.
+system turn, user turn, and assistant header. Production runs pack samples by
+default; this exact-response smoke disables packing explicitly.
 
 ```bash
 export SFT_RUNS=$DATA_ROOT/sft_runs
@@ -445,6 +446,7 @@ DATA_PATH="$MEGATRON_LM/examples/chimera/data/sft/overfit.jsonl" \
 TOKENIZER_MODEL="$HF_REFERENCE" \
 MCORE_PATH="$PRETRAIN_CHECKPOINT" \
 RUNS_ROOT="$SFT_RUNS" \
+PACK_SAMPLES=false \
 SEQ_LENGTH=128 \
 MICRO_BATCH_SIZE=1 \
 GLOBAL_BATCH_SIZE=2 \
@@ -562,7 +564,8 @@ export SIMPO_DATA=$MEGATRON_LM/examples/chimera/data/simpo/overfit.jsonl
 test "$(wc -l < "$SIMPO_DATA")" -eq 4
 ```
 
-Run SimPO from the SFT checkpoint. Packing is disabled:
+Run SimPO from the SFT checkpoint. Production runs pack samples by default;
+this retention smoke disables packing explicitly:
 
 ```bash
 export SIMPO_RUNS=$DATA_ROOT/simpo_runs
@@ -570,6 +573,7 @@ DATA_PATH="$SIMPO_DATA" \
 TOKENIZER_MODEL="$HF_REFERENCE" \
 MCORE_PATH="$SFT_CHECKPOINT" \
 RUNS_ROOT="$SIMPO_RUNS" \
+PACK_SAMPLES=false \
 SEQ_LENGTH=128 \
 MICRO_BATCH_SIZE=1 \
 GLOBAL_BATCH_SIZE=2 \

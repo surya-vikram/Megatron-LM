@@ -574,7 +574,11 @@ U<end_of_turn>
 
 ## SFT Smoke
 
-SFT JSONL rows use `messages` and are read directly by `SFTTokenizer`. Do not run Megatron preprocessing for SFT. Do not pass `--pack-samples`; the Chimera prompt format masks system, user, and assistant header tokens, and trains only assistant content plus `<end_of_turn>`.
+SFT JSONL rows use `messages` and are read directly by `SFTTokenizer`. Do not
+run Megatron preprocessing for SFT. Production runs pack samples by default;
+set `PACK_SAMPLES=false` for this exact-response smoke. The Chimera prompt
+format masks system, user, and assistant header tokens, and trains only
+assistant content plus `<end_of_turn>`.
 
 Create two samples:
 
@@ -597,6 +601,7 @@ DATA_PATH="$SFT_DATA" \
 TOKENIZER_MODEL="$HF_REFERENCE" \
 MCORE_PATH="$CHECKPOINT_DIR" \
 RUNS_ROOT="$CHAT_ROOT/sft_runs" \
+PACK_SAMPLES=false \
 SEQ_LENGTH=128 \
 MICRO_BATCH_SIZE=1 \
 GLOBAL_BATCH_SIZE=2 \
@@ -721,7 +726,10 @@ print(tokenizer.decode(output_ids[0, input_ids.shape[1]:], skip_special_tokens=F
 
 ## SimPO Smoke
 
-SimPO JSONL rows use `chosen` and `rejected`, each as a messages list, and are read directly by `SFTTokenizer`. Do not run Megatron preprocessing for SimPO. Do not pass `--pack-samples`.
+SimPO JSONL rows use `chosen` and `rejected`, each as a messages list, and are
+read directly by `SFTTokenizer`. Do not run Megatron preprocessing for SimPO.
+Production runs pack samples by default; set `PACK_SAMPLES=false` for this
+retention smoke.
 
 `SimPODataset` reports the physical row count and requested logical sample
 count, then wraps over the physical rows until the requested training length is
@@ -747,6 +755,7 @@ DATA_PATH="$SIMPO_DATA" \
 TOKENIZER_MODEL="$HF_REFERENCE" \
 MCORE_PATH="$SFT_CHECKPOINT_DIR" \
 RUNS_ROOT="$CHAT_ROOT/simpo_runs" \
+PACK_SAMPLES=false \
 SEQ_LENGTH=128 \
 MICRO_BATCH_SIZE=1 \
 GLOBAL_BATCH_SIZE=2 \

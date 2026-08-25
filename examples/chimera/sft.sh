@@ -235,6 +235,7 @@ LOGGING_ARGS=(
     --log-interval 1
     --log-throughput
     --exit-signal-handler
+    --ckpt-format torch_dist
 )
 if [[ -n "${MCORE_PATH:-}" && -d "$MCORE_PATH" ]]; then
     LOGGING_ARGS+=(

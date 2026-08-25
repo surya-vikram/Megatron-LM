@@ -199,6 +199,7 @@ LOGGING_ARGS=(
     --log-interval 1
     --log-throughput
     --exit-signal-handler
+    --ckpt-format torch_dist
 )
 if [[ -n "$VALID_DATA_PATH" ]]; then
     LOGGING_ARGS+=(--eval-iters 4)

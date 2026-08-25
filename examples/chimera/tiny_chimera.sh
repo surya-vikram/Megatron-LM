@@ -200,7 +200,7 @@ LOGGING_ARGS=(
     --log-interval 1
     --log-throughput
     --exit-signal-handler
-    --ckpt-format "${CKPT_FORMAT:-torch}"
+    --ckpt-format torch_dist
 )
 if [[ -n "${LOAD_CHECKPOINT:-}" || -n "${LOAD_DIR:-}" ]]; then
     LOGGING_ARGS+=(

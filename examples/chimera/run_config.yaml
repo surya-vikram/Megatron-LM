@@ -257,7 +257,7 @@ model:
   is_hybrid_model: false
   kitchen_attention_backend: sdpa
   kv_channels: 256
-  layernorm_epsilon: 1.0e-06
+  layernorm_epsilon: 1.0e-05
   layernorm_zero_centered_gamma: false
   linear_attention_freq: null
   linear_ce_accum_c_fp32: false

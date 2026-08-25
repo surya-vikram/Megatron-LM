@@ -116,6 +116,7 @@ $PYTHON - <<'PY'
 from transformers import ChimeraConfig, ChimeraForCausalLM
 cfg = ChimeraConfig()
 assert (cfg.first_k_dense_replace, cfg.last_k_dense_replace) == (2, 0)
+assert cfg.rms_norm_eps == 1e-5
 print("transformers_ok", cfg.model_type, cfg.first_k_dense_replace, cfg.last_k_dense_replace)
 PY
 ```

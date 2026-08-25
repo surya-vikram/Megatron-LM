@@ -134,6 +134,7 @@ MODEL_ARGS=(
     --mscale 1.0
     --mscale-all-dim 0.0
     --normalization RMSNorm
+    --norm-epsilon 1e-5
     --qk-layernorm
     --swiglu
     --disable-bias-linear

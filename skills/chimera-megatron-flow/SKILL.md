@@ -21,6 +21,7 @@ guide consistent.
 - Megatron pattern: `--moe-layer-freq "[0]*2+[1]*23"`
 - Hidden size 2048, dense FFN size 8192
 - 16 attention heads, 2 query groups, head dimension 256, QK RMSNorm enabled
+- All RMSNorm sites use epsilon `1e-5`
 - 32 routed experts, top-4, expert FFN size 2048, no shared expert
 - Sigmoid routing with scaling factor 2.5
 - Pretraining uses quantile balancing, 1000 bins, EMA 0.0, aux 0.0, and z-loss 0.001
@@ -179,6 +180,7 @@ assert (cfg.first_k_dense_replace, cfg.last_k_dense_replace) == (2, 0)
 assert (cfg.n_routed_experts, cfg.num_experts_per_tok, cfg.moe_intermediate_size) == (32, 4, 2048)
 assert cfg.n_shared_experts == 0 and cfg.shared_expert_intermediate_size == 0
 assert cfg.qk_layernorm and cfg.max_position_embeddings == 8192
+assert cfg.rms_norm_eps == 1e-5
 assert cfg.rope_parameters["factor"] == 1.0
 assert cfg.router_load_balancing_type == "quantile_balancing"
 assert (cfg.moe_qb_num_bins, cfg.moe_qb_ema_decay) == (1000, 0.0)
@@ -227,6 +229,7 @@ assert (cfg.first_k_dense_replace, cfg.last_k_dense_replace) == (2, 0)
 assert (cfg.n_routed_experts, cfg.num_experts_per_tok, cfg.moe_intermediate_size) == (32, 4, 2048)
 assert cfg.n_shared_experts == 0 and cfg.shared_expert_intermediate_size == 0
 assert cfg.qk_layernorm and cfg.max_position_embeddings == 8192
+assert cfg.rms_norm_eps == 1e-5
 assert cfg.rope_parameters["factor"] == 1.0
 assert cfg.router_load_balancing_type == "quantile_balancing"
 assert (cfg.moe_qb_num_bins, cfg.moe_qb_ema_decay) == (1000, 0.0)
@@ -493,6 +496,7 @@ assert cfg.num_hidden_layers == 25
 assert (cfg.n_routed_experts, cfg.num_experts_per_tok, cfg.moe_intermediate_size) == (32, 4, 2048)
 assert cfg.n_shared_experts == 0 and cfg.shared_expert_intermediate_size == 0
 assert cfg.qk_layernorm and cfg.max_position_embeddings == 8192
+assert cfg.rms_norm_eps == 1e-5
 assert cfg.rope_parameters["factor"] == 1.0
 assert cfg.load_with_bias is True
 assert len(tok) == 50176

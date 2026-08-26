@@ -199,6 +199,7 @@ TRAINING_ARGS=(
     --manual-gc-interval 1000
     --use-distributed-optimizer
     --overlap-grad-reduce
+    --calculate-per-token-loss
 )
 
 TRAINING_ARGS+=(--optimizer "$OPTIMIZER")

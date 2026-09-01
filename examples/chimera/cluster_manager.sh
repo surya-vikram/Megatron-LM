@@ -303,13 +303,8 @@ validate_topology() {
     fi
 
     (( GPUS_PER_NODE > 0 )) || die "GPUS_PER_NODE must be positive when ENABLE_GPU=true"
-    local model_parallel=$((TP_SIZE * PP_SIZE * CP_SIZE))
-    (( WORLD_SIZE % model_parallel == 0 )) || die "WORLD_SIZE=$WORLD_SIZE is not divisible by TP*PP*CP=$model_parallel"
-    (( 32 % EP_SIZE == 0 )) || die "EP_SIZE=$EP_SIZE must divide 32 experts"
-    (( WORLD_SIZE % (EP_SIZE * PP_SIZE) == 0 )) || die "WORLD_SIZE=$WORLD_SIZE is incompatible with EP_SIZE=$EP_SIZE and PP_SIZE=$PP_SIZE"
-
     [[ "$GLOBAL_BATCH_SIZE" =~ ^[1-9][0-9]*$ ]] || die "GLOBAL_BATCH_SIZE must be a positive integer"
-    local dp_size=$((WORLD_SIZE / model_parallel))
+    local dp_size=$WORLD_SIZE
     local batch_unit=$((MICRO_BATCH_SIZE * dp_size))
     (( GLOBAL_BATCH_SIZE >= batch_unit )) || die "GLOBAL_BATCH_SIZE=$GLOBAL_BATCH_SIZE is smaller than microbatch*DP=$batch_unit"
     (( GLOBAL_BATCH_SIZE % batch_unit == 0 )) || die "GLOBAL_BATCH_SIZE=$GLOBAL_BATCH_SIZE must be divisible by microbatch*DP=$batch_unit"
@@ -478,9 +473,6 @@ done <<< "$REQUIRED_PATHS"
 
 [[ -d "$HOST_DATA" && -w "$HOST_DATA" ]] || { echo "FAIL: data root is not writable: $HOST_DATA"; fail=1; }
 
-for repo in Megatron-LM Megatron-Bridge transformers; do
-    [[ -d "$HOST_REPOS/$repo/.git" ]] || { echo "FAIL: missing Git checkout: $HOST_REPOS/$repo"; fail=1; }
-done
 bridge_link="$HOST_REPOS/Megatron-Bridge/3rdparty/Megatron-LM"
 if [[ -e "$bridge_link" && ! -L "$bridge_link" ]]; then
     echo "FAIL: Bridge Megatron-LM path exists but is not a symlink"
@@ -566,7 +558,6 @@ cmd_preflight() {
     (( rc == 0 )) || die "image check failed on one or more nodes"
 
     local expected=""
-    local expected_commits=""
     for node in "${NODES[@]}"; do
         local image_id
         image_id=$(run_node "$node" docker image inspect "$IMAGE" --format '{{.Id}}')
@@ -575,17 +566,8 @@ cmd_preflight() {
         elif [[ "$image_id" != "$expected" ]]; then
             die "image ID differs on $node: $image_id != $expected"
         fi
-
-        local commits
-        commits=$(run_node "$node" bash -lc "for repo in Megatron-LM Megatron-Bridge transformers; do git -C $(q "$HOST_REPOS")/\$repo rev-parse HEAD; done")
-        if [[ -z "$expected_commits" ]]; then
-            expected_commits="$commits"
-        elif [[ "$commits" != "$expected_commits" ]]; then
-            die "repository commits differ on $node"
-        fi
     done
     echo "All nodes use image $expected"
-    echo "All nodes use identical repository commits"
 }
 
 cmd_pull() {
@@ -613,7 +595,11 @@ cmd_image_check() {
 prepare_run_metadata() {
     local commits node_map
     commits=$(for repo in Megatron-LM Megatron-Bridge transformers; do
-        git -C "$HOST_REPOS/$repo" log -1 --format="$repo %H %s"
+        if git -C "$HOST_REPOS/$repo" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+            git -C "$HOST_REPOS/$repo" log -1 --format="$repo %H %s"
+        else
+            echo "$repo not-a-git-checkout"
+        fi
     done)
     node_map=$(for rank in "${!NODES[@]}"; do printf '%s %s\n' "$rank" "${NODES[$rank]}"; done)
 

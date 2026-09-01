@@ -1,8 +1,9 @@
 # Chimera Context Extension
 
-This document describes how to pretrain Chimera primarily at an 8K sequence length and
-then extend it to 32K, 64K, or 128K. It separates the values that control actual training,
-the declared model limit, and YaRN's positional-frequency transformation.
+This document describes the canonical Chimera lifecycle: fresh 8K YaRN pretraining,
+sequential 32K/64K/128K continued pretraining, mixed-length SFT at the final geometry,
+and phase-preserving conversion to Transformers. Ordinary RoPE and no-position modes are
+not supported by this workflow.
 
 ## Core concepts
 
@@ -25,12 +26,9 @@ RoPE does not contain a learned embedding row for every position. Raising
 Long-context capability comes from training on long sequences with the corresponding
 RoPE or YaRN configuration.
 
-In the current Chimera Megatron implementation, an explicitly supplied YaRN factor and
-`yarn_original_max_position_embeddings` determine the rotary frequencies. The maximum
-position value is primarily a bound and checkpoint/export metadata. It is numerically
-possible to declare the final maximum during the 8K phase while retaining factor `1`, but
-phase-specific maximums are recommended because every checkpoint then advertises only a
-context length on which it has actually been trained and validated.
+The phase resolver locks maximum, factor, and original context together. It rejects a
+factor or maximum that belongs to another phase. A checkpoint therefore advertises only
+the context phase on which it is being trained.
 
 ## Phase configuration
 
@@ -46,10 +44,45 @@ Use the following values for an original 8K context:
 The maximum and factor should describe the same phase. Do not, for example, combine a
 32K maximum with factor `16`.
 
-The model does not necessarily need every row in the table. A 64K target can use
-`8K -> 32K -> 64K`. A 128K target can use `8K -> 32K -> 128K`, adding a 64K phase if
-the direct 32K-to-128K transition does not recover short-context quality or pass the
-long-context validation gates.
+The production launcher deliberately enforces the complete sequence
+`8K -> 32K -> 64K -> 128K`. Each transition validates the source checkpoint's explicit
+phase metadata before loading weights.
+
+## Canonical launch sequence
+
+Start a new base model. Do not initialize this run from the legacy checkpoint that was
+trained while TE attention CUDA graphs omitted rotary inputs.
+
+```bash
+CONTEXT_PHASE=8k \
+TRAIN_DATA_PATH="$DATA_PREFIX" \
+TOKENIZER_MODEL="$HF_8K_REFERENCE" \
+RUNS_ROOT="$BASE_RUNS" \
+bash examples/chimera/train.sh
+```
+
+After each phase passes its validation gates, launch the next phase from the checkpoint
+root. `context_extend.sh` loads model weights only and starts fresh Adam optimizer, RNG,
+iteration, and scheduler state.
+
+```bash
+CONTEXT_PHASE=32k LOAD_CHECKPOINT="$CKPT_8K" \
+TRAIN_DATA_PATH="$LONG_DATA_PREFIX" TOKENIZER_MODEL="$HF_8K_REFERENCE" \
+bash examples/chimera/context_extend.sh
+
+CONTEXT_PHASE=64k LOAD_CHECKPOINT="$CKPT_32K" \
+TRAIN_DATA_PATH="$LONG_DATA_PREFIX" TOKENIZER_MODEL="$HF_8K_REFERENCE" \
+bash examples/chimera/context_extend.sh
+
+CONTEXT_PHASE=128k LOAD_CHECKPOINT="$CKPT_64K" \
+TRAIN_DATA_PATH="$LONG_DATA_PREFIX" TOKENIZER_MODEL="$HF_8K_REFERENCE" \
+bash examples/chimera/context_extend.sh
+```
+
+The extension defaults preserve approximately 4.72M tokens per update, use a 10B-token
+phase budget, cosine decay from `1e-5` to `1e-6`, 10% warmup, Adam, and weight decay
+`0.1`. Override token budget or parallelism through environment variables, not tracked
+script edits.
 
 ## Training arguments
 
@@ -166,10 +199,8 @@ For example, 10B tokens with a 4,718,592-token global update requires approximat
 2120 iterations and 212 warmup iterations.
 
 Using `--finetune --no-load-optim --no-load-rng` loads model weights while starting new
-iteration counters, optimizer state, RNG state, and scheduler. This avoids accidentally
-restoring the base phase's completed WSD schedule. Preserve optimizer state only after a
-separate transition test confirms that the checkpoint scheduler and changed parallelism
-are handled correctly.
+iteration counters, optimizer state, RNG state, and scheduler. This avoids restoring the
+previous phase's completed schedule.
 
 Use a new timestamped run directory and a fresh data cache for every context phase.
 
@@ -191,55 +222,35 @@ documents may attend to earlier unrelated documents. If intra-document masking i
 the corpus must contain sufficiently long individual documents because position IDs and
 attention restart at EOD boundaries.
 
-## Files to update
+## Implemented phase contract
 
 ### Megatron-LM
 
-`examples/chimera/pretrain_chimera.py`
-
-- Set `yarn_rotary_scaling_factor` for the current phase.
-- Keep `yarn_original_max_position_embeddings=8192`.
-- Prefer making the phase factor an explicit training input instead of manually changing a
-  global constant between jobs.
-
-The phase training script:
-
-- Set `--seq-length` and `--max-position-embeddings` from the phase table.
-- Set MBS, GBS, CP, iteration count, and the extension LR schedule.
-- Use a dedicated extension script instead of overwriting the production 8K recipe.
-
-`examples/chimera/run_config.yaml`
-
-- Set `seq_length` to the phase maximum.
-- Set `yarn_rotary_scaling_factor` to the phase factor.
-- Keep `yarn_original_max_position_embeddings: 8192`.
-- Ensure the matching run config is stored beside the checkpoint before HF export.
-
-`examples/chimera/sft.sh` and `examples/chimera/simpo.sh`
-
-- After the final context extension, set `--max-position-embeddings` to the final supported
-  context so post-training exports do not regress the model metadata.
-- Their actual `SEQ_LENGTH` may remain shorter when the post-training data is short.
+- `context_phase.sh` is the single 8K/32K/64K/128K resolver used by pretraining,
+  Tiny Chimera, context extension, SFT, and SimPO.
+- `context_extend.sh` validates the previous phase and launches weight-only continued
+  pretraining with a fresh Adam schedule.
+- `pretrain_chimera.py` writes `chimera_context_phase`, maximum, factor, original context,
+  and fractional-correction metadata into checkpoint `run_config.yaml`.
+- `sft.sh` and `simpo.sh` default to the final 128K/factor-16 geometry. Packing is enabled,
+  Adam is the default optimizer, and SFT uses per-token loss normalization. A shorter
+  `SEQ_LENGTH` is allowed while the published maximum and factor remain 128K/16.
 
 ### Transformers
 
-`src/transformers/models/chimera/configuration_chimera.py`
-
-- Set the published default `max_position_embeddings` and YaRN factor to the final,
-  validated context configuration.
-
-`src/transformers/models/chimera/scripts/export_to_hf.py`
-
-- Instantiate the final maximum, factor, and original maximum in the generated HF config.
-
-These Transformers defaults should describe the final model, not an intermediate 8K or
-32K checkpoint.
+- `ChimeraConfig` supports only the four canonical YaRN phases and rejects inconsistent
+  maximum/factor/original/epsilon/theta values.
+- `export_to_hf.py --context-phase {8k,32k,64k,128k}` emits phase-specific metadata.
+- Transformers uses `truncate=false`, matching Megatron's
+  `yarn_correction_range_round_to_int=false`.
+- Raw `infer.py` tokenizes with `add_special_tokens=false`; chat mode obtains turn markers
+  exclusively from the tokenizer chat template. Neither mode inserts BOS.
 
 ### Megatron-Bridge
 
-No production mapping change is expected. The Chimera bridge already transfers maximum
-position and YaRN fields. Update its Chimera test fixture when the published defaults move
-from 32K to 64K or 128K.
+The Chimera bridge validates and preserves the explicit phase, position type, maximum,
+factor, original context, beta values, mscale values, theta, truncation behavior, and RMS
+epsilon in both conversion directions.
 
 ## HF artifact verification
 
@@ -247,12 +258,15 @@ A final 128K export must contain equivalent values in `config.json`:
 
 ```json
 {
+  "context_phase": "128k",
+  "position_embedding_type": "yarn",
   "max_position_embeddings": 131072,
   "original_max_position_embeddings": 8192,
   "rope_scaling": {
     "type": "yarn",
     "factor": 16.0,
-    "original_max_position_embeddings": 8192
+    "original_max_position_embeddings": 8192,
+    "truncate": false
   }
 }
 ```
@@ -280,6 +294,8 @@ single needle test. Before advancing or publishing, verify:
 - Increasing only `--max-position-embeddings` and assuming the model learned long context.
 - Applying the final YaRN factor during short training without intentionally accepting the
   changed short-context positional geometry.
+- Resuming canonical training from the legacy CUDA-graph checkpoint that did not receive
+  rotary inputs after graph capture.
 - Changing `yarn_original_max_position_embeddings` during extension.
 - Combining a factor and maximum that represent different target contexts.
 - Publishing an intermediate checkpoint with final-context metadata.

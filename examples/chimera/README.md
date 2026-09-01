@@ -17,7 +17,8 @@ hidden / dense FFN:   2048 / 8192
 attention:            16 heads, 2 query groups, head dim 256, QK RMSNorm
 MoE:                  32 routed, top-4, expert FFN 2048, no shared expert
 router pretraining:   sigmoid, scale 2.5, QB bins 1000, EMA 0, aux 0, z 0.001
-context:              8k maximum/original, YaRN factor 1, RoPE base 10000000
+context phases:       YaRN 8k/1 -> 32k/4 -> 64k/8 -> 128k/16
+context constants:    original 8192, RoPE base 10000000, RMS epsilon 1e-5
 ```
 
 The production baseline is TP=1, PP=1, EP=1, ETP=1, CP=1. Two-GPU validation
@@ -47,8 +48,8 @@ data/simpo/overfit.jsonl                    direct chosen/rejected rows
 
 Pretraining preprocessing appends `<EOS>` to each document. It does not add
 `<BOS>`. SFT and SimPO are read directly through `SFTTokenizer`; they are not
-passed through `preprocess_data.py` and the example scripts do not enable
-`--pack-samples`. The selected production default is
+passed through `preprocess_data.py`. SFT and SimPO pack samples by default;
+the exact-response smoke commands disable packing explicitly. The selected production default is
 `INTRA_DOC_MASKING=false`, so pretraining uses an ordinary causal mask across
 EOS-delimited documents without materializing document-specific attention
 masks. `train.sh` passes `--eod-mask-loss`; because Megatron shifts labels by
@@ -94,6 +95,8 @@ details.
 - `cluster_manager.sh`: host-side one-to-N node Docker launcher for pretraining, SFT, and SimPO; start with `bash examples/chimera/cluster_manager.sh --help`.
 - `cluster.env.example`: copyable cluster configuration for the shared Chimera repository and data roots.
 - `train.sh`: random-init Chimera pretraining.
+- `context_phase.sh`: resolve and validate the four immutable YaRN phase geometries.
+- `context_extend.sh`: validate and launch the next continued-pretraining context phase.
 - `sft.sh`: supervised fine-tuning from an MCore checkpoint.
 - `simpo.sh`: SimPO preference tuning from an MCore checkpoint.
 - `import.sh`: convert a complete HF checkpoint to MCore.

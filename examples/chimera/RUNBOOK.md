@@ -117,7 +117,10 @@ from transformers import ChimeraConfig, ChimeraForCausalLM
 cfg = ChimeraConfig()
 assert (cfg.first_k_dense_replace, cfg.last_k_dense_replace) == (2, 0)
 assert cfg.rms_norm_eps == 1e-5
-print("transformers_ok", cfg.model_type, cfg.first_k_dense_replace, cfg.last_k_dense_replace)
+assert cfg.context_phase == "8k" and cfg.position_embedding_type == "yarn"
+assert cfg.rope_parameters["factor"] == 1.0
+assert cfg.rope_parameters["truncate"] is False
+print("transformers_ok", cfg.model_type, cfg.context_phase, cfg.position_embedding_type)
 PY
 ```
 
@@ -137,6 +140,67 @@ if [ "$(realpath "$SITE")" != "$SOURCE" ]; then
 fi
 ```
 
+### Canonical YaRN lifecycle
+
+Use this lifecycle after creating the 8K HF reference and indexed data in sections 2 and
+4. The checkpoint variables below refer to the validated output root of each prior phase.
+
+Use only these phase tuples. All phases retain original context `8192`, rotary base
+`10000000`, RMSNorm epsilon `1e-5`, mscale `1.0/0.0`, and fractional YaRN correction
+bounds.
+
+| Phase | Maximum | Factor |
+| --- | ---: | ---: |
+| `8k` | 8192 | 1 |
+| `32k` | 32768 | 4 |
+| `64k` | 65536 | 8 |
+| `128k` | 131072 | 16 |
+
+Start the canonical model from fresh random initialization at 8K. Do not use the legacy
+checkpoint whose TE attention graphs were captured without rotary inputs.
+
+```bash
+CONTEXT_PHASE=8k \
+TRAIN_DATA_PATH="$DATA_PREFIX" TOKENIZER_MODEL="$HF_REFERENCE" \
+RUNS_ROOT="$DATA_ROOT/base_8k_runs" \
+bash examples/chimera/train.sh
+```
+
+Advance only after the current phase passes short- and target-length validation. Each
+extension validates the source `run_config.yaml`, loads weights only, and starts a fresh
+Adam optimizer/RNG/cosine schedule.
+
+```bash
+CONTEXT_PHASE=32k LOAD_CHECKPOINT="$CKPT_8K" \
+TRAIN_DATA_PATH="$LONG_DATA_PREFIX" TOKENIZER_MODEL="$HF_REFERENCE" \
+RUNS_ROOT="$DATA_ROOT/context_32k_runs" \
+bash examples/chimera/context_extend.sh
+
+CONTEXT_PHASE=64k LOAD_CHECKPOINT="$CKPT_32K" \
+TRAIN_DATA_PATH="$LONG_DATA_PREFIX" TOKENIZER_MODEL="$HF_REFERENCE" \
+RUNS_ROOT="$DATA_ROOT/context_64k_runs" \
+bash examples/chimera/context_extend.sh
+
+CONTEXT_PHASE=128k LOAD_CHECKPOINT="$CKPT_64K" \
+TRAIN_DATA_PATH="$LONG_DATA_PREFIX" TOKENIZER_MODEL="$HF_REFERENCE" \
+RUNS_ROOT="$DATA_ROOT/context_128k_runs" \
+bash examples/chimera/context_extend.sh
+```
+
+Run SFT from the final checkpoint without changing its positional geometry. Packing and
+Adam are defaults; shorter samples may be mixed and packed while `CONTEXT_PHASE=128k`
+keeps the model maximum/factor at 128K/16.
+
+```bash
+CONTEXT_PHASE=128k SEQ_LENGTH=131072 \
+MCORE_PATH="$CKPT_128K" DATA_PATH="$SFT_JSONL" TOKENIZER_MODEL="$HF_REFERENCE" \
+RUNS_ROOT="$DATA_ROOT/sft_128k_runs" \
+bash examples/chimera/sft.sh
+```
+
+Export every intermediate or final checkpoint using its saved `run_config.yaml`. The
+Bridge preserves the phase metadata in both directions; do not edit `config.json` by hand.
+
 ## 2. Create HF Artifacts
 
 The Transformers branch contains the finalized tokenizer, chat template, model
@@ -149,6 +213,7 @@ export HF_RANDOM_FULL=$DATA_ROOT/hf_random_full
 rm -rf "$HF_REFERENCE"
 $PYTHON "$TRANSFORMERS/src/transformers/models/chimera/scripts/export_to_hf.py" \
   --output "$HF_REFERENCE" \
+  --context-phase 8k \
   --no-weights
 ```
 
@@ -167,7 +232,9 @@ assert (cfg.first_k_dense_replace, cfg.last_k_dense_replace) == (2, 0)
 assert (cfg.n_routed_experts, cfg.num_experts_per_tok, cfg.moe_intermediate_size) == (32, 4, 2048)
 assert cfg.n_shared_experts == 0 and cfg.shared_expert_intermediate_size == 0
 assert cfg.qk_layernorm and cfg.max_position_embeddings == 8192
+assert cfg.context_phase == "8k" and cfg.position_embedding_type == "yarn"
 assert cfg.rope_parameters["factor"] == 1.0
+assert cfg.rope_parameters["truncate"] is False
 assert cfg.router_load_balancing_type == "quantile_balancing"
 assert (cfg.moe_qb_num_bins, cfg.moe_qb_ema_decay) == (1000, 0.0)
 assert cfg.load_with_bias is True
@@ -185,6 +252,7 @@ Create full random HF weights only to validate HF-to-MCore conversion:
 rm -rf "$HF_RANDOM_FULL"
 $PYTHON "$TRANSFORMERS/src/transformers/models/chimera/scripts/export_to_hf.py" \
   --output "$HF_RANDOM_FULL" \
+  --context-phase 8k \
   --random-init \
   --dtype bfloat16 \
   --max-shard-size 5GB
@@ -354,6 +422,7 @@ export PRETRAIN_RUNS=$DATA_ROOT/pretrain_runs
 TRAIN_DATA_PATH="$DATA_PREFIX" \
 TOKENIZER_MODEL="$HF_REFERENCE" \
 RUNS_ROOT="$PRETRAIN_RUNS" \
+CONTEXT_PHASE=8k \
 INTRA_DOC_MASKING=true \
 MICRO_BATCH_SIZE=1 \
 GLOBAL_BATCH_SIZE=2 \
@@ -447,6 +516,7 @@ DATA_PATH="$MEGATRON_LM/examples/chimera/data/sft/overfit.jsonl" \
 TOKENIZER_MODEL="$HF_REFERENCE" \
 MCORE_PATH="$PRETRAIN_CHECKPOINT" \
 RUNS_ROOT="$SFT_RUNS" \
+CONTEXT_PHASE=8k \
 PACK_SAMPLES=false \
 SEQ_LENGTH=128 \
 MICRO_BATCH_SIZE=1 \
@@ -574,6 +644,7 @@ DATA_PATH="$SIMPO_DATA" \
 TOKENIZER_MODEL="$HF_REFERENCE" \
 MCORE_PATH="$SFT_CHECKPOINT" \
 RUNS_ROOT="$SIMPO_RUNS" \
+CONTEXT_PHASE=8k \
 PACK_SAMPLES=false \
 SEQ_LENGTH=128 \
 MICRO_BATCH_SIZE=1 \
@@ -637,6 +708,21 @@ while catastrophically forgetting them.
 - HF-to-MCore conversion writes `iter_0000000/run_config.yaml`.
 - Decoded pretraining documents end in `<EOS>` and contain no inserted BOS.
 - Random-init pretraining loss converges and the exported HF model memorizes A and B through `<EOS>`.
-- SFT raw inference emits the exact A and B answers followed by `<end_of_turn>`.
+- Canonical checkpoints progress through explicit 8K/1, 32K/4, 64K/8, and 128K/16 YaRN metadata.
+- SFT chat inference emits the exact A and B answers followed by `<end_of_turn>`.
 - SimPO reward accuracy reaches 1.0 and raw inference emits the chosen C and D answers.
+- Raw completion adds no BOS or turn tokens; chat completion obtains them only from the chat template.
 - `examples/chimera/train.sh` remains unchanged; smoke overrides are recorded in `run_paths.env`.
+
+## 10. Verified parity reference
+
+The 2xH200 validation for this workflow established:
+
+- Megatron and Transformers YaRN cos/sin values agree at position 0, 8191, and each phase
+  endpoint; the worst FP32 absolute difference was `1.29e-5` at 128K.
+- Fixed TE attention graphs produced exactly the same eight Tiny losses as eager execution.
+- DP=1 and DP=2 resume runs reproduced the uninterrupted run's first post-load loss exactly.
+- A real Tiny BF16 HF -> MCore -> HF cycle preserved all 229 tensors bitwise and retained
+  exact 128K phase metadata.
+- Identical-token BF16 forward loss was `10.95316` in Megatron and `10.95726` in
+  Transformers; both selected next token `41078`.

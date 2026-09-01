@@ -27,7 +27,9 @@ guide consistent.
 - Pretraining uses quantile balancing, 1000 bins, EMA 0.0, aux 0.0, and z-loss 0.001
 - Every checkpoint contains frozen `e_score_correction_bias` tensors; `load_with_bias` controls use, not loading
 - SFT and SimPO use load balancing `none` and bias update rate 0.0
-- Maximum/original context 8192, YaRN factor 1.0, `mscale=1.0`, `mscale_all_dim=0.0`
+- YaRN-only context phases: 8K/1, 32K/4, 64K/8, and 128K/16
+- Original context remains 8192; rotary base is 10000000; `mscale=1.0`, `mscale_all_dim=0.0`
+- Megatron fractional correction bounds and Transformers `truncate=false` must agree
 - Stable pretraining baseline: TP=1, PP=1, EP=1, ETP=1, CP=1
 - 2-GPU validation starts as DP=2 with TP=1, PP=1, EP=1, ETP=1, CP=1
 - On measured OOM, first reduce optimizer moments to BF16; then use EP=2 or TP=2 as one fallback axis, never both
@@ -35,7 +37,7 @@ guide consistent.
 The reduced canonical tiny profile is 8 layers (`[0]*2+[1]*6`), hidden 512,
 dense FFN 2048, 8 heads, 2 query groups, head dimension 64, 8 routed experts,
 top-2, expert FFN 256, and the same QK norm, no-shared-expert, bias, QB, and
-8K/factor-1 behavior.
+the same phase-aware YaRN behavior.
 
 Keep this layout consistent in:
 
@@ -180,8 +182,10 @@ assert (cfg.first_k_dense_replace, cfg.last_k_dense_replace) == (2, 0)
 assert (cfg.n_routed_experts, cfg.num_experts_per_tok, cfg.moe_intermediate_size) == (32, 4, 2048)
 assert cfg.n_shared_experts == 0 and cfg.shared_expert_intermediate_size == 0
 assert cfg.qk_layernorm and cfg.max_position_embeddings == 8192
+assert cfg.context_phase == "8k" and cfg.position_embedding_type == "yarn"
 assert cfg.rms_norm_eps == 1e-5
 assert cfg.rope_parameters["factor"] == 1.0
+assert cfg.rope_parameters["truncate"] is False
 assert cfg.router_load_balancing_type == "quantile_balancing"
 assert (cfg.moe_qb_num_bins, cfg.moe_qb_ema_decay) == (1000, 0.0)
 assert cfg.load_with_bias is True
@@ -196,7 +200,7 @@ cd /workspace/repos/Megatron-Bridge
 $PYTHON -m pytest -q tests/unit_tests/models/chimera/test_chimera_bridge.py
 ```
 
-Validated result after the architecture migration: `12 passed`.
+Validated result after the phase migration: `20 passed`.
 
 ## Create HF Artifacts
 
@@ -210,6 +214,7 @@ mkdir -p "$DATA_ROOT"
 $PYTHON $TRANSFORMERS/src/transformers/models/chimera/scripts/export_to_hf.py \
   --output "$HF_REFERENCE" \
   --tokenizer-dir "$TRANSFORMERS/src/transformers/models/chimera/tokenizer" \
+  --context-phase 8k \
   --no-weights
 ```
 
@@ -229,8 +234,10 @@ assert (cfg.first_k_dense_replace, cfg.last_k_dense_replace) == (2, 0)
 assert (cfg.n_routed_experts, cfg.num_experts_per_tok, cfg.moe_intermediate_size) == (32, 4, 2048)
 assert cfg.n_shared_experts == 0 and cfg.shared_expert_intermediate_size == 0
 assert cfg.qk_layernorm and cfg.max_position_embeddings == 8192
+assert cfg.context_phase == "8k" and cfg.position_embedding_type == "yarn"
 assert cfg.rms_norm_eps == 1e-5
 assert cfg.rope_parameters["factor"] == 1.0
+assert cfg.rope_parameters["truncate"] is False
 assert cfg.router_load_balancing_type == "quantile_balancing"
 assert (cfg.moe_qb_num_bins, cfg.moe_qb_ema_decay) == (1000, 0.0)
 assert cfg.load_with_bias is True
@@ -271,6 +278,7 @@ Create a full random HF checkpoint only when validating HF -> MCore import:
 $PYTHON $TRANSFORMERS/src/transformers/models/chimera/scripts/export_to_hf.py \
   --output "$HF_RANDOM_FULL" \
   --tokenizer-dir "$TRANSFORMERS/src/transformers/models/chimera/tokenizer" \
+  --context-phase 8k \
   --random-init \
   --dtype bfloat16 \
   --max-shard-size 5GB
@@ -308,6 +316,45 @@ bash examples/chimera/verify_conversion.sh \
   --bridge-path "$MEGATRON_BRIDGE" \
   --python "$PYTHON"
 ```
+
+The Bridge must preserve `context_phase`, `position_embedding_type`, maximum,
+factor, original context, theta, beta values, mscale values, truncation behavior,
+and RMS epsilon. The validated Tiny 128K conversion preserved all 229 tensors
+bitwise through HF -> `torch_dist` MCore -> HF.
+
+## Canonical Context Extension
+
+Start canonical training from fresh random initialization. Do not seed it from
+the legacy checkpoint whose TE attention CUDA graphs omitted rotary inputs.
+
+```bash
+CONTEXT_PHASE=8k \
+TRAIN_DATA_PATH="$DATA_PREFIX" TOKENIZER_MODEL="$HF_REFERENCE" \
+RUNS_ROOT="$DATA_ROOT/base_8k_runs" \
+bash examples/chimera/train.sh
+```
+
+Advance through every phase in order. `context_extend.sh` checks the preceding
+checkpoint's explicit phase and starts a fresh Adam optimizer, RNG stream, and
+cosine schedule while loading model weights.
+
+```bash
+CONTEXT_PHASE=32k LOAD_CHECKPOINT="$CKPT_8K" \
+TRAIN_DATA_PATH="$LONG_DATA_PREFIX" TOKENIZER_MODEL="$HF_REFERENCE" \
+bash examples/chimera/context_extend.sh
+
+CONTEXT_PHASE=64k LOAD_CHECKPOINT="$CKPT_32K" \
+TRAIN_DATA_PATH="$LONG_DATA_PREFIX" TOKENIZER_MODEL="$HF_REFERENCE" \
+bash examples/chimera/context_extend.sh
+
+CONTEXT_PHASE=128k LOAD_CHECKPOINT="$CKPT_64K" \
+TRAIN_DATA_PATH="$LONG_DATA_PREFIX" TOKENIZER_MODEL="$HF_REFERENCE" \
+bash examples/chimera/context_extend.sh
+```
+
+The defaults target about 4.72M tokens per update and 10B tokens per extension
+phase. Validate short-context recovery and target-length utility before moving
+to the next checkpoint.
 
 ## Pretraining Data Format
 
@@ -496,8 +543,10 @@ assert cfg.num_hidden_layers == 25
 assert (cfg.n_routed_experts, cfg.num_experts_per_tok, cfg.moe_intermediate_size) == (32, 4, 2048)
 assert cfg.n_shared_experts == 0 and cfg.shared_expert_intermediate_size == 0
 assert cfg.qk_layernorm and cfg.max_position_embeddings == 8192
+assert cfg.context_phase == "8k" and cfg.position_embedding_type == "yarn"
 assert cfg.rms_norm_eps == 1e-5
 assert cfg.rope_parameters["factor"] == 1.0
+assert cfg.rope_parameters["truncate"] is False
 assert cfg.load_with_bias is True
 assert len(tok) == 50176
 assert tok.convert_tokens_to_ids("<start_of_turn>") == 2
@@ -579,8 +628,10 @@ U<end_of_turn>
 ## SFT Smoke
 
 SFT JSONL rows use `messages` and are read directly by `SFTTokenizer`. Do not
-run Megatron preprocessing for SFT. Production runs pack samples by default;
-set `PACK_SAMPLES=false` for this exact-response smoke. The Chimera prompt
+run Megatron preprocessing for SFT. Canonical SFT runs from the final checkpoint
+with `CONTEXT_PHASE=128k`; mixed-length samples are packed by default while the
+model keeps maximum 128K/factor 16. Set `CONTEXT_PHASE=8k PACK_SAMPLES=false`
+only for this exact-response smoke, whose source checkpoint is 8K. The Chimera prompt
 format masks system, user, and assistant header tokens, and trains only
 assistant content plus `<end_of_turn>`.
 
@@ -605,6 +656,7 @@ DATA_PATH="$SFT_DATA" \
 TOKENIZER_MODEL="$HF_REFERENCE" \
 MCORE_PATH="$CHECKPOINT_DIR" \
 RUNS_ROOT="$CHAT_ROOT/sft_runs" \
+CONTEXT_PHASE=8k \
 PACK_SAMPLES=false \
 SEQ_LENGTH=128 \
 MICRO_BATCH_SIZE=1 \
@@ -759,6 +811,7 @@ DATA_PATH="$SIMPO_DATA" \
 TOKENIZER_MODEL="$HF_REFERENCE" \
 MCORE_PATH="$SFT_CHECKPOINT_DIR" \
 RUNS_ROOT="$CHAT_ROOT/simpo_runs" \
+CONTEXT_PHASE=8k \
 PACK_SAMPLES=false \
 SEQ_LENGTH=128 \
 MICRO_BATCH_SIZE=1 \
@@ -842,6 +895,8 @@ CHIMERA_SIMPO_CHOSEN_D: violet signals favor steady choices.<end_of_turn>
 ## Hard Rules
 
 - Do not add BOS to pretraining JSONL.
+- Use only the four canonical YaRN phases; do not switch Chimera to no-position or ordinary RoPE.
+- Keep phase maximum/factor/original metadata identical across Megatron, Bridge, and Transformers.
 - Pretraining document boundaries come from `--append-eod`.
 - SFT and SimPO read JSONL directly through `SFTTokenizer`; do not run `preprocess.sh` for them.
 - SFT and SimPO smoke runs are unpacked; do not pass `--pack-samples`.

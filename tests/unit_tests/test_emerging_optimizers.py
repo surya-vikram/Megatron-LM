@@ -106,6 +106,8 @@ def test_muon_optimizer_smoke():
     # Test optimizer step
     optimizer.step()
 
+    assert optimizer.state[model.weight]["momentum_buffer"].dtype == torch.float32
+
     # Verify weight was updated
     assert not torch.equal(
         model.weight.data, original_weight
@@ -879,6 +881,9 @@ def test_adaptive_muon_optimizer_smoke():
 
     original_weight = model.weight.data.clone()
     optimizer.step()
+
+    assert optimizer.state[model.weight]["momentum_buffer"].dtype == torch.float32
+    assert optimizer.state[model.weight]["moment2_buffer"].dtype == torch.float32
 
     assert not torch.equal(
         model.weight.data, original_weight

@@ -2131,8 +2131,9 @@ def training_log(
     one_logger = get_one_logger()
     energy_monitor = get_energy_monitor()
 
-    # On first iteration, log stats but don't reset accumulators so normal interval stats remain accurate.
-    should_reset = not is_first_iteration
+    # Preserve the first-iteration accumulation window only for a fresh run. On resume,
+    # reset after the forced first log so that loss is not counted again at the next log.
+    should_reset = not is_first_iteration or args.iteration > 0
 
     # Advanced, skipped, and Nan iterations.
     advanced_iters_key = 'advanced iterations'

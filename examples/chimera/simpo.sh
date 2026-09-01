@@ -167,6 +167,7 @@ MODEL_ARGS=(
     --seq-length "$SEQ_LENGTH"
     --max-position-embeddings "$MAX_POSITION_EMBEDDINGS"
     --position-embedding-type "$POSITION_EMBEDDING_TYPE"
+    --apply-rope-fusion
     --rotary-base 10000000
     --rotary-percent 1.0
     --rotary-scaling-factor "$ROTARY_SCALING_FACTOR"

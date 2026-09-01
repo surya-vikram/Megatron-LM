@@ -1455,7 +1455,7 @@ def validate_args(args, defaults={}):
     # Legacy RoPE arguments
     if args.use_rotary_position_embeddings:
         args.position_embedding_type = 'rope'
-    if args.position_embedding_type != 'rope':
+    if args.position_embedding_type not in ('rope', 'yarn'):
         args.apply_rope_fusion = False
 
     # Would just need to add 'NoPE' as a position_embedding_type to support this, but for now
@@ -2575,6 +2575,10 @@ def _add_training_args(parser):
                        dest='bias_dropout_fusion')
     group.add_argument('--no-rope-fusion', action='store_false',
                        help='Disable rope fusion, the fusion is available '
+                       'only when using megatron-core.',
+                       dest='apply_rope_fusion')
+    group.add_argument('--apply-rope-fusion', action='store_true',
+                       help='Enable rope fusion, the fusion is available '
                        'only when using megatron-core.',
                        dest='apply_rope_fusion')
     group.add_argument('--rope-type', type=str, default=None,

@@ -128,7 +128,7 @@ model:
   add_qkv_bias: false
   apply_query_key_layer_scaling: false
   apply_residual_connection_post_layernorm: false
-  apply_rope_fusion: false
+  apply_rope_fusion: true
   attention_backend:
     _args_:
     - 5

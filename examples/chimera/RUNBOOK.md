@@ -456,7 +456,7 @@ TRAIN_DATA_PATH="$DATA_PREFIX" \
 TOKENIZER_MODEL="$HF_REFERENCE" \
 RUNS_ROOT="$PRETRAIN_RUNS" \
 CONTEXT_PHASE=8k \
-INTRA_DOC_MASKING=true \
+INTRA_DOC_MASKING=false \
 MICRO_BATCH_SIZE=1 \
 GLOBAL_BATCH_SIZE=2 \
 SEQ_LENGTH=128 \
@@ -474,10 +474,10 @@ export PRETRAIN_RUN_DIR=$(ls -td "$PRETRAIN_RUNS"/* | head -n 1)
 export PRETRAIN_CHECKPOINT=$PRETRAIN_RUN_DIR/checkpoints
 ```
 
-The production default remains `INTRA_DOC_MASKING=false`. This two-document
-memorization test enables it so the bare A and B prefixes are each trained as
-independent contexts; otherwise B is only observed after A in the packed
-sequence and standalone B generation is not a valid memorization check.
+All Chimera pretraining workflows keep `INTRA_DOC_MASKING=false`. Consequently,
+B is observed after A in this packed two-document sequence; use teacher-forced
+loss for this smoke check rather than treating standalone B generation as an
+independent-context memorization assertion.
 
 With two visible GPUs this is DP=2. On a measured OOM, first add
 `MAIN_GRADS_DTYPE=bf16 EXP_AVG_DTYPE=bf16 EXP_AVG_SQ_DTYPE=bf16`. If that still

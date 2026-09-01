@@ -7,7 +7,8 @@ TRAIN_DATA_PATH="${TRAIN_DATA_PATH:-$SCRIPT_DIR/data/pretrain/overfit_text_docum
 VALID_DATA_PATH="${VALID_DATA_PATH:-}"
 TOKENIZER_MODEL="${TOKENIZER_MODEL:-/datasets/megadata/hf_models/chimera-10b}"
 RUNS_ROOT="${RUNS_ROOT:-/datasets/megadata/chimera_440b_runs}"
-INTRA_DOC_MASKING="${INTRA_DOC_MASKING:-false}"
+# Chimera pretraining always uses a standard causal mask across packed documents.
+INTRA_DOC_MASKING=false
 LOAD_CHECKPOINT="${LOAD_CHECKPOINT:-}"
 TRAIN_ITERS="${TRAIN_ITERS:-26855}"
 OPTIMIZER="${OPTIMIZER:-adam}"
@@ -144,14 +145,7 @@ DATA_ARGS=(
 if [[ -n "$VALID_DATA_PATH" ]]; then
     DATA_ARGS+=(--valid-data-path "$VALID_DATA_PATH")
 fi
-if [[ "$INTRA_DOC_MASKING" == true ]]; then
-    DATA_ARGS+=(
-        --reset-attention-mask
-        --reset-position-ids
-    )
-else
-    DATA_ARGS+=(--no-create-attention-mask-in-dataloader)
-fi
+DATA_ARGS+=(--no-create-attention-mask-in-dataloader)
 
 TRAINING_ARGS=(
     --micro-batch-size "$MICRO_BATCH_SIZE"

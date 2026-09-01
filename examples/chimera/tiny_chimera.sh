@@ -13,7 +13,8 @@ TRAIN_DATA_PATH="${TRAIN_DATA_PATH:-$SCRIPT_DIR/data/pretrain/fineweb_edu_text_d
 VALID_DATA_PATH="${VALID_DATA_PATH:-}"
 TOKENIZER_MODEL="${TOKENIZER_MODEL:-/workspace/repos/transformers/src/transformers/models/chimera/tokenizer}"
 RUNS_ROOT="${RUNS_ROOT:-/workspace/scratch/tiny_chimera_runs}"
-INTRA_DOC_MASKING="${INTRA_DOC_MASKING:-false}"
+# Tiny Chimera follows the production causal-mask policy.
+INTRA_DOC_MASKING=false
 LOAD_CHECKPOINT="${LOAD_CHECKPOINT:-}"
 SEQ_LENGTH="${SEQ_LENGTH:-8192}"
 source "$SCRIPT_DIR/context_phase.sh"
@@ -124,14 +125,7 @@ DATA_ARGS=(
 if [[ -n "$VALID_DATA_PATH" ]]; then
     DATA_ARGS+=(--valid-data-path "$VALID_DATA_PATH")
 fi
-if [[ "$INTRA_DOC_MASKING" == true ]]; then
-    DATA_ARGS+=(
-        --reset-attention-mask
-        --reset-position-ids
-    )
-else
-    DATA_ARGS+=(--no-create-attention-mask-in-dataloader)
-fi
+DATA_ARGS+=(--no-create-attention-mask-in-dataloader)
 
 OPTIMIZER="${OPTIMIZER:-adam}"
 MAIN_PARAMS_DTYPE="${MAIN_PARAMS_DTYPE:-fp32}"

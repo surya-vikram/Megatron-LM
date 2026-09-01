@@ -140,7 +140,8 @@ load_config() {
     MICRO_BATCH_SIZE="${MICRO_BATCH_SIZE:-1}"
     GLOBAL_BATCH_SIZE="${GLOBAL_BATCH_SIZE:-}"
 
-    INTRA_DOC_MASKING="${INTRA_DOC_MASKING:-false}"
+    # This policy is fixed for all cluster-manager stages.
+    INTRA_DOC_MASKING=false
     CONTEXT_PHASE="${CONTEXT_PHASE:-8k}"
     SEQ_LENGTH="${SEQ_LENGTH:-8192}"
     TRAIN_TOKENS="${TRAIN_TOKENS-}"

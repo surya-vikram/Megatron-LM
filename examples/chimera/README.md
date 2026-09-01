@@ -56,10 +56,10 @@ masks. `train.sh` passes `--eod-mask-loss`; because Megatron shifts labels by
 one token, this keeps the loss that learns to predict `<EOS>` and masks the
 artificial target immediately after an EOS document boundary.
 
-The two-document overfit command in `RUNBOOK.md` deliberately overrides this
-with `INTRA_DOC_MASKING=true`. That makes each bare verification prefix an
-independent training context while leaving the production launcher default
-unchanged.
+The two-document overfit command in `RUNBOOK.md` uses the same
+`INTRA_DOC_MASKING=false` policy. Because its second document can attend to the
+first, that smoke test verifies teacher-forced loss rather than treating the
+second bare prefix as an independent memorization context.
 
 `train.sh` emits globally aggregated router CV, worst load, dead expert-slot,
 and bias magnitude metrics on the standard log line every 1,000 iterations.

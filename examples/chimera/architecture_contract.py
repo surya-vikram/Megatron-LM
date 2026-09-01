@@ -992,12 +992,12 @@ def validate_repo_scripts(path: Path) -> int:
         ],
         "context_extend.sh": [
             'source "$SCRIPT_DIR/context_phase.sh"',
-            "PREVIOUS_CONTEXT_PHASE=8k",
-            "PREVIOUS_CONTEXT_PHASE=32k",
-            "PREVIOUS_CONTEXT_PHASE=64k",
+            'source "$SCRIPT_DIR/schedule_helpers.sh"',
+            'config["model"]["chimera_context_phase"]',
+            "8k:32k|8k:64k|8k:128k|32k:64k|32k:128k|64k:128k",
             "CHIMERA_CONTEXT_EXTENSION=true",
             "LR_DECAY_STYLE=\"${LR_DECAY_STYLE:-cosine}\"",
-            '--context-phase "$PREVIOUS_CONTEXT_PHASE"',
+            "--context-phase auto",
         ],
     }
     forbidden = [

@@ -10,7 +10,7 @@ from megatron.core.tokenizers.text.libraries.sft_tokenizer import SFTTokenizer
 from megatron.training.datasets import sft_dataset as sft_module
 from megatron.training.datasets import simpo_dataset as simpo_module
 from megatron.training.datasets.chat_packing import build_pack_index
-from megatron.training.datasets.sft_dataset import IGNORE_INDEX, SFTDataset
+from megatron.training.datasets.sft_dataset import IGNORE_INDEX, SFTDataset, get_pack_metadata_path
 from megatron.training.datasets.simpo_dataset import PackSamplesCollator, SimPODataset
 
 
@@ -77,6 +77,17 @@ def conversation(content):
         {"role": "user", "content": "question"},
         {"role": "assistant", "content": content},
     ]
+
+
+def test_pack_metadata_selects_train_and_validation_paths():
+    args = dataset_args(
+        pack_metadata_path="train-metadata",
+        valid_pack_metadata_path="valid-metadata",
+        valid_data_path=["valid.jsonl"],
+    )
+
+    assert get_pack_metadata_path(args, "train.jsonl") == "train-metadata"
+    assert get_pack_metadata_path(args, "valid.jsonl") == "valid-metadata"
 
 
 def preference_pair(content):

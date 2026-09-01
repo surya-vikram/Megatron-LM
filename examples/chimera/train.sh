@@ -27,21 +27,43 @@ GLOBAL_BATCH_SIZE="${GLOBAL_BATCH_SIZE:-576}"
 # without editing this canonical launcher.
 SEQ_LENGTH="${SEQ_LENGTH:-8192}"
 source "$SCRIPT_DIR/context_phase.sh"
+source "$SCRIPT_DIR/schedule_helpers.sh"
 CHIMERA_CONTEXT_EXTENSION="${CHIMERA_CONTEXT_EXTENSION:-false}"
-TRAIN_ITERS="${TRAIN_ITERS:-423856}"
-LR_DECAY_ITERS="${LR_DECAY_ITERS:-$TRAIN_ITERS}"
+TRAIN_TOKENS="${TRAIN_TOKENS:-440000000000}"
+TOKENS_PER_ITER=$((SEQ_LENGTH * GLOBAL_BATCH_SIZE))
+if [[ -z "${TRAIN_ITERS:-}" ]]; then
+    chimera_require_positive_integer TRAIN_TOKENS "$TRAIN_TOKENS"
+    TRAIN_ITERS=$(chimera_ceil_div "$TRAIN_TOKENS" "$TOKENS_PER_ITER")
+fi
 LR="${LR:-3e-4}"
-MIN_LR="${MIN_LR:-3e-6}"
-LR_DECAY_STYLE="${LR_DECAY_STYLE:-WSD}"
-LR_WSD_DECAY_STYLE="${LR_WSD_DECAY_STYLE:-minus_sqrt}"
-LR_WSD_DECAY_ITERS="${LR_WSD_DECAY_ITERS:-84771}"
-LR_WARMUP_ITERS="${LR_WARMUP_ITERS:-1695}"
+LR_DECAY_STYLE="${LR_DECAY_STYLE:-cosine}"
+LR_WSD_DECAY_STYLE="${LR_WSD_DECAY_STYLE:-linear}"
 WEIGHT_DECAY="${WEIGHT_DECAY:-0.1}"
-SAVE_INTERVAL="${SAVE_INTERVAL:-5000}"
-EVAL_INTERVAL="${EVAL_INTERVAL:-1000}"
+OPTIMIZER="${OPTIMIZER:-adam}"
+MUON_NUM_NS_STEPS="${MUON_NUM_NS_STEPS:-6}"
+LOG_INTERVAL="${LOG_INTERVAL:-1}"
+EVAL_ITERS="${EVAL_ITERS:-4}"
+NUM_WORKERS="${NUM_WORKERS:-8}"
 MAIN_GRADS_DTYPE="${MAIN_GRADS_DTYPE:-fp32}"
 EXP_AVG_DTYPE="${EXP_AVG_DTYPE:-fp32}"
 EXP_AVG_SQ_DTYPE="${EXP_AVG_SQ_DTYPE:-fp32}"
+
+[[ "$LR_DECAY_STYLE" == cosine || "$LR_DECAY_STYLE" == WSD ]] || {
+    echo "Unsupported LR_DECAY_STYLE=$LR_DECAY_STYLE; expected cosine or WSD" >&2
+    exit 1
+}
+chimera_resolve_schedule
+
+[[ "$OPTIMIZER" == adam || "$OPTIMIZER" == muon ]] || {
+    echo "Unsupported OPTIMIZER=$OPTIMIZER; expected adam or muon" >&2
+    exit 1
+}
+for OPTIMIZER_DTYPE in "$MAIN_GRADS_DTYPE" "$EXP_AVG_DTYPE" "$EXP_AVG_SQ_DTYPE"; do
+    [[ "$OPTIMIZER_DTYPE" == fp32 ]] || {
+        echo "Chimera requires FP32 optimizer gradients and moments for stable training" >&2
+        exit 1
+    }
+done
 
 RUN_STAMP="${RUN_STAMP:-$(TZ='Asia/Kolkata' date +%Y%m%d_%H%M%S)}"
 RUN_DIR="${RUNS_ROOT}/${RUN_STAMP}"
@@ -67,10 +89,6 @@ if [[ "$CHIMERA_CONTEXT_EXTENSION" == true ]]; then
         echo "Context extension requires SEQ_LENGTH=$MAX_POSITION_EMBEDDINGS for phase $CONTEXT_PHASE"; exit 1;
     }
 fi
-if [[ "$GLOBAL_BATCH_SIZE" -ne 576 && "$CHIMERA_CONTEXT_EXTENSION" != true ]]; then
-    echo "Warning: the 2T iteration and WSD schedule is calibrated for GLOBAL_BATCH_SIZE=576; recalculate schedule iterations for $GLOBAL_BATCH_SIZE." >&2
-fi
-
 mkdir -p "$SAVE_PATH" "$TENSORBOARD_DIR" "$DATA_CACHE_PATH" "$LOG_DIR"
 
 DISTRIBUTED_ARGS=(
@@ -144,7 +162,7 @@ MOE_ARGS=(
 DATA_ARGS=(
     --train-data-path "$TRAIN_DATA_PATH"
     --data-cache-path "$DATA_CACHE_PATH"
-    --num-workers 8
+    --num-workers "$NUM_WORKERS"
     --eod-mask-loss
 )
 if [[ -n "$VALID_DATA_PATH" ]]; then
@@ -169,6 +187,7 @@ TRAINING_ARGS=(
     --lr-warmup-iters "$LR_WARMUP_ITERS"
     --weight-decay "$WEIGHT_DECAY"
     --clip-grad 1.0
+    --optimizer "$OPTIMIZER"
     --adam-beta1 0.9
     --adam-beta2 0.95
     --adam-eps 1e-8
@@ -176,17 +195,23 @@ TRAINING_ARGS=(
     --manual-gc
     --manual-gc-interval 100
     --use-distributed-optimizer
-    --use-precision-aware-optimizer
-    --main-params-dtype fp32
-    --main-grads-dtype "$MAIN_GRADS_DTYPE"
-    --exp-avg-dtype "$EXP_AVG_DTYPE"
-    --exp-avg-sq-dtype "$EXP_AVG_SQ_DTYPE"
     --fused-linear-cross-entropy
     --cuda-graph-impl transformer_engine
     --cuda-graph-modules attn
     --overlap-grad-reduce
     # --overlap-param-gather
 )
+if [[ "$OPTIMIZER" == muon ]]; then
+    TRAINING_ARGS+=(--muon-num-ns-steps "$MUON_NUM_NS_STEPS")
+else
+    TRAINING_ARGS+=(
+        --use-precision-aware-optimizer
+        --main-params-dtype fp32
+        --main-grads-dtype "$MAIN_GRADS_DTYPE"
+        --exp-avg-dtype "$EXP_AVG_DTYPE"
+        --exp-avg-sq-dtype "$EXP_AVG_SQ_DTYPE"
+    )
+fi
 if [[ "$LR_DECAY_STYLE" == "WSD" ]]; then
     TRAINING_ARGS+=(
         --lr-wsd-decay-style "$LR_WSD_DECAY_STYLE"
@@ -208,13 +233,13 @@ LOGGING_ARGS=(
     --tensorboard-dir "$TENSORBOARD_DIR"
     --save-interval "$SAVE_INTERVAL"
     --eval-interval "$EVAL_INTERVAL"
-    --log-interval 1
+    --log-interval "$LOG_INTERVAL"
     --log-throughput
     --exit-signal-handler
     --ckpt-format torch_dist
 )
 if [[ -n "$VALID_DATA_PATH" ]]; then
-    LOGGING_ARGS+=(--eval-iters 4)
+    LOGGING_ARGS+=(--eval-iters "$EVAL_ITERS")
 else
     LOGGING_ARGS+=(--eval-iters 0)
 fi
@@ -255,6 +280,18 @@ EP_SIZE=${EP_SIZE}
 CP_SIZE=${CP_SIZE}
 MICRO_BATCH_SIZE=${MICRO_BATCH_SIZE}
 GLOBAL_BATCH_SIZE=${GLOBAL_BATCH_SIZE}
+TRAIN_TOKENS=${TRAIN_TOKENS}
+TOKENS_PER_ITER=${TOKENS_PER_ITER}
+TRAIN_ITERS=${TRAIN_ITERS}
+LR=${LR}
+MIN_LR=${MIN_LR}
+LR_DECAY_STYLE=${LR_DECAY_STYLE}
+LR_DECAY_ITERS=${LR_DECAY_ITERS}
+LR_WARMUP_ITERS=${LR_WARMUP_ITERS}
+LR_WSD_DECAY_STYLE=${LR_WSD_DECAY_STYLE}
+LR_WSD_DECAY_ITERS=${LR_WSD_DECAY_ITERS}
+SAVE_INTERVAL=${SAVE_INTERVAL}
+EVAL_INTERVAL=${EVAL_INTERVAL}
 SEQ_LENGTH=${SEQ_LENGTH}
 CONTEXT_PHASE=${CONTEXT_PHASE}
 POSITION_EMBEDDING_TYPE=${POSITION_EMBEDDING_TYPE}
@@ -262,13 +299,9 @@ MAX_POSITION_EMBEDDINGS=${MAX_POSITION_EMBEDDINGS}
 ROTARY_SCALING_FACTOR=${ROTARY_SCALING_FACTOR}
 YARN_ORIGINAL_MAX_POSITION_EMBEDDINGS=${YARN_ORIGINAL_MAX_POSITION_EMBEDDINGS}
 CHIMERA_CONTEXT_EXTENSION=${CHIMERA_CONTEXT_EXTENSION}
-TRAIN_ITERS=${TRAIN_ITERS}
-LR_DECAY_ITERS=${LR_DECAY_ITERS}
-LR=${LR}
-MIN_LR=${MIN_LR}
-LR_DECAY_STYLE=${LR_DECAY_STYLE}
-LR_WARMUP_ITERS=${LR_WARMUP_ITERS}
 WEIGHT_DECAY=${WEIGHT_DECAY}
+OPTIMIZER=${OPTIMIZER}
+MUON_NUM_NS_STEPS=${MUON_NUM_NS_STEPS}
 MAIN_GRADS_DTYPE=${MAIN_GRADS_DTYPE}
 EXP_AVG_DTYPE=${EXP_AVG_DTYPE}
 EXP_AVG_SQ_DTYPE=${EXP_AVG_SQ_DTYPE}
@@ -294,11 +327,15 @@ echo "  Router logging:   inline interval=1 raw_expert_files=false"
 echo "  Context/YaRN:     phase=$CONTEXT_PHASE max=$MAX_POSITION_EMBEDDINGS factor=$ROTARY_SCALING_FACTOR original=$YARN_ORIGINAL_MAX_POSITION_EMBEDDINGS extension=$CHIMERA_CONTEXT_EXTENSION"
 echo "  Seq/batch/iters:  seq=$SEQ_LENGTH micro=$MICRO_BATCH_SIZE global=$GLOBAL_BATCH_SIZE iters=$TRAIN_ITERS"
 echo "  LR schedule:      $LR_DECAY_STYLE peak=$LR min=$MIN_LR warmup=$LR_WARMUP_ITERS wsd_decay=$LR_WSD_DECAY_ITERS wsd_style=$LR_WSD_DECAY_STYLE"
-echo "  Optimizer:        AdamW beta1=0.9 beta2=0.95 eps=1e-8 wd=$WEIGHT_DECAY main_params=fp32 main_grads=$MAIN_GRADS_DTYPE exp_avg=$EXP_AVG_DTYPE exp_avg_sq=$EXP_AVG_SQ_DTYPE"
-if [[ "$CHIMERA_CONTEXT_EXTENSION" == true ]]; then
-    echo "  Extension budget: target_tokens=${EXTENSION_TOKENS:-custom}"
+if [[ "$OPTIMIZER" == muon ]]; then
+    echo "  Optimizer:        Muon ns_steps=$MUON_NUM_NS_STEPS state=fp32 scalar_optimizer=adam state=fp32 wd=$WEIGHT_DECAY"
 else
-    echo "  Production budget: approximately 2.0T at global_batch=576 with the default schedule"
+    echo "  Optimizer:        AdamW beta1=0.9 beta2=0.95 eps=1e-8 wd=$WEIGHT_DECAY main_params=fp32 main_grads=$MAIN_GRADS_DTYPE exp_avg=$EXP_AVG_DTYPE exp_avg_sq=$EXP_AVG_SQ_DTYPE"
+fi
+if [[ "$CHIMERA_CONTEXT_EXTENSION" == true ]]; then
+    echo "  Extension budget: target_tokens=$TRAIN_TOKENS actual_tokens=$((TRAIN_ITERS * TOKENS_PER_ITER))"
+else
+    echo "  Production budget: target_tokens=$TRAIN_TOKENS actual_tokens=$((TRAIN_ITERS * TOKENS_PER_ITER))"
 fi
 echo "  Attention:        backend=flash external_flash_attn=false cuda_graph=TE:attn"
 echo "  Intra-doc mask:   $INTRA_DOC_MASKING"

@@ -2,6 +2,26 @@
 set -euo pipefail
 
 CONFIG_FILE=""
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/schedule_helpers.sh"
+
+# Variables passed unchanged from the selected stage env file into every rank.
+FORWARDED_ENV_VARS=(
+    RUNS_ROOT TOKENIZER_MODEL TRAIN_DATA_PATH VALID_DATA_PATH LOAD_CHECKPOINT
+    DATA_PATH MCORE_PATH INTRA_DOC_MASKING CONTEXT_PHASE SEQ_LENGTH
+    TP_SIZE PP_SIZE EP_SIZE CP_SIZE MICRO_BATCH_SIZE GLOBAL_BATCH_SIZE
+    TRAIN_TOKENS TRAIN_ITERS TRAIN_EPOCHS LR MIN_LR MIN_LR_RATIO
+    LR_DECAY_STYLE LR_DECAY_FRACTION LR_DECAY_ITERS
+    LR_WARMUP_FRACTION LR_WARMUP_ITERS
+    LR_WSD_DECAY_FRACTION LR_WSD_DECAY_STYLE LR_WSD_DECAY_ITERS
+    SAVE_INTERVAL SAVE_INTERVAL_FRACTION EVAL_INTERVAL EVAL_INTERVAL_FRACTION
+    EVAL_ITERS LOG_INTERVAL WEIGHT_DECAY NUM_WORKERS PREPARE_WORKERS
+    OPTIMIZER MUON_NUM_NS_STEPS MAIN_GRADS_DTYPE EXP_AVG_DTYPE EXP_AVG_SQ_DTYPE
+    PACK_SAMPLES PACK_METADATA_PATH VALID_PACK_METADATA_PATH SAVE_WEIGHTS_ONLY
+    FUSED_LINEAR_CROSS_ENTROPY SIMPO_BETA SIMPO_GAMMA SIMPO_LOSS_TYPE
+    SIMPO_SFT_WEIGHT
+)
 
 usage() {
     cat <<'USAGE'
@@ -26,7 +46,7 @@ Commands:
   help          Show this help text.
 
 Examples:
-  cp examples/chimera/cluster.env.example /path/to/pretrain.env
+  cp examples/chimera/env/pretrain.env.example /path/to/pretrain.env
   bash examples/chimera/cluster_manager.sh --config /path/to/pretrain.env info
   bash examples/chimera/cluster_manager.sh --config /path/to/pretrain.env preflight
   bash examples/chimera/cluster_manager.sh --config /path/to/pretrain.env launch
@@ -34,8 +54,9 @@ Examples:
   bash examples/chimera/cluster_manager.sh --config /path/to/pretrain.env logs
 
 The manager never clones or updates repositories. Prepare the three chimera
-branches under HOST_REPOS before launch. SFT and SimPO always start a new stage
-from MCORE_PATH; this manager does not add SFT or SimPO resume behavior.
+branches under HOST_REPOS before launch. Select pretrain, context_extension,
+sft, or simpo by copying the corresponding file under examples/chimera/env/.
+SFT and SimPO always start a new stage from MCORE_PATH.
 USAGE
 }
 
@@ -107,8 +128,8 @@ load_config() {
     TOKENIZER_MODEL="${TOKENIZER_MODEL:-$CONTAINER_DATA/hf_models/chimera-10b}"
     RUNS_ROOT="${RUNS_ROOT:-$CONTAINER_DATA/runs/$STAGE}"
     TRAIN_DATA_PATH="${TRAIN_DATA_PATH:-$CONTAINER_DATA/pretrain/train_text_document}"
-    VALID_DATA_PATH="${VALID_DATA_PATH:-}"
-    LOAD_CHECKPOINT="${LOAD_CHECKPOINT:-}"
+    VALID_DATA_PATH="${VALID_DATA_PATH-}"
+    LOAD_CHECKPOINT="${LOAD_CHECKPOINT-}"
     DATA_PATH="${DATA_PATH:-$CONTAINER_DATA/$STAGE/train.jsonl}"
     MCORE_PATH="${MCORE_PATH:-$CONTAINER_DATA/checkpoints/pretrain}"
 
@@ -118,6 +139,44 @@ load_config() {
     CP_SIZE="${CP_SIZE:-1}"
     MICRO_BATCH_SIZE="${MICRO_BATCH_SIZE:-1}"
     GLOBAL_BATCH_SIZE="${GLOBAL_BATCH_SIZE:-}"
+
+    INTRA_DOC_MASKING="${INTRA_DOC_MASKING:-false}"
+    CONTEXT_PHASE="${CONTEXT_PHASE:-8k}"
+    SEQ_LENGTH="${SEQ_LENGTH:-8192}"
+    TRAIN_TOKENS="${TRAIN_TOKENS-}"
+    TRAIN_ITERS="${TRAIN_ITERS-}"
+    TRAIN_EPOCHS="${TRAIN_EPOCHS:-1}"
+    LR="${LR:-3e-4}"
+    MIN_LR="${MIN_LR-}"
+    MIN_LR_RATIO="${MIN_LR_RATIO:-0.01}"
+    LR_DECAY_STYLE="${LR_DECAY_STYLE:-cosine}"
+    LR_DECAY_FRACTION="${LR_DECAY_FRACTION:-1.0}"
+    LR_WARMUP_FRACTION="${LR_WARMUP_FRACTION:-0.005}"
+    LR_WSD_DECAY_FRACTION="${LR_WSD_DECAY_FRACTION:-0.10}"
+    LR_WSD_DECAY_STYLE="${LR_WSD_DECAY_STYLE:-linear}"
+    SAVE_INTERVAL="${SAVE_INTERVAL-}"
+    SAVE_INTERVAL_FRACTION="${SAVE_INTERVAL_FRACTION:-0.025}"
+    EVAL_INTERVAL="${EVAL_INTERVAL-}"
+    EVAL_INTERVAL_FRACTION="${EVAL_INTERVAL_FRACTION:-0.005}"
+    EVAL_ITERS="${EVAL_ITERS:-4}"
+    LOG_INTERVAL="${LOG_INTERVAL:-1}"
+    WEIGHT_DECAY="${WEIGHT_DECAY:-0.1}"
+    NUM_WORKERS="${NUM_WORKERS:-8}"
+    PREPARE_WORKERS="${PREPARE_WORKERS:-32}"
+    OPTIMIZER="${OPTIMIZER:-adam}"
+    MUON_NUM_NS_STEPS="${MUON_NUM_NS_STEPS:-6}"
+    MAIN_GRADS_DTYPE="${MAIN_GRADS_DTYPE:-fp32}"
+    EXP_AVG_DTYPE="${EXP_AVG_DTYPE:-fp32}"
+    EXP_AVG_SQ_DTYPE="${EXP_AVG_SQ_DTYPE:-fp32}"
+    PACK_SAMPLES="${PACK_SAMPLES:-true}"
+    PACK_METADATA_PATH="${PACK_METADATA_PATH-}"
+    VALID_PACK_METADATA_PATH="${VALID_PACK_METADATA_PATH-}"
+    SAVE_WEIGHTS_ONLY="${SAVE_WEIGHTS_ONLY:-false}"
+    FUSED_LINEAR_CROSS_ENTROPY="${FUSED_LINEAR_CROSS_ENTROPY:-true}"
+    SIMPO_BETA="${SIMPO_BETA:-2.5}"
+    SIMPO_GAMMA="${SIMPO_GAMMA:-0.55}"
+    SIMPO_LOSS_TYPE="${SIMPO_LOSS_TYPE:-sigmoid}"
+    SIMPO_SFT_WEIGHT="${SIMPO_SFT_WEIGHT:-0.0}"
 
     ENABLE_GPU="${ENABLE_GPU:-true}"
     ENABLE_IB="${ENABLE_IB:-true}"
@@ -137,10 +196,25 @@ load_config() {
     MASTER_NODE="${NODES[0]}"
     WORLD_SIZE=$((NNODES * GPUS_PER_NODE))
 
-    [[ "$STAGE" =~ ^(pretrain|sft|simpo)$ ]] || die "STAGE must be pretrain, sft, or simpo"
+    [[ "$STAGE" =~ ^(pretrain|context_extension|sft|simpo)$ ]] || die "STAGE must be pretrain, context_extension, sft, or simpo"
     [[ "$RUN_NAME" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || die "RUN_NAME must use letters, numbers, dot, underscore, or dash"
     [[ "$GPUS_PER_NODE" =~ ^[0-9]+$ ]] || die "GPUS_PER_NODE must be a non-negative integer"
     [[ "$MASTER_PORT" =~ ^[0-9]+$ ]] || die "MASTER_PORT must be an integer"
+
+    if [[ "$STAGE" == pretrain || "$STAGE" == context_extension ]]; then
+        if [[ -z "$TRAIN_TOKENS" ]]; then
+            if [[ "$STAGE" == pretrain ]]; then
+                TRAIN_TOKENS=440000000000
+            else
+                TRAIN_TOKENS=10000000000
+            fi
+        fi
+        TOKENS_PER_ITER=$((SEQ_LENGTH * GLOBAL_BATCH_SIZE))
+        if [[ -z "$TRAIN_ITERS" ]]; then
+            TRAIN_ITERS=$(chimera_ceil_div "$TRAIN_TOKENS" "$TOKENS_PER_ITER")
+        fi
+        chimera_resolve_schedule
+    fi
 
     if [[ -z "$MASTER_ADDR" ]]; then
         if (( NNODES == 1 )); then
@@ -220,6 +294,9 @@ validate_topology() {
     for value in TP_SIZE PP_SIZE EP_SIZE CP_SIZE MICRO_BATCH_SIZE; do
         [[ "${!value}" =~ ^[1-9][0-9]*$ ]] || die "$value must be a positive integer"
     done
+    for value in TP_SIZE PP_SIZE EP_SIZE CP_SIZE; do
+        [[ "${!value}" == 1 ]] || die "the cluster workflow is DP-only; $value must remain 1"
+    done
 
     if ! is_true "$ENABLE_GPU"; then
         return
@@ -263,6 +340,11 @@ Container run dir:  $CONTAINER_RUN_DIR
 Host run dir:       $HOST_RUN_DIR
 Parallelism:        TP=$TP_SIZE PP=$PP_SIZE EP=$EP_SIZE CP=$CP_SIZE DP=$dp_size
 Batch:              micro=$MICRO_BATCH_SIZE global=${GLOBAL_BATCH_SIZE:-unset}
+Context:            phase=$CONTEXT_PHASE sequence=$SEQ_LENGTH
+Duration:           tokens=${TRAIN_TOKENS:-unset} iters=${TRAIN_ITERS:-packing-derived} epochs=$TRAIN_EPOCHS
+LR schedule:        style=$LR_DECAY_STYLE lr=$LR min=${MIN_LR:-ratio:$MIN_LR_RATIO} warmup=${LR_WARMUP_ITERS:-fraction:$LR_WARMUP_FRACTION}
+Intervals:          log=$LOG_INTERVAL save=${SAVE_INTERVAL:-fraction:$SAVE_INTERVAL_FRACTION} eval=${EVAL_INTERVAL:-fraction:$EVAL_INTERVAL_FRACTION}x$EVAL_ITERS
+Optimizer:          $OPTIMIZER (state/grads: $MAIN_GRADS_DTYPE/$EXP_AVG_DTYPE/$EXP_AVG_SQ_DTYPE)
 GPU enabled:        $ENABLE_GPU
 InfiniBand enabled: $ENABLE_IB
 ============================================================
@@ -283,7 +365,7 @@ stage_host_paths() {
     )
 
     case "$STAGE" in
-        pretrain)
+        pretrain|context_extension)
             paths+=("$(container_to_host "$TRAIN_DATA_PATH").bin" "$(container_to_host "$TRAIN_DATA_PATH").idx")
             if [[ -n "$VALID_DATA_PATH" ]]; then
                 paths+=("$(container_to_host "$VALID_DATA_PATH").bin" "$(container_to_host "$VALID_DATA_PATH").idx")
@@ -294,6 +376,9 @@ stage_host_paths() {
             ;;
         sft|simpo)
             paths+=("$(container_to_host "$DATA_PATH")" "$(container_to_host "$MCORE_PATH")")
+            if [[ -n "$VALID_DATA_PATH" ]]; then
+                paths+=("$(container_to_host "$VALID_DATA_PATH")")
+            fi
             ;;
     esac
 
@@ -324,7 +409,7 @@ assert tokenizer.convert_tokens_to_ids("<end_of_turn>") == 3
 assert tokenizer.unk_token is None
 print("chimera_image_ok", transformers.__file__, megatron.bridge.__file__)
 PY
-for script in train.sh sft.sh simpo.sh; do
+for script in train.sh context_extend.sh sft.sh simpo.sh schedule_helpers.sh; do
     bash -n "$CONTAINER_REPOS/Megatron-LM/examples/chimera/$script"
 done
 CHECK
@@ -594,27 +679,17 @@ args=(
     --env "PYTHONPATH=$CONTAINER_REPOS/Megatron-LM:$CONTAINER_REPOS/Megatron-Bridge/src:$CONTAINER_REPOS/transformers/src"
     --env "STAGE=$STAGE"
     --env "RUN_STAMP=$RUN_NAME"
-    --env "RUNS_ROOT=$RUNS_ROOT"
-    --env "TOKENIZER_MODEL=$TOKENIZER_MODEL"
-    --env "TRAIN_DATA_PATH=$TRAIN_DATA_PATH"
-    --env "VALID_DATA_PATH=$VALID_DATA_PATH"
-    --env "LOAD_CHECKPOINT=$LOAD_CHECKPOINT"
-    --env "DATA_PATH=$DATA_PATH"
-    --env "MCORE_PATH=$MCORE_PATH"
     --env "NNODES=$NNODES"
     --env "NODE_RANK=$NODE_RANK"
     --env "GPUS_PER_NODE=$GPUS_PER_NODE"
     --env "MASTER_ADDR=$MASTER_ADDR"
     --env "MASTER_PORT=$MASTER_PORT"
-    --env "TP_SIZE=$TP_SIZE"
-    --env "PP_SIZE=$PP_SIZE"
-    --env "EP_SIZE=$EP_SIZE"
-    --env "CP_SIZE=$CP_SIZE"
-    --env "MICRO_BATCH_SIZE=$MICRO_BATCH_SIZE"
-    --env "GLOBAL_BATCH_SIZE=$GLOBAL_BATCH_SIZE"
     --env "NCCL_DEBUG=$NCCL_DEBUG"
     --workdir "$CONTAINER_REPOS/Megatron-LM"
 )
+for env_name in $FORWARDED_ENV_NAMES; do
+    args+=(--env "$env_name=${!env_name-}")
+done
 
 if [[ "$ENABLE_GPU" == true ]]; then
     args+=(--gpus all)
@@ -634,6 +709,7 @@ set -euo pipefail
 export PATH="/workspace/venv/bin:$PATH"
 case "$STAGE" in
     pretrain) script=examples/chimera/train.sh ;;
+    context_extension) script=examples/chimera/context_extend.sh ;;
     sft) script=examples/chimera/sft.sh ;;
     simpo) script=examples/chimera/simpo.sh ;;
     *) echo "Invalid STAGE=$STAGE" >&2; exit 2 ;;
@@ -645,7 +721,8 @@ args+=("$IMAGE" bash -lc "$container_command")
 docker "${args[@]}"
 REMOTE
 
-    run_node_script "$node" "$remote_script" \
+    local forwarded_env_names="${FORWARDED_ENV_VARS[*]}"
+    local remote_assignments=(
         "CONTAINER_NAME=$container_name" \
         "NODE_NAME=$node" \
         "NODE_RANK=$rank" \
@@ -656,29 +733,23 @@ REMOTE
         "CONTAINER_DATA=$CONTAINER_DATA" \
         "STAGE=$STAGE" \
         "RUN_NAME=$RUN_NAME" \
-        "RUNS_ROOT=$RUNS_ROOT" \
-        "TOKENIZER_MODEL=$TOKENIZER_MODEL" \
-        "TRAIN_DATA_PATH=$TRAIN_DATA_PATH" \
-        "VALID_DATA_PATH=$VALID_DATA_PATH" \
-        "LOAD_CHECKPOINT=$LOAD_CHECKPOINT" \
-        "DATA_PATH=$DATA_PATH" \
-        "MCORE_PATH=$MCORE_PATH" \
         "NNODES=$NNODES" \
         "GPUS_PER_NODE=$GPUS_PER_NODE" \
         "MASTER_ADDR=$MASTER_ADDR" \
         "MASTER_PORT=$MASTER_PORT" \
-        "TP_SIZE=$TP_SIZE" \
-        "PP_SIZE=$PP_SIZE" \
-        "EP_SIZE=$EP_SIZE" \
-        "CP_SIZE=$CP_SIZE" \
-        "MICRO_BATCH_SIZE=$MICRO_BATCH_SIZE" \
-        "GLOBAL_BATCH_SIZE=$GLOBAL_BATCH_SIZE" \
         "ENABLE_GPU=$ENABLE_GPU" \
         "ENABLE_IB=$ENABLE_IB" \
         "NCCL_SOCKET_IFNAME=$NCCL_SOCKET_IFNAME" \
         "NCCL_IB_HCA=$NCCL_IB_HCA" \
         "NCCL_DEBUG=$NCCL_DEBUG" \
-        "IMAGE=$IMAGE"
+        "IMAGE=$IMAGE" \
+        "FORWARDED_ENV_NAMES=$forwarded_env_names"
+    )
+    local env_name
+    for env_name in "${FORWARDED_ENV_VARS[@]}"; do
+        remote_assignments+=("$env_name=${!env_name-}")
+    done
+    run_node_script "$node" "$remote_script" "${remote_assignments[@]}"
 }
 
 cmd_dry_run() {

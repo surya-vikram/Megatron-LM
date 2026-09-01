@@ -92,11 +92,12 @@ details.
 ## Files
 
 - `preprocess.sh`: Chimera convenience wrapper around `tools/preprocess_data.py` that recursively converts pretraining `.jsonl` and parquet files to one Megatron `.bin/.idx` dataset, using the HF tokenizer and appending `<EOS>` to every document.
-- `cluster_manager.sh`: host-side one-to-N node Docker launcher for pretraining, SFT, and SimPO; start with `bash examples/chimera/cluster_manager.sh --help`.
-- `cluster.env.example`: copyable cluster configuration for the shared Chimera repository and data roots.
+- `cluster_manager.sh`: host-side one-to-N node Docker launcher for pretraining, context extension, SFT, and SimPO; start with `bash examples/chimera/cluster_manager.sh --help`.
+- `env/*.env.example`: four stage-specific configs containing all operator-editable paths, duration, scheduling, validation, packing, and optimizer settings.
+- `schedule_helpers.sh`: shared token/fraction-to-iteration schedule arithmetic used by all launchers.
 - `train.sh`: random-init Chimera pretraining.
 - `context_phase.sh`: resolve and validate the four immutable YaRN phase geometries.
-- `context_extend.sh`: validate and launch the next continued-pretraining context phase.
+- `context_extend.sh`: validate and launch any longer continued-pretraining context phase, including direct 8K-to-128K extension.
 - `sft.sh`: supervised fine-tuning from an MCore checkpoint.
 - `simpo.sh`: SimPO preference tuning from an MCore checkpoint.
 - `import.sh`: convert a complete HF checkpoint to MCore.

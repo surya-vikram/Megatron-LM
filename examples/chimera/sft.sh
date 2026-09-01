@@ -4,6 +4,7 @@ set -euo pipefail
 # Required user inputs.
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 DATA_PATH="${DATA_PATH:-$SCRIPT_DIR/data/sft/overfit.jsonl}"
+VALID_DATA_PATH="${VALID_DATA_PATH:-}"
 TOKENIZER_MODEL="${TOKENIZER_MODEL:-/datasets/megadata/hf_models/chimera-10b}"
 MCORE_PATH="${MCORE_PATH:-/datasets/megadata/chimera_runs/pretrain/checkpoints}"
 RUNS_ROOT="${RUNS_ROOT:-/datasets/megadata/chimera_sft_runs}"
@@ -22,22 +23,41 @@ CP_SIZE="${CP_SIZE:-1}"
 # Training settings.
 CONTEXT_PHASE="${CONTEXT_PHASE:-128k}"
 source "$SCRIPT_DIR/context_phase.sh"
+source "$SCRIPT_DIR/schedule_helpers.sh"
 MICRO_BATCH_SIZE="${MICRO_BATCH_SIZE:-1}"
 GLOBAL_BATCH_SIZE="${GLOBAL_BATCH_SIZE:-64}"
 TRAIN_EPOCHS="${TRAIN_EPOCHS:-1}"
 TRAIN_ITERS="${TRAIN_ITERS:-}"
 LR="${LR:-2e-5}"
-MIN_LR="${MIN_LR:-2e-6}"
-LR_WARMUP_ITERS="${LR_WARMUP_ITERS:-}"
-SAVE_INTERVAL="${SAVE_INTERVAL:-}"
-EVAL_INTERVAL="${EVAL_INTERVAL:-}"
-EVAL_ITERS="${EVAL_ITERS:-0}"
+MIN_LR_RATIO="${MIN_LR_RATIO:-0.1}"
+LR_DECAY_STYLE="${LR_DECAY_STYLE:-cosine}"
+LR_WARMUP_FRACTION="${LR_WARMUP_FRACTION:-0.03}"
+LR_DECAY_FRACTION="${LR_DECAY_FRACTION:-1.0}"
+LR_WSD_DECAY_FRACTION="${LR_WSD_DECAY_FRACTION:-0.10}"
+LR_WSD_DECAY_STYLE="${LR_WSD_DECAY_STYLE:-linear}"
+SAVE_INTERVAL_FRACTION="${SAVE_INTERVAL_FRACTION:-1.0}"
+EVAL_INTERVAL_FRACTION="${EVAL_INTERVAL_FRACTION:-1.0}"
+EVAL_ITERS="${EVAL_ITERS:-10}"
+WEIGHT_DECAY="${WEIGHT_DECAY:-0.0}"
+LOG_INTERVAL="${LOG_INTERVAL:-1}"
+NUM_WORKERS="${NUM_WORKERS:-8}"
+PREPARE_WORKERS="${PREPARE_WORKERS:-32}"
 SAVE_WEIGHTS_ONLY="${SAVE_WEIGHTS_ONLY:-false}"
 PACK_SAMPLES="${PACK_SAMPLES:-true}"
 PACK_METADATA_PATH="${PACK_METADATA_PATH:-${DATA_PATH}.chimera_sft_packing}"
+VALID_PACK_METADATA_PATH="${VALID_PACK_METADATA_PATH:-${VALID_DATA_PATH:+${VALID_DATA_PATH}.chimera_sft_packing}}"
 OPTIMIZER="${OPTIMIZER:-adam}"
 MUON_NUM_NS_STEPS="${MUON_NUM_NS_STEPS:-6}"
 FUSED_LINEAR_CROSS_ENTROPY="${FUSED_LINEAR_CROSS_ENTROPY:-true}"
+
+[[ "$OPTIMIZER" == adam || "$OPTIMIZER" == muon ]] || {
+    echo "Unsupported OPTIMIZER=$OPTIMIZER; expected adam or muon" >&2
+    exit 1
+}
+[[ "$LR_DECAY_STYLE" == cosine || "$LR_DECAY_STYLE" == WSD ]] || {
+    echo "Unsupported LR_DECAY_STYLE=$LR_DECAY_STYLE; expected cosine or WSD" >&2
+    exit 1
+}
 
 RUN_STAMP="${RUN_STAMP:-$(TZ='Asia/Kolkata' date +%Y%m%d_%H%M%S)}"
 RUN_DIR="${RUNS_ROOT}/${RUN_STAMP}"
@@ -47,6 +67,9 @@ DATA_CACHE_PATH="${RUN_DIR}/data_cache"
 LOG_DIR="${RUN_DIR}/logs"
 
 [[ -f "$DATA_PATH" ]] || { echo "Missing SFT JSONL: $DATA_PATH"; exit 1; }
+if [[ -n "$VALID_DATA_PATH" ]]; then
+    [[ -f "$VALID_DATA_PATH" ]] || { echo "Missing validation SFT JSONL: $VALID_DATA_PATH"; exit 1; }
+fi
 [[ -d "$TOKENIZER_MODEL" || -f "$TOKENIZER_MODEL" ]] || { echo "Missing tokenizer model: $TOKENIZER_MODEL"; exit 1; }
 [[ -d "$MCORE_PATH" ]] || { echo "Missing source MCore checkpoint: $MCORE_PATH"; exit 1; }
 if [[ -d "$MCORE_PATH" ]]; then
@@ -72,23 +95,26 @@ if [[ "$PACK_SAMPLES" == true ]]; then
             --input "$DATA_PATH" \
             --output "$PACK_METADATA_PATH" \
             --tokenizer-model "$TOKENIZER_MODEL" \
-            --workers "${PREPARE_WORKERS:-32}"
+            --workers "$PREPARE_WORKERS"
     fi
     SCHEDULE_SAMPLES=$(python3 "$SCRIPT_DIR/count_chat_packs.py" \
         --metadata "$PACK_METADATA_PATH" --mode sft --sequence-length "$SEQ_LENGTH")
 fi
+if [[ "$PACK_SAMPLES" == true && -n "$VALID_DATA_PATH" ]]; then
+    if [[ ! -f "$VALID_PACK_METADATA_PATH/metadata.json" || ! -f "$VALID_PACK_METADATA_PATH/lengths.npy" || ! -f "$VALID_PACK_METADATA_PATH/row_offsets.npy" ]]; then
+        echo "Validation packing metadata missing. Automatically generating: $VALID_PACK_METADATA_PATH"
+        python3 "$SCRIPT_DIR/prepare_chat_data.py" \
+            --mode sft \
+            --input "$VALID_DATA_PATH" \
+            --output "$VALID_PACK_METADATA_PATH" \
+            --tokenizer-model "$TOKENIZER_MODEL" \
+            --workers "$PREPARE_WORKERS"
+    fi
+fi
 if [[ -z "$TRAIN_ITERS" ]]; then
     TRAIN_ITERS=$(( (SCHEDULE_SAMPLES * TRAIN_EPOCHS + GLOBAL_BATCH_SIZE - 1) / GLOBAL_BATCH_SIZE ))
 fi
-SAVE_INTERVAL="${SAVE_INTERVAL:-$TRAIN_ITERS}"
-EVAL_INTERVAL="${EVAL_INTERVAL:-$TRAIN_ITERS}"
-LR_DECAY_ITERS="$TRAIN_ITERS"
-if [[ -z "$LR_WARMUP_ITERS" ]]; then
-    LR_WARMUP_ITERS=$(( (TRAIN_ITERS * 3 + 99) / 100 ))
-    if (( LR_WARMUP_ITERS >= TRAIN_ITERS )); then
-        LR_WARMUP_ITERS=$(( TRAIN_ITERS - 1 ))
-    fi
-fi
+chimera_resolve_schedule
 
 mkdir -p "$SAVE_PATH" "$TENSORBOARD_DIR" "$DATA_CACHE_PATH" "$LOG_DIR"
 
@@ -172,16 +198,21 @@ MOE_ARGS=(
 )
 
 DATA_ARGS=(
-    --data-path 1.0 "$DATA_PATH"
-    --split 100,0,0
+    --train-data-path "$DATA_PATH"
     --data-cache-path "$DATA_CACHE_PATH"
-    --num-workers 8
+    --num-workers "$NUM_WORKERS"
     --sft
     --eod-mask-loss
     --no-create-attention-mask-in-dataloader
 )
+if [[ -n "$VALID_DATA_PATH" ]]; then
+    DATA_ARGS+=(--valid-data-path "$VALID_DATA_PATH")
+fi
 if [[ "$PACK_SAMPLES" == true ]]; then
     DATA_ARGS+=(--pack-samples --pack-metadata-path "$PACK_METADATA_PATH")
+    if [[ -n "$VALID_PACK_METADATA_PATH" ]]; then
+        DATA_ARGS+=(--valid-pack-metadata-path "$VALID_PACK_METADATA_PATH")
+    fi
 fi
 
 TRAINING_ARGS=(
@@ -190,10 +221,9 @@ TRAINING_ARGS=(
     --train-iters "$TRAIN_ITERS"
     --lr "$LR"
     --min-lr "$MIN_LR"
-    --lr-decay-style cosine
-    --lr-decay-iters "$LR_DECAY_ITERS"
+    --lr-decay-style "$LR_DECAY_STYLE"
     --lr-warmup-iters "$LR_WARMUP_ITERS"
-    --weight-decay 0.0
+    --weight-decay "$WEIGHT_DECAY"
     --clip-grad 1.0
     --adam-beta1 0.9
     --adam-beta2 0.95
@@ -204,18 +234,23 @@ TRAINING_ARGS=(
     --overlap-grad-reduce
     --calculate-per-token-loss
 )
+if [[ "$LR_DECAY_STYLE" == WSD ]]; then
+    TRAINING_ARGS+=(--lr-wsd-decay-style "$LR_WSD_DECAY_STYLE" --lr-wsd-decay-iters "$LR_WSD_DECAY_ITERS")
+else
+    TRAINING_ARGS+=(--lr-decay-iters "$LR_DECAY_ITERS")
+fi
 
 TRAINING_ARGS+=(--optimizer "$OPTIMIZER")
 
-if [[ "$OPTIMIZER" == "muon" || "$OPTIMIZER" == "adaptive_muon" ]]; then
+if [[ "$OPTIMIZER" == muon ]]; then
     TRAINING_ARGS+=(--muon-num-ns-steps "$MUON_NUM_NS_STEPS")
 else
     TRAINING_ARGS+=(
         --use-precision-aware-optimizer
         --main-params-dtype fp32
-        --main-grads-dtype bf16
-        --exp-avg-dtype bf16
-        --exp-avg-sq-dtype bf16
+        --main-grads-dtype fp32
+        --exp-avg-dtype fp32
+        --exp-avg-sq-dtype fp32
     )
 fi
 
@@ -235,8 +270,8 @@ LOGGING_ARGS=(
     --tensorboard-dir "$TENSORBOARD_DIR"
     --save-interval "$SAVE_INTERVAL"
     --eval-interval "$EVAL_INTERVAL"
-    --eval-iters "$EVAL_ITERS"
-    --log-interval 1
+    --eval-iters "$([[ -n "$VALID_DATA_PATH" ]] && echo "$EVAL_ITERS" || echo 0)"
+    --log-interval "$LOG_INTERVAL"
     --log-throughput
     --exit-signal-handler
     --ckpt-format torch_dist
@@ -256,6 +291,7 @@ fi
 if [[ "$NODE_RANK" == 0 ]]; then
 cat > "${RUN_DIR}/run_paths.env" <<EOF
 DATA_PATH=${DATA_PATH}
+VALID_DATA_PATH=${VALID_DATA_PATH}
 TOKENIZER_MODEL=${TOKENIZER_MODEL}
 MCORE_PATH=${MCORE_PATH}
 RUN_DIR=${RUN_DIR}
@@ -268,6 +304,7 @@ DATASET_SAMPLES=${DATASET_SAMPLES}
 SCHEDULE_SAMPLES=${SCHEDULE_SAMPLES}
 PACK_SAMPLES=${PACK_SAMPLES}
 PACK_METADATA_PATH=${PACK_METADATA_PATH}
+VALID_PACK_METADATA_PATH=${VALID_PACK_METADATA_PATH}
 TRAIN_EPOCHS=${TRAIN_EPOCHS}
 TRAIN_ITERS=${TRAIN_ITERS}
 MICRO_BATCH_SIZE=${MICRO_BATCH_SIZE}

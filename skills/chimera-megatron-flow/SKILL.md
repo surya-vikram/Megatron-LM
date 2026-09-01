@@ -32,7 +32,7 @@ guide consistent.
 - Megatron fractional correction bounds and Transformers `truncate=false` must agree
 - Stable pretraining baseline: TP=1, PP=1, EP=1, ETP=1, CP=1
 - 2-GPU validation starts as DP=2 with TP=1, PP=1, EP=1, ETP=1, CP=1
-- On measured OOM, first reduce optimizer moments to BF16; then use EP=2 or TP=2 as one fallback axis, never both
+- Keep optimizer master weights, main gradients, and all moment states in FP32 for stability; address OOM through batch size, activation memory, or one parallelism axis instead of reducing optimizer-state precision
 
 The reduced canonical tiny profile is 8 layers (`[0]*2+[1]*6`), hidden 512,
 dense FFN 2048, 8 heads, 2 query groups, head dimension 64, 8 routed experts,
@@ -64,9 +64,9 @@ The shared host layout is:
 /nvme_zone3/home/ekamai1/surya/chimera/data
 ```
 
-The manager mounts those paths at `/workspace/repos` and
-`/datasets/megadata`. Copy `examples/chimera/cluster.env.example` outside the
-Git checkout, set one explicit `RUN_NAME`, and use the same configuration for
+The manager mounts those paths at `/workspace/repos` and `/datasets/megadata`.
+Copy the matching template from `examples/chimera/env/` outside the Git
+checkout, set one explicit `RUN_NAME`, and use the same configuration for
 `preflight`, `launch`, `status`, `logs`, `stop`, and `cleanup`.
 
 The image's `/workspace/load_env.sh` contains escaped quotes and must not be
@@ -459,11 +459,12 @@ TP_SIZE=1 PP_SIZE=1 EP_SIZE=1 CP_SIZE=1 \
 bash examples/chimera/train.sh
 ```
 
-With two visible GPUs this is DP=2. If it fails specifically from GPU memory,
-retry first with `MAIN_GRADS_DTYPE=bf16 EXP_AVG_DTYPE=bf16
-EXP_AVG_SQ_DTYPE=bf16`. If that still fails, use exactly one fallback:
-`EP_SIZE=2` or `TP_SIZE=2`. Keep the other size at 1 and record the OOM and
-selected fallback in the validation report.
+With two visible GPUs this is DP=2. Keep optimizer master weights, main
+gradients, and moment states in FP32. If it fails specifically from GPU memory,
+reduce the microbatch or sequence length for the smoke test. Use exactly one
+parallelism fallback only when needed: `EP_SIZE=2` or `TP_SIZE=2`. Keep the
+other size at 1 and record the OOM and selected fallback in the validation
+report.
 
 Capture the run paths dynamically:
 

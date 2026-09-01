@@ -3374,6 +3374,8 @@ def _add_sft_args(parser):
                        help='Enable multi-sample packing in SFT dataset.')
     group.add_argument('--pack-metadata-path', type=str, default=None,
                        help='Directory produced by examples/chimera/prepare_chat_data.py.')
+    group.add_argument('--valid-pack-metadata-path', type=str, default=None,
+                       help='Packing metadata for --valid-data-path when it differs from training.')
     group.add_argument('--pack-factor', type=int, default=None,
                        help='Deprecated legacy Gemma packing window; ignored by indexed packing.')
     return parser

@@ -105,6 +105,14 @@ class SFTLowLevelDataset:
         return self.dataset[idx].get("messages")
 
 
+def get_pack_metadata_path(args: Any, dataset_path: Optional[str]) -> Optional[str]:
+    """Select training or validation packing metadata for a JSONL path."""
+    valid_paths = [str(path) for path in (getattr(args, "valid_data_path", None) or [])]
+    if dataset_path is not None and str(dataset_path) in valid_paths:
+        return getattr(args, "valid_pack_metadata_path", None)
+    return getattr(args, "pack_metadata_path", None)
+
+
 class SFTDataset(MegatronDataset):
     """The dataset used during SFT"""
 
@@ -132,7 +140,7 @@ class SFTDataset(MegatronDataset):
 
         args = get_args()
         pack_samples = getattr(args, "pack_samples", False)
-        metadata_path = getattr(args, "pack_metadata_path", None)
+        metadata_path = get_pack_metadata_path(args, dataset_path)
         prompt_format = getattr(args, "sft_tokenizer_prompt_format", "default")
         if pack_samples and prompt_format == "chimera" and metadata_path is None:
             raise ValueError(
@@ -208,10 +216,9 @@ class SFTDataset(MegatronDataset):
     @staticmethod
     def build_low_level_dataset(dataset_path: str, config: GPTDatasetConfig) -> LowLevelDataset:
         args = get_args()
-        if getattr(args, "pack_samples", False) and getattr(args, "pack_metadata_path", None):
-            return IndexedJsonlDataset(
-                dataset_path, getattr(args, "pack_metadata_path"), field="messages"
-            )
+        metadata_path = get_pack_metadata_path(args, dataset_path)
+        if getattr(args, "pack_samples", False) and metadata_path:
+            return IndexedJsonlDataset(dataset_path, metadata_path, field="messages")
         return SFTLowLevelDataset(dataset_path)
 
     def __len__(self) -> int:

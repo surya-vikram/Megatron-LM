@@ -17,7 +17,7 @@ from megatron.training.datasets.chat_packing import (
     load_pack_lengths,
     validate_metadata_source,
 )
-from megatron.training.datasets.sft_dataset import validate_chat_messages
+from megatron.training.datasets.sft_dataset import get_pack_metadata_path, validate_chat_messages
 
 IGNORE_INDEX = -100
 
@@ -144,7 +144,7 @@ class SimPODataset(MegatronDataset):
 
         args = get_args()
         pack_samples = getattr(args, "pack_samples", False)
-        metadata_path = getattr(args, "pack_metadata_path", None)
+        metadata_path = get_pack_metadata_path(args, dataset_path)
         prompt_format = getattr(args, "sft_tokenizer_prompt_format", "default")
         if pack_samples and prompt_format == "chimera" and metadata_path is None:
             raise ValueError(
@@ -226,8 +226,9 @@ class SimPODataset(MegatronDataset):
     @staticmethod
     def build_low_level_dataset(dataset_path: str, config: GPTDatasetConfig) -> Any:
         args = get_args()
-        if getattr(args, "pack_samples", False) and getattr(args, "pack_metadata_path", None):
-            return IndexedJsonlDataset(dataset_path, getattr(args, "pack_metadata_path"))
+        metadata_path = get_pack_metadata_path(args, dataset_path)
+        if getattr(args, "pack_samples", False) and metadata_path:
+            return IndexedJsonlDataset(dataset_path, metadata_path)
         return JsonlLowLevelDataset(dataset_path)
 
     def __len__(self) -> int:

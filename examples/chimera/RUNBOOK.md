@@ -52,15 +52,18 @@ Show the complete command guide:
 bash examples/chimera/cluster_manager.sh --help
 ```
 
-Create one configuration per run outside the Git checkout:
+Choose the stage template and copy one configuration per run outside the Git checkout:
 
 ```bash
-cp examples/chimera/cluster.env.example \
+cp examples/chimera/env/pretrain.env.example \
   /nvme_zone3/home/ekamai1/surya/chimera/data/pretrain-phase1.env
 ```
 
-Edit the stage, run name, node list, input paths, checkpoint path, topology,
-and batch sizes. Then inspect and validate before launching:
+The other templates are `context_extension.env.example`, `sft.env.example`, and
+`simpo.env.example` in the same directory. Each file contains the common cluster,
+mount, DP-only topology, and FP32 optimizer-state block first, followed by only
+the settings for that stage. Edit the selected env file; do not edit the launch
+scripts. Then inspect and validate before launching:
 
 ```bash
 bash examples/chimera/cluster_manager.sh \
@@ -81,6 +84,24 @@ bash examples/chimera/cluster_manager.sh --config /path/to/run.env logs
 bash examples/chimera/cluster_manager.sh --config /path/to/run.env stop
 bash examples/chimera/cluster_manager.sh --config /path/to/run.env cleanup
 ```
+
+The end-to-end operator workflow is the same at every stage:
+
+```bash
+cp examples/chimera/env/pretrain.env.example /path/to/pretrain.env
+bash examples/chimera/cluster_manager.sh --config /path/to/pretrain.env info
+bash examples/chimera/cluster_manager.sh --config /path/to/pretrain.env preflight
+bash examples/chimera/cluster_manager.sh --config /path/to/pretrain.env launch
+```
+
+Repeat with `context_extension.env.example`, `sft.env.example`, and
+`simpo.env.example`. Normally only change `RUN_NAME`, the train/validation data
+paths, and `LOAD_CHECKPOINT` or `MCORE_PATH` for the next stage. Duration,
+batching, LR, schedule type, warmup, saving, evaluation, packing, and optimizer
+are all controlled in that stage's env file. `TRAIN_ITERS=` means derive it
+from `TRAIN_TOKENS` for pretraining/context extension or from packed samples and
+`TRAIN_EPOCHS` for SFT/SimPO. Likewise, blank save/eval iteration values are
+derived from their configured fractions.
 
 The manager does not clone, pull, or modify repositories. It does not source
 the image's malformed `/workspace/load_env.sh`; it explicitly selects
@@ -168,7 +189,8 @@ bash examples/chimera/train.sh
 
 Advance only after the current phase passes short- and target-length validation. Each
 extension validates the source `run_config.yaml`, loads weights only, and starts a fresh
-Adam optimizer/RNG/cosine schedule.
+optimizer/RNG/schedule. Direct `8k -> 128k` extension is supported; the intermediate
+32K and 64K phases remain available when a gradual curriculum is desired.
 
 ```bash
 CONTEXT_PHASE=32k LOAD_CHECKPOINT="$CKPT_8K" \
@@ -186,6 +208,9 @@ TRAIN_DATA_PATH="$LONG_DATA_PREFIX" TOKENIZER_MODEL="$HF_REFERENCE" \
 RUNS_ROOT="$DATA_ROOT/context_128k_runs" \
 bash examples/chimera/context_extend.sh
 ```
+
+For the direct route, set `CONTEXT_PHASE=128k` and point `LOAD_CHECKPOINT` at the
+validated 8K checkpoint. The launcher rejects same-length or backwards transitions.
 
 Run SFT from the final checkpoint without changing its positional geometry. Packing and
 Adam are defaults; shorter samples may be mixed and packed while `CONTEXT_PHASE=128k`

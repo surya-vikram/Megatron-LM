@@ -1,5 +1,8 @@
 # Technical Proposal & Implementation Plan: BF16 Momentum ($M_t$) for Muon Optimizer
 
+> **Archived:** Chimera launchers now keep all optimizer state in FP32 for
+> stability. This document is retained only as historical experiment context.
+
 ## 📌 Executive Summary
 This document presents a detailed, production-grade implementation and verification plan to convert Muon's 1st-moment momentum state ($M_t$) from **FP32 (32-bit)** to **BF16 (16-bit)** within Megatron-LM (`TensorParallelMuon` / `TensorParallelAdaptiveMuon`).
 

@@ -26,7 +26,10 @@ GLOBAL_BATCH_SIZE="${GLOBAL_BATCH_SIZE:-576}"
 # Production defaults can be overridden for documented smoke/overfit runs
 # without editing this canonical launcher.
 SEQ_LENGTH="${SEQ_LENGTH:-8192}"
+source "$SCRIPT_DIR/context_phase.sh"
+CHIMERA_CONTEXT_EXTENSION="${CHIMERA_CONTEXT_EXTENSION:-false}"
 TRAIN_ITERS="${TRAIN_ITERS:-423856}"
+LR_DECAY_ITERS="${LR_DECAY_ITERS:-$TRAIN_ITERS}"
 LR="${LR:-3e-4}"
 MIN_LR="${MIN_LR:-3e-6}"
 LR_DECAY_STYLE="${LR_DECAY_STYLE:-WSD}"
@@ -58,7 +61,13 @@ if [[ -n "$LOAD_CHECKPOINT" && ! -f "$LOAD_CHECKPOINT/latest_checkpointed_iterat
     echo "Invalid checkpoint root: $LOAD_CHECKPOINT"
     exit 1
 fi
-if [[ "$GLOBAL_BATCH_SIZE" -ne 576 ]]; then
+if [[ "$CHIMERA_CONTEXT_EXTENSION" == true ]]; then
+    [[ -n "$LOAD_CHECKPOINT" ]] || { echo "Context extension requires LOAD_CHECKPOINT"; exit 1; }
+    [[ "$SEQ_LENGTH" -eq "$MAX_POSITION_EMBEDDINGS" ]] || {
+        echo "Context extension requires SEQ_LENGTH=$MAX_POSITION_EMBEDDINGS for phase $CONTEXT_PHASE"; exit 1;
+    }
+fi
+if [[ "$GLOBAL_BATCH_SIZE" -ne 576 && "$CHIMERA_CONTEXT_EXTENSION" != true ]]; then
     echo "Warning: the 2T iteration and WSD schedule is calibrated for GLOBAL_BATCH_SIZE=576; recalculate schedule iterations for $GLOBAL_BATCH_SIZE." >&2
 fi
 
@@ -83,11 +92,12 @@ MODEL_ARGS=(
     --num-query-groups 2
     --kv-channels 256
     --seq-length "$SEQ_LENGTH"
-    --max-position-embeddings 8192
-    --position-embedding-type yarn
+    --max-position-embeddings "$MAX_POSITION_EMBEDDINGS"
+    --position-embedding-type "$POSITION_EMBEDDING_TYPE"
     --rotary-base 10000000
     --rotary-percent 1.0
-    --rotary-scaling-factor 1.0
+    --rotary-scaling-factor "$ROTARY_SCALING_FACTOR"
+    --yarn-original-max-position-embeddings "$YARN_ORIGINAL_MAX_POSITION_EMBEDDINGS"
     --mscale 1.0
     --mscale-all-dim 0.0
     --normalization RMSNorm
@@ -182,6 +192,8 @@ if [[ "$LR_DECAY_STYLE" == "WSD" ]]; then
         --lr-wsd-decay-style "$LR_WSD_DECAY_STYLE"
         --lr-wsd-decay-iters "$LR_WSD_DECAY_ITERS"
     )
+else
+    TRAINING_ARGS+=(--lr-decay-iters "$LR_DECAY_ITERS")
 fi
 
 PARALLEL_ARGS=(
@@ -212,6 +224,13 @@ if [[ -n "$LOAD_CHECKPOINT" ]]; then
         --exit-on-missing-checkpoint
     )
 fi
+if [[ "$CHIMERA_CONTEXT_EXTENSION" == true ]]; then
+    LOGGING_ARGS+=(
+        --finetune
+        --no-load-optim
+        --no-load-rng
+    )
+fi
 if [[ "$NODE_RANK" == 0 ]]; then
 cat > "${RUN_DIR}/run_paths.env" <<EOF
 TRAIN_DATA_PATH=${TRAIN_DATA_PATH}
@@ -237,7 +256,14 @@ CP_SIZE=${CP_SIZE}
 MICRO_BATCH_SIZE=${MICRO_BATCH_SIZE}
 GLOBAL_BATCH_SIZE=${GLOBAL_BATCH_SIZE}
 SEQ_LENGTH=${SEQ_LENGTH}
+CONTEXT_PHASE=${CONTEXT_PHASE}
+POSITION_EMBEDDING_TYPE=${POSITION_EMBEDDING_TYPE}
+MAX_POSITION_EMBEDDINGS=${MAX_POSITION_EMBEDDINGS}
+ROTARY_SCALING_FACTOR=${ROTARY_SCALING_FACTOR}
+YARN_ORIGINAL_MAX_POSITION_EMBEDDINGS=${YARN_ORIGINAL_MAX_POSITION_EMBEDDINGS}
+CHIMERA_CONTEXT_EXTENSION=${CHIMERA_CONTEXT_EXTENSION}
 TRAIN_ITERS=${TRAIN_ITERS}
+LR_DECAY_ITERS=${LR_DECAY_ITERS}
 LR=${LR}
 MIN_LR=${MIN_LR}
 LR_DECAY_STYLE=${LR_DECAY_STYLE}
@@ -265,10 +291,15 @@ echo "  Parallelism:      TP=$TP_SIZE PP=$PP_SIZE EP=$EP_SIZE ETP=1 CP=$CP_SIZE"
 echo "  Architecture:     layers=25 moe_layer_freq=[0]*2+[1]*23 hidden=2048 experts=32 topk=4 expert_ffn=2048 shared=0 qk_norm=true"
 echo "  Router:           quantile_balancing bins=1000 ema=0 aux=0 bias_rate=0 scale=2.5 z_loss=1e-3"
 echo "  Router logging:   inline interval=1 raw_expert_files=false"
-echo "  Seq/batch/iters:  seq=$SEQ_LENGTH max_position=8192 micro=$MICRO_BATCH_SIZE global=$GLOBAL_BATCH_SIZE iters=$TRAIN_ITERS"
+echo "  Context/YaRN:     phase=$CONTEXT_PHASE max=$MAX_POSITION_EMBEDDINGS factor=$ROTARY_SCALING_FACTOR original=$YARN_ORIGINAL_MAX_POSITION_EMBEDDINGS extension=$CHIMERA_CONTEXT_EXTENSION"
+echo "  Seq/batch/iters:  seq=$SEQ_LENGTH micro=$MICRO_BATCH_SIZE global=$GLOBAL_BATCH_SIZE iters=$TRAIN_ITERS"
 echo "  LR schedule:      $LR_DECAY_STYLE peak=$LR min=$MIN_LR warmup=$LR_WARMUP_ITERS wsd_decay=$LR_WSD_DECAY_ITERS wsd_style=$LR_WSD_DECAY_STYLE"
 echo "  Optimizer:        AdamW beta1=0.9 beta2=0.95 eps=1e-8 wd=$WEIGHT_DECAY main_params=fp32 main_grads=$MAIN_GRADS_DTYPE exp_avg=$EXP_AVG_DTYPE exp_avg_sq=$EXP_AVG_SQ_DTYPE"
-echo "  Production budget: approximately 2.0T at global_batch=576 with the default schedule"
+if [[ "$CHIMERA_CONTEXT_EXTENSION" == true ]]; then
+    echo "  Extension budget: target_tokens=${EXTENSION_TOKENS:-custom}"
+else
+    echo "  Production budget: approximately 2.0T at global_batch=576 with the default schedule"
+fi
 echo "  Attention:        backend=flash external_flash_attn=false cuda_graph=TE:attn"
 echo "  Intra-doc mask:   $INTRA_DOC_MASKING"
 echo "  Document loss:    predict_eos=true post_eos_target=false"

@@ -15,6 +15,8 @@ TOKENIZER_MODEL="${TOKENIZER_MODEL:-/workspace/repos/transformers/src/transforme
 RUNS_ROOT="${RUNS_ROOT:-/workspace/scratch/tiny_chimera_runs}"
 INTRA_DOC_MASKING="${INTRA_DOC_MASKING:-false}"
 LOAD_CHECKPOINT="${LOAD_CHECKPOINT:-}"
+SEQ_LENGTH="${SEQ_LENGTH:-8192}"
+source "$SCRIPT_DIR/context_phase.sh"
 
 # GPU launch settings.
 GPUS_PER_NODE="${GPUS_PER_NODE:-$(nvidia-smi -L 2>/dev/null | wc -l || echo 1)}"
@@ -60,12 +62,13 @@ MODEL_ARGS=(
     --group-query-attention
     --num-query-groups 2
     --kv-channels 64
-    --seq-length "${SEQ_LENGTH:-8192}"
-    --max-position-embeddings "${MAX_POSITION_EMBEDDINGS:-8192}"
-    --position-embedding-type yarn
+    --seq-length "$SEQ_LENGTH"
+    --max-position-embeddings "$MAX_POSITION_EMBEDDINGS"
+    --position-embedding-type "$POSITION_EMBEDDING_TYPE"
     --rotary-base 10000000
     --rotary-percent 1.0
-    --rotary-scaling-factor "${ROTARY_SCALING_FACTOR:-1.0}"
+    --rotary-scaling-factor "$ROTARY_SCALING_FACTOR"
+    --yarn-original-max-position-embeddings "$YARN_ORIGINAL_MAX_POSITION_EMBEDDINGS"
     --mscale 1.0
     --mscale-all-dim 0.0
     --normalization RMSNorm
@@ -130,7 +133,7 @@ else
     DATA_ARGS+=(--no-create-attention-mask-in-dataloader)
 fi
 
-OPTIMIZER="${OPTIMIZER:-muon}"
+OPTIMIZER="${OPTIMIZER:-adam}"
 
 TRAINING_ARGS=(
     --micro-batch-size "$MICRO_BATCH_SIZE"
@@ -232,6 +235,12 @@ EP_SIZE=${EP_SIZE}
 CP_SIZE=${CP_SIZE}
 MICRO_BATCH_SIZE=${MICRO_BATCH_SIZE}
 GLOBAL_BATCH_SIZE=${GLOBAL_BATCH_SIZE}
+SEQ_LENGTH=${SEQ_LENGTH}
+CONTEXT_PHASE=${CONTEXT_PHASE}
+POSITION_EMBEDDING_TYPE=${POSITION_EMBEDDING_TYPE}
+MAX_POSITION_EMBEDDINGS=${MAX_POSITION_EMBEDDINGS}
+ROTARY_SCALING_FACTOR=${ROTARY_SCALING_FACTOR}
+YARN_ORIGINAL_MAX_POSITION_EMBEDDINGS=${YARN_ORIGINAL_MAX_POSITION_EMBEDDINGS}
 EOF
 
     cp "$0" "${RUN_DIR}/tiny_chimera.sh"
@@ -249,7 +258,8 @@ echo "  GPUs per node:    $GPUS_PER_NODE"
 echo "  Parallelism:      TP=$TP_SIZE PP=$PP_SIZE EP=$EP_SIZE ETP=1 CP=$CP_SIZE"
 echo "  Architecture:     layers=8 moe_layer_freq=[0]*2+[1]*6 hidden=512 ffn=2048 experts=8 topk=2 expert_ffn=256 shared=0 qk_norm=true"
 echo "  Router:           ${MOE_ROUTER_LOAD_BALANCING_TYPE:-quantile_balancing} bins=${MOE_QB_NUM_BINS:-1000} ema=${MOE_QB_EMA_DECAY:-0.0} aux=${MOE_AUX_LOSS_COEFF:-0.0} bias_rate=${MOE_ROUTER_BIAS_UPDATE_RATE:-0.0} scale=2.5 z_loss=${MOE_Z_LOSS_COEFF:-0.001}"
-echo "  Seq/batch/iters:  seq=${SEQ_LENGTH:-8192} micro=$MICRO_BATCH_SIZE global=$GLOBAL_BATCH_SIZE iters=${TRAIN_ITERS:-100}"
+echo "  Context/YaRN:     phase=$CONTEXT_PHASE max=$MAX_POSITION_EMBEDDINGS factor=$ROTARY_SCALING_FACTOR original=$YARN_ORIGINAL_MAX_POSITION_EMBEDDINGS"
+echo "  Seq/batch/iters:  seq=$SEQ_LENGTH micro=$MICRO_BATCH_SIZE global=$GLOBAL_BATCH_SIZE iters=${TRAIN_ITERS:-100}"
 
 exec python3 -m torch.distributed.run "${DISTRIBUTED_ARGS[@]}" \
     examples/chimera/pretrain_chimera.py \

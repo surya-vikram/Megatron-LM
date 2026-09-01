@@ -25,12 +25,18 @@ EP_SIZE="${EP_SIZE:-1}"
 CP_SIZE="${CP_SIZE:-1}"
 MICRO_BATCH_SIZE="${MICRO_BATCH_SIZE:-2}"
 GLOBAL_BATCH_SIZE="${GLOBAL_BATCH_SIZE:-2000}"
+SEQ_LENGTH="${SEQ_LENGTH:-8192}"
+source "$SCRIPT_DIR/context_phase.sh"
+if [[ "$CONTEXT_PHASE" != 8k ]]; then
+    echo "train_440B.sh is the base 8K launcher; use context_extend.sh for later phases" >&2
+    exit 1
+fi
 
 # WSD ratios: warm up for 0.3%, hold through 75%, then linearly anneal to zero.
 LR_WARMUP_ITERS=$((TRAIN_ITERS * 3 / 1000))
 LR_WSD_ANNEAL_START_ITERS=$((TRAIN_ITERS * 3 / 4))
 LR_WSD_DECAY_ITERS=$((TRAIN_ITERS - LR_WSD_ANNEAL_START_ITERS))
-TOKENS_PER_ITER=$((8192 * GLOBAL_BATCH_SIZE))
+TOKENS_PER_ITER=$((SEQ_LENGTH * GLOBAL_BATCH_SIZE))
 TOTAL_TOKENS=$((TOKENS_PER_ITER * TRAIN_ITERS))
 
 RUN_STAMP="${RUN_STAMP:-$(TZ='Asia/Kolkata' date +%Y%m%d_%H%M%S)}"
@@ -75,12 +81,13 @@ MODEL_ARGS=(
     --group-query-attention
     --num-query-groups 2
     --kv-channels 256
-    --seq-length 8192
-    --max-position-embeddings 8192
-    --position-embedding-type yarn
+    --seq-length "$SEQ_LENGTH"
+    --max-position-embeddings "$MAX_POSITION_EMBEDDINGS"
+    --position-embedding-type "$POSITION_EMBEDDING_TYPE"
     --rotary-base 10000000
     --rotary-percent 1.0
-    --rotary-scaling-factor 1.0
+    --rotary-scaling-factor "$ROTARY_SCALING_FACTOR"
+    --yarn-original-max-position-embeddings "$YARN_ORIGINAL_MAX_POSITION_EMBEDDINGS"
     --mscale 1.0
     --mscale-all-dim 0.0
     --normalization RMSNorm
@@ -245,6 +252,12 @@ EP_SIZE=${EP_SIZE}
 CP_SIZE=${CP_SIZE}
 MICRO_BATCH_SIZE=${MICRO_BATCH_SIZE}
 GLOBAL_BATCH_SIZE=${GLOBAL_BATCH_SIZE}
+SEQ_LENGTH=${SEQ_LENGTH}
+CONTEXT_PHASE=${CONTEXT_PHASE}
+POSITION_EMBEDDING_TYPE=${POSITION_EMBEDDING_TYPE}
+MAX_POSITION_EMBEDDINGS=${MAX_POSITION_EMBEDDINGS}
+ROTARY_SCALING_FACTOR=${ROTARY_SCALING_FACTOR}
+YARN_ORIGINAL_MAX_POSITION_EMBEDDINGS=${YARN_ORIGINAL_MAX_POSITION_EMBEDDINGS}
 EOF
 
     cp "$0" "${RUN_DIR}/train_440B.sh"
@@ -264,7 +277,8 @@ echo "  Parallelism:      TP=$TP_SIZE PP=$PP_SIZE EP=$EP_SIZE ETP=1 CP=$CP_SIZE"
 echo "  Architecture:     layers=25 moe_layer_freq=[0]*2+[1]*23 norm=RMSNorm qk_norm=RMSNorm swiglu=true experts=32 active=4 expert_intermediate=2048 shared_experts=0"
 echo "  Router:           quantile_balancing bins=1000 ema=0 aux=0 bias_rate=0 scale=2.5 z_loss=1e-3"
 echo "  Router logging:   inline interval=1 raw_expert_files=false"
-echo "  Seq/batch/iters:  seq=8192 micro=$MICRO_BATCH_SIZE global=$GLOBAL_BATCH_SIZE iters=$TRAIN_ITERS"
+echo "  Context/YaRN:     phase=$CONTEXT_PHASE max=$MAX_POSITION_EMBEDDINGS factor=$ROTARY_SCALING_FACTOR original=$YARN_ORIGINAL_MAX_POSITION_EMBEDDINGS"
+echo "  Seq/batch/iters:  seq=$SEQ_LENGTH micro=$MICRO_BATCH_SIZE global=$GLOBAL_BATCH_SIZE iters=$TRAIN_ITERS"
 echo "  LR schedule:      WSD peak=1e-3 min=1e-6 warmup=$LR_WARMUP_ITERS constant_through=$LR_WSD_ANNEAL_START_ITERS decay=$LR_WSD_DECAY_ITERS style=linear"
 echo "  Optimizer:        $OPTIMIZER_SUMMARY"
 echo "  Token budget:     tokens_per_iter=$TOKENS_PER_ITER total_tokens=$TOTAL_TOKENS (439.99232B with defaults)"

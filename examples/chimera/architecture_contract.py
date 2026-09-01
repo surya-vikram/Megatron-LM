@@ -16,7 +16,6 @@ import sys
 from pathlib import Path
 from typing import Any
 
-
 FULL_PROFILE = {
     "num_layers": 25,
     "hidden_size": 2048,
@@ -44,6 +43,14 @@ TINY_PROFILE = {
 }
 
 PROFILES = {"full": FULL_PROFILE, "tiny": TINY_PROFILE}
+
+YARN_ORIGINAL_MAX_POSITION_EMBEDDINGS = 8192
+CONTEXT_PHASES = {
+    "8k": {"max_position_embeddings": 8192, "rotary_scaling_factor": 1.0},
+    "32k": {"max_position_embeddings": 32768, "rotary_scaling_factor": 4.0},
+    "64k": {"max_position_embeddings": 65536, "rotary_scaling_factor": 8.0},
+    "128k": {"max_position_embeddings": 131072, "rotary_scaling_factor": 16.0},
+}
 
 
 def _equal(actual: Any, expected: Any) -> bool:
@@ -86,6 +93,47 @@ def _normalized_layer_freq(value: Any) -> list[int]:
     raise ValueError(f"moe_layer_freq must be a parsed list, found {value!r}")
 
 
+def _validate_context_geometry(
+    *,
+    position_embedding_type: Any,
+    max_position_embeddings: Any,
+    rotary_scaling_factor: Any,
+    original_max_position_embeddings: Any,
+    requested_phase: str = "auto",
+    prefix: str = "",
+    errors: list[str],
+) -> str | None:
+    """Validate and identify one immutable Chimera YaRN context phase."""
+    name = f"{prefix}." if prefix else ""
+    _require(position_embedding_type, "yarn", f"{name}position_embedding_type", errors)
+    _require(
+        original_max_position_embeddings,
+        YARN_ORIGINAL_MAX_POSITION_EMBEDDINGS,
+        f"{name}yarn_original_max_position_embeddings",
+        errors,
+    )
+
+    matched_phase = None
+    for phase, geometry in CONTEXT_PHASES.items():
+        if _equal(
+            max_position_embeddings, geometry["max_position_embeddings"]
+        ) and _equal(rotary_scaling_factor, geometry["rotary_scaling_factor"]):
+            matched_phase = phase
+            break
+
+    if matched_phase is None:
+        errors.append(
+            f"{name}YaRN geometry: expected one of {CONTEXT_PHASES!r}, found "
+            f"max_position_embeddings={max_position_embeddings!r}, "
+            f"rotary_scaling_factor={rotary_scaling_factor!r}"
+        )
+    elif requested_phase != "auto" and matched_phase != requested_phase:
+        errors.append(
+            f"{name}context_phase: expected {requested_phase!r}, found {matched_phase!r}"
+        )
+    return matched_phase
+
+
 def validate_training_args(args: Any) -> str:
     """Fail before model construction when a launcher drifts from the contract."""
     values = {
@@ -106,9 +154,7 @@ def validate_training_args(args: Any) -> str:
         _require(values[key], expected, key, errors)
 
     common = {
-        "max_position_embeddings": 8192,
         "rotary_base": 10_000_000,
-        "rotary_scaling_factor": 1.0,
         "mscale": 1.0,
         "mscale_all_dim": 0.0,
         "vocab_size": 50176,
@@ -121,6 +167,16 @@ def validate_training_args(args: Any) -> str:
     }
     for key, expected in common.items():
         _require(getattr(args, key, None), expected, key, errors)
+
+    _validate_context_geometry(
+        position_embedding_type=getattr(args, "position_embedding_type", None),
+        max_position_embeddings=getattr(args, "max_position_embeddings", None),
+        rotary_scaling_factor=getattr(args, "rotary_scaling_factor", None),
+        original_max_position_embeddings=getattr(
+            args, "yarn_original_max_position_embeddings", None
+        ),
+        errors=errors,
+    )
 
     _require(getattr(args, "qk_layernorm", False), True, "qk_layernorm", errors)
     _require(
@@ -150,12 +206,10 @@ def validate_training_args(args: Any) -> str:
         errors,
     )
 
-    stage_is_finetune = bool(
-        getattr(args, "finetune", False)
-        or getattr(args, "sft", False)
-        or getattr(args, "simpo", False)
+    stage_is_posttraining = bool(
+        getattr(args, "sft", False) or getattr(args, "simpo", False)
     )
-    expected_balancing = "none" if stage_is_finetune else "quantile_balancing"
+    expected_balancing = "none" if stage_is_posttraining else "quantile_balancing"
     _require(
         getattr(args, "moe_router_load_balancing_type", None),
         expected_balancing,
@@ -219,7 +273,7 @@ def write_runtime_run_config(args: Any, template: Path) -> Path | None:
             "moe_shared_expert_overlap": False,
             "rotary_base": args.rotary_base,
             "rotary_scaling_factor": args.rotary_scaling_factor,
-            "position_embedding_type": "yarn",
+            "position_embedding_type": args.position_embedding_type,
             "yarn_rotary_scaling_factor": args.yarn_rotary_scaling_factor,
             "yarn_original_max_position_embeddings": args.yarn_original_max_position_embeddings,
             "yarn_beta_fast": args.yarn_beta_fast,
@@ -264,7 +318,9 @@ def _hf_values(config: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def validate_hf_config(path: Path, profile: str = "auto") -> tuple[str, dict[str, Any]]:
+def validate_hf_config(
+    path: Path, profile: str = "auto", context_phase: str = "auto"
+) -> tuple[str, dict[str, Any]]:
     config_path = path / "config.json" if path.is_dir() else path
     with config_path.open(encoding="utf-8") as handle:
         config = json.load(handle)
@@ -276,8 +332,6 @@ def validate_hf_config(path: Path, profile: str = "auto") -> tuple[str, dict[str
 
     expected = {
         "architectures": ["ChimeraForCausalLM"],
-        "max_position_embeddings": 8192,
-        "original_max_position_embeddings": 8192,
         "rms_norm_eps": 1e-5,
         "qk_layernorm": True,
         "n_shared_experts": 0,
@@ -303,8 +357,6 @@ def validate_hf_config(path: Path, profile: str = "auto") -> tuple[str, dict[str
 
     rope = config.get("rope_scaling") or {}
     rope_expected = {
-        "factor": 1.0,
-        "original_max_position_embeddings": 8192,
         "beta_fast": 32.0,
         "beta_slow": 1.0,
         "mscale": 1.0,
@@ -312,8 +364,25 @@ def validate_hf_config(path: Path, profile: str = "auto") -> tuple[str, dict[str
     }
     for key, value in rope_expected.items():
         _require(rope.get(key), value, f"rope_scaling.{key}", errors)
-    if rope.get("type", rope.get("rope_type")) != "yarn":
-        errors.append("rope_scaling.type: expected 'yarn'")
+    rope_type = rope.get("rope_type", rope.get("type"))
+    _validate_context_geometry(
+        position_embedding_type=rope_type,
+        max_position_embeddings=config.get("max_position_embeddings"),
+        rotary_scaling_factor=rope.get("factor"),
+        original_max_position_embeddings=rope.get(
+            "original_max_position_embeddings",
+            config.get("original_max_position_embeddings"),
+        ),
+        requested_phase=context_phase,
+        prefix="rope_scaling",
+        errors=errors,
+    )
+    _require(
+        config.get("original_max_position_embeddings"),
+        YARN_ORIGINAL_MAX_POSITION_EMBEDDINGS,
+        "original_max_position_embeddings",
+        errors,
+    )
 
     if errors:
         raise ValueError(
@@ -322,7 +391,9 @@ def validate_hf_config(path: Path, profile: str = "auto") -> tuple[str, dict[str
     return profile_name, config
 
 
-def validate_run_config(path: Path, profile: str = "auto") -> str:
+def validate_run_config(
+    path: Path, profile: str = "auto", context_phase: str = "auto"
+) -> str:
     import yaml
 
     config_path = path / "run_config.yaml" if path.is_dir() else path
@@ -336,7 +407,6 @@ def validate_run_config(path: Path, profile: str = "auto") -> str:
         _require(values[key], expected, f"model.{key}", errors)
     expected = {
         "_target_": "megatron.bridge.models.chimera.chimera_bridge.ChimeraModelProvider",
-        "seq_length": 8192,
         "vocab_size": 50176,
         "layernorm_epsilon": 1e-5,
         "qk_layernorm": True,
@@ -351,13 +421,28 @@ def validate_run_config(path: Path, profile: str = "auto") -> str:
         "moe_qb_num_bins": 1000,
         "moe_qb_ema_decay": 0.0,
         "rotary_base": 10_000_000,
-        "yarn_rotary_scaling_factor": 1.0,
-        "yarn_original_max_position_embeddings": 8192,
         "yarn_mscale": 1.0,
         "yarn_mscale_all_dim": 0.0,
     }
     for key, value in expected.items():
         _require(model.get(key), value, f"model.{key}", errors)
+    _validate_context_geometry(
+        position_embedding_type=model.get("position_embedding_type"),
+        max_position_embeddings=model.get("seq_length"),
+        rotary_scaling_factor=model.get("yarn_rotary_scaling_factor"),
+        original_max_position_embeddings=model.get(
+            "yarn_original_max_position_embeddings"
+        ),
+        requested_phase=context_phase,
+        prefix="model",
+        errors=errors,
+    )
+    _require(
+        model.get("rotary_scaling_factor"),
+        model.get("yarn_rotary_scaling_factor"),
+        "model.rotary_scaling_factor",
+        errors,
+    )
     if model.get("chimera_load_with_bias") not in (True, False):
         errors.append("model.chimera_load_with_bias: must be an explicit boolean")
     if model.get("moe_router_load_balancing_type") not in (
@@ -797,7 +882,10 @@ def validate_repo_scripts(path: Path) -> int:
             "--moe-router-bias-update-rate 0.0",
             "--moe-router-topk-scaling-factor 2.5",
             "--moe-z-loss-coeff 0.001",
-            "--max-position-embeddings 8192",
+            'source "$SCRIPT_DIR/context_phase.sh"',
+            '--max-position-embeddings "$MAX_POSITION_EMBEDDINGS"',
+            '--rotary-scaling-factor "$ROTARY_SCALING_FACTOR"',
+            '--yarn-original-max-position-embeddings "$YARN_ORIGINAL_MAX_POSITION_EMBEDDINGS"',
         ],
         "train_440B.sh": [
             "--num-layers 25",
@@ -814,7 +902,10 @@ def validate_repo_scripts(path: Path) -> int:
             "--moe-router-bias-update-rate 0.0",
             "--moe-router-topk-scaling-factor 2.5",
             "--moe-z-loss-coeff 0.001",
-            "--max-position-embeddings 8192",
+            'source "$SCRIPT_DIR/context_phase.sh"',
+            '--max-position-embeddings "$MAX_POSITION_EMBEDDINGS"',
+            '--rotary-scaling-factor "$ROTARY_SCALING_FACTOR"',
+            '--yarn-original-max-position-embeddings "$YARN_ORIGINAL_MAX_POSITION_EMBEDDINGS"',
         ],
         "tiny_chimera.sh": [
             "--norm-epsilon 1e-5",
@@ -828,7 +919,10 @@ def validate_repo_scripts(path: Path) -> int:
             "MOE_ROUTER_BIAS_UPDATE_RATE:-0.0",
             "--moe-router-topk-scaling-factor 2.5",
             "MOE_Z_LOSS_COEFF:-0.001",
-            "MAX_POSITION_EMBEDDINGS:-8192",
+            'source "$SCRIPT_DIR/context_phase.sh"',
+            '--max-position-embeddings "$MAX_POSITION_EMBEDDINGS"',
+            '--rotary-scaling-factor "$ROTARY_SCALING_FACTOR"',
+            '--yarn-original-max-position-embeddings "$YARN_ORIGINAL_MAX_POSITION_EMBEDDINGS"',
         ],
         "sft.sh": [
             "--norm-epsilon 1e-5",
@@ -841,7 +935,12 @@ def validate_repo_scripts(path: Path) -> int:
             "MOE_ROUTER_BIAS_UPDATE_RATE:-0.0",
             "--moe-router-topk-scaling-factor 2.5",
             "--moe-z-loss-coeff 0.001",
-            "MAX_POSITION_EMBEDDINGS:-8192",
+            'source "$SCRIPT_DIR/context_phase.sh"',
+            '--max-position-embeddings "$MAX_POSITION_EMBEDDINGS"',
+            '--rotary-scaling-factor "$ROTARY_SCALING_FACTOR"',
+            '--yarn-original-max-position-embeddings "$YARN_ORIGINAL_MAX_POSITION_EMBEDDINGS"',
+            "--calculate-per-token-loss",
+            'OPTIMIZER="${OPTIMIZER:-adam}"',
         ],
         "simpo.sh": [
             "--norm-epsilon 1e-5",
@@ -854,7 +953,20 @@ def validate_repo_scripts(path: Path) -> int:
             "MOE_ROUTER_BIAS_UPDATE_RATE:-0.0",
             "--moe-router-topk-scaling-factor 2.5",
             "--moe-z-loss-coeff 0.001",
-            "MAX_POSITION_EMBEDDINGS:-8192",
+            'source "$SCRIPT_DIR/context_phase.sh"',
+            '--max-position-embeddings "$MAX_POSITION_EMBEDDINGS"',
+            '--rotary-scaling-factor "$ROTARY_SCALING_FACTOR"',
+            '--yarn-original-max-position-embeddings "$YARN_ORIGINAL_MAX_POSITION_EMBEDDINGS"',
+            'OPTIMIZER="${OPTIMIZER:-adam}"',
+        ],
+        "context_extend.sh": [
+            'source "$SCRIPT_DIR/context_phase.sh"',
+            "PREVIOUS_CONTEXT_PHASE=8k",
+            "PREVIOUS_CONTEXT_PHASE=32k",
+            "PREVIOUS_CONTEXT_PHASE=64k",
+            "CHIMERA_CONTEXT_EXTENSION=true",
+            "LR_DECAY_STYLE=\"${LR_DECAY_STYLE:-cosine}\"",
+            '--context-phase "$PREVIOUS_CONTEXT_PHASE"',
         ],
     }
     forbidden = [
@@ -863,8 +975,8 @@ def validate_repo_scripts(path: Path) -> int:
         "--moe-shared-expert-intermediate-size",
         "--moe-shared-expert-overlap",
         "seq_aux_loss",
-        "--max-position-embeddings 32768",
-        "--rotary-scaling-factor 4.0",
+        "--max-position-embeddings 8192",
+        "--rotary-scaling-factor 1.0",
     ]
     errors: list[str] = []
     for filename, tokens in required.items():
@@ -898,12 +1010,18 @@ def main() -> int:
     hf_parser.add_argument(
         "--profile", choices=["auto", "full", "tiny"], default="auto"
     )
+    hf_parser.add_argument(
+        "--context-phase", choices=["auto", *CONTEXT_PHASES], default="auto"
+    )
     hf_parser.add_argument("--weights", action="store_true")
 
     run_parser = subparsers.add_parser("validate-run-config")
     run_parser.add_argument("path", type=Path)
     run_parser.add_argument(
         "--profile", choices=["auto", "full", "tiny"], default="auto"
+    )
+    run_parser.add_argument(
+        "--context-phase", choices=["auto", *CONTEXT_PHASES], default="auto"
     )
 
     compare_parser = subparsers.add_parser("compare-hf")
@@ -928,14 +1046,16 @@ def main() -> int:
 
     args = parser.parse_args()
     if args.command == "validate-hf":
-        profile, config = validate_hf_config(args.path, args.profile)
+        profile, config = validate_hf_config(
+            args.path, args.profile, args.context_phase
+        )
         count = validate_hf_weights(args.path, config) if args.weights else None
         print(
             f"Validated HF Chimera profile={profile}"
             + (f" tensors={count}" if count is not None else "")
         )
     elif args.command == "validate-run-config":
-        profile = validate_run_config(args.path, args.profile)
+        profile = validate_run_config(args.path, args.profile, args.context_phase)
         print(f"Validated MCore Chimera profile={profile}")
     elif args.command == "compare-hf":
         count = compare_hf_weights(args.expected, args.actual, args.report)

@@ -429,7 +429,7 @@ model:
   rotary_base: 10000000.0
   rotary_interleaved: false
   rotary_percent: 1.0
-  rotary_scaling_factor: null
+  rotary_scaling_factor: 1.0
   scatter_embedding_sequence_parallel: true
   seq_len_interpolation_factor: null
   seq_length: 8192

@@ -17,25 +17,32 @@ from pathlib import Path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
 import torch
+from architecture_contract import validate_training_args, write_runtime_run_config
 
 from gpt_builders import gpt_builder
-from architecture_contract import validate_training_args, write_runtime_run_config
 from megatron.core.datasets.blended_megatron_dataset_builder import BlendedMegatronDatasetBuilder
 from megatron.core.enums import ModelType
 from megatron.core.utils import get_attr_wrapped_model
 from megatron.post_training.simpo_utils import calculate_simpo_loss
-from megatron.training import get_args, get_timers, inprocess_restart, pretrain, print_rank_0, set_startup_timestamps
+from megatron.training import (
+    get_args,
+    get_timers,
+    inprocess_restart,
+    pretrain,
+    print_rank_0,
+    set_startup_timestamps,
+)
 from megatron.training.argument_utils import pretrain_cfg_container_from_args
 from megatron.training.arguments import core_transformer_config_from_args, parse_and_validate_args
 from megatron.training.datasets.simpo_dataset import SimPODataset
 from model_provider import model_provider
 from pretrain_gpt import (
     _PROGRAM_START_TIME,
+    core_gpt_dataset_config_from_args,
     forward_step,
     get_batch,
     get_embedding_ranks,
     is_dataset_built_on_rank,
-    core_gpt_dataset_config_from_args,
     stimer,
     train_valid_test_datasets_provider,
 )
@@ -97,6 +104,13 @@ def add_chimera_args(parser):
             type=int,
             default=1,
             help="Expert tensor parallel size. Keep at 1 unless explicitly testing expert tensor parallelism.",
+        )
+    if "--yarn-original-max-position-embeddings" not in parser._option_string_actions:
+        group.add_argument(
+            "--yarn-original-max-position-embeddings",
+            type=int,
+            default=None,
+            help="Original context length retained across every Chimera YaRN extension phase.",
         )
     return parser
 

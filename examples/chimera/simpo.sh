@@ -20,7 +20,9 @@ EP_SIZE="${EP_SIZE:-1}"
 CP_SIZE="${CP_SIZE:-1}"
 
 # Training settings.
+CONTEXT_PHASE="${CONTEXT_PHASE:-128k}"
 SEQ_LENGTH="${SEQ_LENGTH:-8192}"
+source "$SCRIPT_DIR/context_phase.sh"
 MICRO_BATCH_SIZE="${MICRO_BATCH_SIZE:-1}"
 GLOBAL_BATCH_SIZE="${GLOBAL_BATCH_SIZE:-32}"
 TRAIN_EPOCHS="${TRAIN_EPOCHS:-1}"
@@ -34,7 +36,7 @@ EVAL_ITERS="${EVAL_ITERS:-0}"
 SAVE_WEIGHTS_ONLY="${SAVE_WEIGHTS_ONLY:-false}"
 PACK_SAMPLES="${PACK_SAMPLES:-true}"
 PACK_METADATA_PATH="${PACK_METADATA_PATH:-${DATA_PATH}.chimera_simpo_packing}"
-OPTIMIZER="${OPTIMIZER:-muon}"
+OPTIMIZER="${OPTIMIZER:-adam}"
 MUON_NUM_NS_STEPS="${MUON_NUM_NS_STEPS:-6}"
 FUSED_LINEAR_CROSS_ENTROPY="${FUSED_LINEAR_CROSS_ENTROPY:-true}"
 
@@ -62,7 +64,8 @@ if [[ -d "$MCORE_PATH" ]]; then
     [[ -n "$SOURCE_RUN_CONFIG" && -f "$SOURCE_RUN_CONFIG" ]] || {
         echo "Missing checkpoint run_config.yaml under $MCORE_PATH"; exit 1;
     }
-    python3 "$SCRIPT_DIR/architecture_contract.py" validate-run-config "$SOURCE_RUN_CONFIG" --profile full
+    python3 "$SCRIPT_DIR/architecture_contract.py" validate-run-config "$SOURCE_RUN_CONFIG" \
+        --profile full --context-phase "$CONTEXT_PHASE"
 fi
 
 read -r DATASET_SAMPLES < <(wc -l < "$DATA_PATH")
@@ -126,11 +129,12 @@ MODEL_ARGS=(
     --num-query-groups "$NUM_QUERY_GROUPS"
     --kv-channels "$KV_CHANNELS"
     --seq-length "$SEQ_LENGTH"
-    --max-position-embeddings "${MAX_POSITION_EMBEDDINGS:-8192}"
-    --position-embedding-type yarn
+    --max-position-embeddings "$MAX_POSITION_EMBEDDINGS"
+    --position-embedding-type "$POSITION_EMBEDDING_TYPE"
     --rotary-base 10000000
     --rotary-percent 1.0
-    --rotary-scaling-factor "${ROTARY_SCALING_FACTOR:-1.0}"
+    --rotary-scaling-factor "$ROTARY_SCALING_FACTOR"
+    --yarn-original-max-position-embeddings "$YARN_ORIGINAL_MAX_POSITION_EMBEDDINGS"
     --mscale 1.0
     --mscale-all-dim 0.0
     --normalization RMSNorm
@@ -279,6 +283,12 @@ TRAIN_EPOCHS=${TRAIN_EPOCHS}
 TRAIN_ITERS=${TRAIN_ITERS}
 MICRO_BATCH_SIZE=${MICRO_BATCH_SIZE}
 GLOBAL_BATCH_SIZE=${GLOBAL_BATCH_SIZE}
+SEQ_LENGTH=${SEQ_LENGTH}
+CONTEXT_PHASE=${CONTEXT_PHASE}
+POSITION_EMBEDDING_TYPE=${POSITION_EMBEDDING_TYPE}
+MAX_POSITION_EMBEDDINGS=${MAX_POSITION_EMBEDDINGS}
+ROTARY_SCALING_FACTOR=${ROTARY_SCALING_FACTOR}
+YARN_ORIGINAL_MAX_POSITION_EMBEDDINGS=${YARN_ORIGINAL_MAX_POSITION_EMBEDDINGS}
 EOF
 
     cp "$0" "${RUN_DIR}/simpo.sh"
@@ -293,6 +303,7 @@ echo "  Parallelism:      TP=$TP_SIZE PP=$PP_SIZE EP=$EP_SIZE ETP=1 CP=$CP_SIZE"
 echo "  Architecture:     layers=25 moe_layer_freq=[0]*2+[1]*23 hidden=2048 ffn=8192 experts=32 topk=4 expert_ffn=2048 shared=0 qk_norm=true"
 echo "  Router:           ${MOE_ROUTER_LOAD_BALANCING_TYPE:-none} bins=${MOE_QB_NUM_BINS:-1000} ema=${MOE_QB_EMA_DECAY:-0.0} aux=${MOE_AUX_LOSS_COEFF:-0.0} bias_rate=${MOE_ROUTER_BIAS_UPDATE_RATE:-0.0} scale=2.5 z_loss=0.001"
 echo "  Data schedule:    rows=$DATASET_SAMPLES samples=$SCHEDULE_SAMPLES epochs=$TRAIN_EPOCHS iters=$TRAIN_ITERS"
+echo "  Context/YaRN:     phase=$CONTEXT_PHASE max=$MAX_POSITION_EMBEDDINGS factor=$ROTARY_SCALING_FACTOR original=$YARN_ORIGINAL_MAX_POSITION_EMBEDDINGS"
 echo "  Seq/batch:        seq=$SEQ_LENGTH micro=$MICRO_BATCH_SIZE global=$GLOBAL_BATCH_SIZE"
 echo "  Optimizer:        type=$OPTIMIZER lr=$LR min_lr=$MIN_LR warmup=$LR_WARMUP_ITERS wd=0"
 echo "  SimPO:            beta=$SIMPO_BETA gamma=$SIMPO_GAMMA loss=$SIMPO_LOSS_TYPE sft_weight=$SIMPO_SFT_WEIGHT"

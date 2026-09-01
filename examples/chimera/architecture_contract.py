@@ -241,11 +241,26 @@ def write_runtime_run_config(args: Any, template: Path) -> Path | None:
     with template.open(encoding="utf-8") as handle:
         config = yaml.safe_load(handle)
 
+    phase_errors: list[str] = []
+    context_phase = _validate_context_geometry(
+        position_embedding_type=args.position_embedding_type,
+        max_position_embeddings=args.max_position_embeddings,
+        rotary_scaling_factor=args.rotary_scaling_factor,
+        original_max_position_embeddings=args.yarn_original_max_position_embeddings,
+        errors=phase_errors,
+    )
+    if phase_errors or context_phase is None:
+        raise ValueError(
+            "Cannot serialize invalid Chimera context geometry:\n- "
+            + "\n- ".join(phase_errors)
+        )
+
     model = config["model"]
     model.update(
         {
             "_target_": "megatron.bridge.models.chimera.chimera_bridge.ChimeraModelProvider",
             "chimera_load_with_bias": True,
+            "chimera_context_phase": context_phase,
             "num_layers": args.num_layers,
             "hidden_size": args.hidden_size,
             "ffn_hidden_size": args.ffn_hidden_size,
@@ -280,6 +295,7 @@ def write_runtime_run_config(args: Any, template: Path) -> Path | None:
             "yarn_beta_slow": args.yarn_beta_slow,
             "yarn_mscale": args.yarn_mscale,
             "yarn_mscale_all_dim": args.yarn_mscale_all_dim,
+            "yarn_correction_range_round_to_int": args.yarn_correction_range_round_to_int,
             "tensor_model_parallel_size": args.tensor_model_parallel_size,
             "pipeline_model_parallel_size": args.pipeline_model_parallel_size,
             "expert_model_parallel_size": args.expert_model_parallel_size,
@@ -364,8 +380,9 @@ def validate_hf_config(
     }
     for key, value in rope_expected.items():
         _require(rope.get(key), value, f"rope_scaling.{key}", errors)
+    _require(rope.get("truncate"), False, "rope_scaling.truncate", errors)
     rope_type = rope.get("rope_type", rope.get("type"))
-    _validate_context_geometry(
+    matched_phase = _validate_context_geometry(
         position_embedding_type=rope_type,
         max_position_embeddings=config.get("max_position_embeddings"),
         rotary_scaling_factor=rope.get("factor"),
@@ -376,6 +393,13 @@ def validate_hf_config(
         requested_phase=context_phase,
         prefix="rope_scaling",
         errors=errors,
+    )
+    _require(config.get("context_phase"), matched_phase, "context_phase", errors)
+    _require(
+        config.get("position_embedding_type"),
+        "yarn",
+        "position_embedding_type",
+        errors,
     )
     _require(
         config.get("original_max_position_embeddings"),
@@ -423,10 +447,11 @@ def validate_run_config(
         "rotary_base": 10_000_000,
         "yarn_mscale": 1.0,
         "yarn_mscale_all_dim": 0.0,
+        "yarn_correction_range_round_to_int": False,
     }
     for key, value in expected.items():
         _require(model.get(key), value, f"model.{key}", errors)
-    _validate_context_geometry(
+    matched_phase = _validate_context_geometry(
         position_embedding_type=model.get("position_embedding_type"),
         max_position_embeddings=model.get("seq_length"),
         rotary_scaling_factor=model.get("yarn_rotary_scaling_factor"),
@@ -436,6 +461,12 @@ def validate_run_config(
         requested_phase=context_phase,
         prefix="model",
         errors=errors,
+    )
+    _require(
+        model.get("chimera_context_phase"),
+        matched_phase,
+        "model.chimera_context_phase",
+        errors,
     )
     _require(
         model.get("rotary_scaling_factor"),

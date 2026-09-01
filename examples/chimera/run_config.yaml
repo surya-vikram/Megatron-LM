@@ -228,6 +228,7 @@ model:
   heterogeneous_block_specs: false
   hf_model_id: chimera
   chimera_load_with_bias: true
+  chimera_context_phase: 8k
   hidden_dropout: 0.0
   hidden_size: 2048
   hierarchical_context_parallel_sizes: null

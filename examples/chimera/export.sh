@@ -7,7 +7,6 @@ HF_PATH="/datasets/megadata/hf_exports/chimera-overfit-hf"
 BRIDGE_PATH="/workspace/repos/Megatron-Bridge"
 PYTHON_BIN=""
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-RUN_CONFIG_SOURCE=""
 LOAD_WITH_BIAS=""
 
 usage() {
@@ -19,7 +18,6 @@ Options:
   --mcore-path PATH     Trained Megatron-Core checkpoint root or iteration directory.
   --hf-path PATH        Output HF model directory.
   --bridge-path PATH    Megatron-Bridge repository path.
-  --run-config PATH     Explicit fallback run_config.yaml for a legacy checkpoint.
   --load-with-bias      Export config applies the frozen router correction bias.
   --no-load-with-bias   Export config bypasses the frozen bias but preserves its tensor.
   --python PATH         Python executable.
@@ -32,7 +30,6 @@ while [[ $# -gt 0 ]]; do
         --mcore-path) MCORE_PATH="$2"; shift 2 ;;
         --hf-path) HF_PATH="$2"; shift 2 ;;
         --bridge-path) BRIDGE_PATH="$2"; shift 2 ;;
-        --run-config) RUN_CONFIG_SOURCE="$2"; shift 2 ;;
         --load-with-bias) LOAD_WITH_BIAS="true"; shift ;;
         --no-load-with-bias) LOAD_WITH_BIAS="false"; shift ;;
         --python) PYTHON_BIN="$2"; shift 2 ;;
@@ -64,34 +61,33 @@ else
     CHECKPOINT_ITER=$(find "$CHECKPOINT_ROOT" -maxdepth 1 -type d -name 'iter_*' | sort -V | tail -n 1)
 fi
 
-if [[ ! -f "$CHECKPOINT_ROOT/run_config.yaml" ]]; then
-    if [[ -n "$CHECKPOINT_ITER" && -f "$CHECKPOINT_ITER/run_config.yaml" ]]; then
-        "$PYTHON_BIN" "$SCRIPT_DIR/architecture_contract.py" validate-run-config "$CHECKPOINT_ITER/run_config.yaml"
-        cp "$CHECKPOINT_ITER/run_config.yaml" "$CHECKPOINT_ROOT/run_config.yaml"
-    else
-        [[ -n "$RUN_CONFIG_SOURCE" && -f "$RUN_CONFIG_SOURCE" ]] || {
-            echo "Missing checkpoint-generated run_config.yaml under $CHECKPOINT_ROOT." >&2
-            echo "For a reviewed legacy checkpoint only, pass --run-config PATH explicitly." >&2
-            exit 1
-        }
-        "$PYTHON_BIN" "$SCRIPT_DIR/architecture_contract.py" validate-run-config "$RUN_CONFIG_SOURCE"
-        cp "$RUN_CONFIG_SOURCE" "$CHECKPOINT_ROOT/run_config.yaml"
-    fi
-fi
-"$PYTHON_BIN" "$SCRIPT_DIR/architecture_contract.py" validate-run-config "$CHECKPOINT_ROOT/run_config.yaml"
-echo "Using Bridge run config: $CHECKPOINT_ROOT/run_config.yaml"
+[[ -n "$CHECKPOINT_ITER" ]] || {
+    echo "No iter_* checkpoint directory found under $CHECKPOINT_ROOT." >&2
+    exit 1
+}
 
-if [[ -n "$CHECKPOINT_ITER" && ! -f "$CHECKPOINT_ITER/run_config.yaml" ]]; then
-    cp "$CHECKPOINT_ROOT/run_config.yaml" "$CHECKPOINT_ITER/run_config.yaml"
+ITER_RUN_CONFIG="$CHECKPOINT_ITER/run_config.yaml"
+ROOT_RUN_CONFIG="$CHECKPOINT_ROOT/run_config.yaml"
+[[ -f "$ITER_RUN_CONFIG" || -f "$ROOT_RUN_CONFIG" ]] || {
+    echo "Missing checkpoint-generated run_config.yaml for selected iteration: $CHECKPOINT_ITER" >&2
+    exit 1
+}
+
+if [[ -f "$ITER_RUN_CONFIG" ]]; then
+    "$PYTHON_BIN" "$SCRIPT_DIR/architecture_contract.py" validate-run-config "$ITER_RUN_CONFIG"
+    RUN_CONFIG="$ITER_RUN_CONFIG"
+else
+    "$PYTHON_BIN" "$SCRIPT_DIR/architecture_contract.py" validate-run-config "$ROOT_RUN_CONFIG"
+    RUN_CONFIG="$ROOT_RUN_CONFIG"
 fi
-if [[ -n "$CHECKPOINT_ITER" ]]; then
-    "$PYTHON_BIN" "$SCRIPT_DIR/architecture_contract.py" validate-run-config "$CHECKPOINT_ITER/run_config.yaml"
-    cmp -s "$CHECKPOINT_ROOT/run_config.yaml" "$CHECKPOINT_ITER/run_config.yaml" || {
+if [[ -f "$ITER_RUN_CONFIG" && -f "$ROOT_RUN_CONFIG" ]]; then
+    "$PYTHON_BIN" "$SCRIPT_DIR/architecture_contract.py" validate-run-config "$ROOT_RUN_CONFIG"
+    cmp -s "$ROOT_RUN_CONFIG" "$ITER_RUN_CONFIG" || {
         echo "Checkpoint root and iteration run_config.yaml files differ." >&2
         exit 1
     }
-    echo "Using Bridge run config: $CHECKPOINT_ITER/run_config.yaml"
 fi
+echo "Using checkpoint-generated run config: $RUN_CONFIG"
 
 mkdir -p "$(dirname "$HF_PATH")"
 
@@ -99,7 +95,7 @@ export PYTHONPATH="$BRIDGE_PATH/src:${PYTHONPATH:-}"
 
 "$PYTHON_BIN" "$BRIDGE_PATH/examples/conversion/convert_checkpoints.py" export \
     --hf-model "$HF_REFERENCE" \
-    --megatron-path "$MCORE_PATH" \
+    --megatron-path "$CHECKPOINT_ITER" \
     --hf-path "$HF_PATH" \
     --trust-remote-code
 

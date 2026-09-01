@@ -231,8 +231,15 @@ RUNS_ROOT="$DATA_ROOT/sft_128k_runs" \
 bash examples/chimera/sft.sh
 ```
 
-Export every intermediate or final checkpoint using its saved `run_config.yaml`. The
-Bridge preserves the phase metadata in both directions; do not edit `config.json` by hand.
+Export every intermediate or final checkpoint using its checkpoint-generated
+`run_config.yaml`. HF imports store it in `iter_0000000`; training stores the effective
+runtime config at the checkpoint root. `export.sh` accepts either the checkpoint root or
+an `iter_*` directory, prefers an iteration-local config when present, and otherwise reads
+the root config without copying or modifying it. If both exist, they must be identical.
+The same 8K HF reference may be used when exporting an extended checkpoint: the saved
+checkpoint config supplies the current YaRN phase and overrides stale reference geometry.
+Do not copy the repository's static `run_config.yaml` into a checkpoint or edit
+`config.json` by hand.
 
 ## 2. Create HF Artifacts
 
@@ -492,12 +499,20 @@ must remain clean afterward.
 export HF_PRETRAIN=$DATA_ROOT/hf_pretrain
 rm -rf "$HF_PRETRAIN"
 
+# Pass the checkpoint root. export.sh selects its latest iter_* directory and reads
+# PRETRAIN_CHECKPOINT/run_config.yaml when the iteration has no local config.
+test -f "$PRETRAIN_CHECKPOINT/run_config.yaml"
+
 bash examples/chimera/export.sh \
   --hf-reference "$HF_REFERENCE" \
   --mcore-path "$PRETRAIN_CHECKPOINT" \
   --hf-path "$HF_PRETRAIN" \
   --bridge-path "$MEGATRON_BRIDGE" \
   --python "$PYTHON"
+
+# export.sh already performs the weighted HF contract validation. This explicit check
+# makes the expected phase visible in a manual workflow.
+$PYTHON examples/chimera/architecture_contract.py validate-hf "$HF_PRETRAIN" --weights
 
 $PYTHON examples/chimera/verify_pretrain.py \
   --hf-model "$HF_PRETRAIN" \

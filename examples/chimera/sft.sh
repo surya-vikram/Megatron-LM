@@ -8,6 +8,12 @@ VALID_DATA_PATH="${VALID_DATA_PATH:-}"
 TOKENIZER_MODEL="${TOKENIZER_MODEL:-/datasets/megadata/hf_models/chimera-10b}"
 MCORE_PATH="${MCORE_PATH:-/datasets/megadata/chimera_runs/pretrain/checkpoints}"
 RUNS_ROOT="${RUNS_ROOT:-/datasets/megadata/chimera_sft_runs}"
+INTRA_DOC_MASKING="${INTRA_DOC_MASKING:-false}"
+
+[[ "$INTRA_DOC_MASKING" == false ]] || {
+    echo "SFT requires INTRA_DOC_MASKING=false; packed samples are isolated by cu_seqlens." >&2
+    exit 1
+}
 
 # Distributed launch settings.
 GPUS_PER_NODE="${GPUS_PER_NODE:-$(nvidia-smi -L | wc -l)}"
@@ -341,6 +347,7 @@ echo "  Context/YaRN:     phase=$CONTEXT_PHASE max=$MAX_POSITION_EMBEDDINGS fact
 echo "  Seq/batch:        seq=$SEQ_LENGTH micro=$MICRO_BATCH_SIZE global=$GLOBAL_BATCH_SIZE"
 echo "  Optimizer:        type=$OPTIMIZER lr=$LR min_lr=$MIN_LR warmup=$LR_WARMUP_ITERS wd=$WEIGHT_DECAY params=$MAIN_PARAMS_DTYPE grads=$MAIN_GRADS_DTYPE moments=$EXP_AVG_DTYPE,$EXP_AVG_SQ_DTYPE"
 echo "  Packing:          $PACK_SAMPLES"
+echo "  Intra-doc mask:   false (sample isolation uses packed-sequence boundaries)"
 
 exec python3 -m torch.distributed.run "${DISTRIBUTED_ARGS[@]}" \
     examples/chimera/pretrain_chimera.py \

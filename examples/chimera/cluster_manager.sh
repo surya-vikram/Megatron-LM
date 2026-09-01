@@ -342,6 +342,7 @@ Parallelism:        TP=$TP_SIZE PP=$PP_SIZE EP=$EP_SIZE CP=$CP_SIZE DP=$dp_size
 Batch:              micro=$MICRO_BATCH_SIZE global=${GLOBAL_BATCH_SIZE:-unset}
 Context:            phase=$CONTEXT_PHASE sequence=$SEQ_LENGTH
 Duration:           tokens=${TRAIN_TOKENS:-unset} iters=${TRAIN_ITERS:-packing-derived} epochs=$TRAIN_EPOCHS
+Validation:         ${VALID_DATA_PATH:-disabled}
 LR schedule:        style=$LR_DECAY_STYLE lr=$LR min=${MIN_LR:-ratio:$MIN_LR_RATIO} warmup=${LR_WARMUP_ITERS:-fraction:$LR_WARMUP_FRACTION}
 Intervals:          log=$LOG_INTERVAL save=${SAVE_INTERVAL:-fraction:$SAVE_INTERVAL_FRACTION} eval=${EVAL_INTERVAL:-fraction:$EVAL_INTERVAL_FRACTION}x$EVAL_ITERS
 Optimizer:          $OPTIMIZER (state/grads: $MAIN_GRADS_DTYPE/$EXP_AVG_DTYPE/$EXP_AVG_SQ_DTYPE)

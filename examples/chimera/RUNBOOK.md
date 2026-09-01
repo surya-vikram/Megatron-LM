@@ -103,6 +103,12 @@ from `TRAIN_TOKENS` for pretraining/context extension or from packed samples and
 `TRAIN_EPOCHS` for SFT/SimPO. Likewise, blank save/eval iteration values are
 derived from their configured fractions.
 
+`VALID_DATA_PATH` is optional in every stage. Leave it blank to disable
+validation completely; for packed SFT/SimPO this also disables generation and
+loading of validation packing metadata. When a validation path is provided,
+Megatron logs validation metrics to the run log and TensorBoard at the configured
+`EVAL_INTERVAL` for `EVAL_ITERS` batches.
+
 The manager does not clone, pull, or modify repositories. It does not source
 the image's malformed `/workspace/load_env.sh`; it explicitly selects
 `/workspace/venv` and the three mounted source trees. SFT always starts from a

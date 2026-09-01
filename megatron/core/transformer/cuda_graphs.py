@@ -1730,6 +1730,37 @@ def _layer_is_graphable(layer, config):
     return False
 
 
+def _get_rotary_pos_emb_for_cuda_graph(
+    transformer_module, transformer_input, config, rotary_pos_emb_cache
+):
+    """Build the rotary input used while capturing an attention CUDA graph."""
+    position_embedding_type = transformer_module.position_embedding_type
+    if position_embedding_type not in ('rope', 'yarn') or config.multi_latent_attention:
+        return None
+
+    rotary_seq_len = transformer_module.rotary_pos_emb.get_rotary_seq_len(
+        None, transformer_module.decoder, transformer_input, config, None
+    )
+    cache_key = (position_embedding_type, rotary_seq_len)
+    if cache_key not in rotary_pos_emb_cache:
+        rotary_output = transformer_module.rotary_pos_emb(rotary_seq_len)
+        if position_embedding_type == 'yarn':
+            if not isinstance(rotary_output, tuple) or len(rotary_output) != 2:
+                raise RuntimeError(
+                    'YaRN rotary embedding must return (rotary_pos_emb, mscale) during '
+                    'Transformer Engine CUDA graph capture.'
+                )
+            rotary_output, _ = rotary_output
+        rotary_pos_emb_cache[cache_key] = rotary_output
+
+    rotary_pos_emb = rotary_pos_emb_cache[cache_key]
+    if position_embedding_type == 'yarn' and rotary_pos_emb is None:
+        raise RuntimeError(
+            'Transformer Engine CUDA graph capture cannot omit YaRN rotary embeddings.'
+        )
+    return rotary_pos_emb
+
+
 class TECudaGraphHelper:
     """
     Helper class to capture CUDA Graphs using TE make_graphed_callables().
@@ -1948,22 +1979,6 @@ class TECudaGraphHelper:
                 layer is mtp_layer.mtp_model_layer for mtp_layer in chunk_of_the_layer.mtp.layers
             ), "Layer is not in the chunk"
 
-            def get_rotary_pos_emb(transformer_module, transformer_input):
-                if (
-                    transformer_module.position_embedding_type == 'rope'
-                    and not self.config.multi_latent_attention
-                ):
-                    rotary_seq_len = transformer_module.rotary_pos_emb.get_rotary_seq_len(
-                        None, transformer_module.decoder, transformer_input, self.config, None
-                    )
-                    if rotary_seq_len not in rotary_pos_emb_cache:
-                        rotary_pos_emb_cache[rotary_seq_len] = transformer_module.rotary_pos_emb(
-                            rotary_seq_len
-                        )
-                    return rotary_pos_emb_cache[rotary_seq_len]
-                else:
-                    return None
-
             static_inputs = layer.get_layer_static_inputs(self.seq_length, self.micro_batch_size)
 
             from megatron.core.transformer.identity_op import IdentityOp
@@ -1984,7 +1999,12 @@ class TECudaGraphHelper:
                 hidden_states = static_inputs.pop("hidden_states")
                 _sample_args = (hidden_states,)
                 if contains_self_attn:
-                    rotary_pos_emb = get_rotary_pos_emb(chunk_of_the_layer, hidden_states)
+                    rotary_pos_emb = _get_rotary_pos_emb_for_cuda_graph(
+                        chunk_of_the_layer,
+                        hidden_states,
+                        self.config,
+                        rotary_pos_emb_cache,
+                    )
                     if rotary_pos_emb is not None:
                         static_inputs["rotary_pos_emb"] = rotary_pos_emb
                 _sample_kwargs = static_inputs

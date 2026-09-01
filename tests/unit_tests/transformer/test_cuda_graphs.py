@@ -34,6 +34,7 @@ from megatron.core.transformer.cuda_graphs import (
     CudaGraphManager,
     TECudaGraphHelper,
     _CudagraphGlobalRecord,
+    _get_rotary_pos_emb_for_cuda_graph,
 )
 from megatron.core.transformer.enums import CudaGraphModule, CudaGraphScope, InferenceCudaGraphScope
 from megatron.core.transformer.mlp import MLPSubmodules
@@ -58,8 +59,66 @@ from tests.unit_tests.test_utilities import Utils
 fp8_available, _ = check_fp8_support()
 
 
+class _TestRotaryEmbedding:
+    def __init__(self, output):
+        self.output = output
+        self.calls = 0
+
+    def get_rotary_seq_len(self, *args):
+        return 16
+
+    def __call__(self, rotary_seq_len):
+        assert rotary_seq_len == 16
+        self.calls += 1
+        return self.output
+
+
+class _TestRotaryTransformer:
+    def __init__(self, position_embedding_type, rotary_output):
+        self.position_embedding_type = position_embedding_type
+        self.rotary_pos_emb = _TestRotaryEmbedding(rotary_output)
+        self.decoder = object()
+
+
 def _base_cuda_graph_config(**kwargs) -> TransformerConfig:
     return TransformerConfig(num_layers=2, hidden_size=64, num_attention_heads=4, **kwargs)
+
+
+@pytest.mark.parametrize(
+    ("position_embedding_type", "rotary_output"),
+    [
+        ("rope", torch.ones(16, 1, 1, 8)),
+        ("yarn", (torch.ones(16, 1, 1, 8), 1.0)),
+    ],
+)
+def test_get_rotary_pos_emb_for_cuda_graph(position_embedding_type, rotary_output):
+    """RoPE and YaRN must both provide cached static rotary inputs for graph capture."""
+    transformer = _TestRotaryTransformer(position_embedding_type, rotary_output)
+    config = _base_cuda_graph_config(multi_latent_attention=False)
+    cache = {}
+
+    rotary_pos_emb = _get_rotary_pos_emb_for_cuda_graph(
+        transformer, torch.ones(16, 1, 64), config, cache
+    )
+    cached_rotary_pos_emb = _get_rotary_pos_emb_for_cuda_graph(
+        transformer, torch.ones(16, 1, 64), config, cache
+    )
+
+    expected = rotary_output[0] if position_embedding_type == "yarn" else rotary_output
+    assert rotary_pos_emb is expected
+    assert cached_rotary_pos_emb is expected
+    assert transformer.rotary_pos_emb.calls == 1
+
+
+def test_get_rotary_pos_emb_for_cuda_graph_rejects_invalid_yarn_output():
+    """Graph capture must fail closed instead of silently omitting YaRN."""
+    transformer = _TestRotaryTransformer("yarn", torch.ones(16, 1, 1, 8))
+    config = _base_cuda_graph_config(multi_latent_attention=False)
+
+    with pytest.raises(RuntimeError, match="must return"):
+        _get_rotary_pos_emb_for_cuda_graph(
+            transformer, torch.ones(16, 1, 64), config, {}
+        )
 
 
 def _validated_cuda_graph_cli_args(monkeypatch, cli_args=None, **overrides):

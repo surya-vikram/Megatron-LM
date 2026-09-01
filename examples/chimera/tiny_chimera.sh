@@ -110,12 +110,9 @@ MOE_ARGS=(
     --moe-token-dispatcher-type alltoall
     --moe-permute-fusion
     --moe-router-fusion
+    --moe-per-layer-logging
     --moe-router-balance-logging-interval "${MOE_ROUTER_BALANCE_LOGGING_INTERVAL:-1}"
 )
-
-if [[ "${ENABLE_PER_LAYER_LOGGING:-true}" == "true" ]]; then
-    MOE_ARGS+=(--moe-per-layer-logging)
-fi
 
 DATA_ARGS=(
     --train-data-path "$TRAIN_DATA_PATH"

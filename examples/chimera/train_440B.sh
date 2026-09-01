@@ -134,7 +134,7 @@ MOE_ARGS=(
 DATA_ARGS=(
     --train-data-path "$TRAIN_DATA_PATH"
     --data-cache-path "$DATA_CACHE_PATH"
-    --num-workers 8
+    --num-workers 32
     --eod-mask-loss
 )
 if [[ -n "$VALID_DATA_PATH" ]]; then

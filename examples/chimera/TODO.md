@@ -1,7 +1,7 @@
 # Chimera workflow status
 
-- [x] Keep TP, PP, EP, and CP at 1 so the production topology is DP-only.
-- [x] Keep optimizer gradients and state in FP32 for Adam, Muon, and AdaMuon internals.
+- [x] Default TP, PP, EP, and CP to 1 while allowing valid operator-selected topology.
+- [x] Default optimizer gradients and state to FP32 while allowing Adam precision overrides.
 - [x] Derive pretraining and extension iterations from `TRAIN_TOKENS`.
 - [x] Derive warmup, decay, save, and validation intervals from configurable fractions.
 - [x] Support both cosine and WSD schedules without editing launch scripts.

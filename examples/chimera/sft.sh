@@ -48,6 +48,10 @@ PACK_METADATA_PATH="${PACK_METADATA_PATH:-${DATA_PATH}.chimera_sft_packing}"
 VALID_PACK_METADATA_PATH="${VALID_PACK_METADATA_PATH:-${VALID_DATA_PATH:+${VALID_DATA_PATH}.chimera_sft_packing}}"
 OPTIMIZER="${OPTIMIZER:-adam}"
 MUON_NUM_NS_STEPS="${MUON_NUM_NS_STEPS:-6}"
+MAIN_PARAMS_DTYPE="${MAIN_PARAMS_DTYPE:-fp32}"
+MAIN_GRADS_DTYPE="${MAIN_GRADS_DTYPE:-fp32}"
+EXP_AVG_DTYPE="${EXP_AVG_DTYPE:-fp32}"
+EXP_AVG_SQ_DTYPE="${EXP_AVG_SQ_DTYPE:-fp32}"
 FUSED_LINEAR_CROSS_ENTROPY="${FUSED_LINEAR_CROSS_ENTROPY:-true}"
 
 [[ "$OPTIMIZER" == adam || "$OPTIMIZER" == muon ]] || {
@@ -247,10 +251,10 @@ if [[ "$OPTIMIZER" == muon ]]; then
 else
     TRAINING_ARGS+=(
         --use-precision-aware-optimizer
-        --main-params-dtype fp32
-        --main-grads-dtype fp32
-        --exp-avg-dtype fp32
-        --exp-avg-sq-dtype fp32
+        --main-params-dtype "$MAIN_PARAMS_DTYPE"
+        --main-grads-dtype "$MAIN_GRADS_DTYPE"
+        --exp-avg-dtype "$EXP_AVG_DTYPE"
+        --exp-avg-sq-dtype "$EXP_AVG_SQ_DTYPE"
     )
 fi
 
@@ -305,6 +309,10 @@ SCHEDULE_SAMPLES=${SCHEDULE_SAMPLES}
 PACK_SAMPLES=${PACK_SAMPLES}
 PACK_METADATA_PATH=${PACK_METADATA_PATH}
 VALID_PACK_METADATA_PATH=${VALID_PACK_METADATA_PATH}
+MAIN_PARAMS_DTYPE=${MAIN_PARAMS_DTYPE}
+MAIN_GRADS_DTYPE=${MAIN_GRADS_DTYPE}
+EXP_AVG_DTYPE=${EXP_AVG_DTYPE}
+EXP_AVG_SQ_DTYPE=${EXP_AVG_SQ_DTYPE}
 TRAIN_EPOCHS=${TRAIN_EPOCHS}
 TRAIN_ITERS=${TRAIN_ITERS}
 MICRO_BATCH_SIZE=${MICRO_BATCH_SIZE}
@@ -331,7 +339,7 @@ echo "  Router:           ${MOE_ROUTER_LOAD_BALANCING_TYPE:-none} bins=${MOE_QB_
 echo "  Data schedule:    rows=$DATASET_SAMPLES samples=$SCHEDULE_SAMPLES epochs=$TRAIN_EPOCHS iters=$TRAIN_ITERS"
 echo "  Context/YaRN:     phase=$CONTEXT_PHASE max=$MAX_POSITION_EMBEDDINGS factor=$ROTARY_SCALING_FACTOR original=$YARN_ORIGINAL_MAX_POSITION_EMBEDDINGS"
 echo "  Seq/batch:        seq=$SEQ_LENGTH micro=$MICRO_BATCH_SIZE global=$GLOBAL_BATCH_SIZE"
-echo "  Optimizer:        type=$OPTIMIZER lr=$LR min_lr=$MIN_LR warmup=$LR_WARMUP_ITERS wd=0"
+echo "  Optimizer:        type=$OPTIMIZER lr=$LR min_lr=$MIN_LR warmup=$LR_WARMUP_ITERS wd=$WEIGHT_DECAY params=$MAIN_PARAMS_DTYPE grads=$MAIN_GRADS_DTYPE moments=$EXP_AVG_DTYPE,$EXP_AVG_SQ_DTYPE"
 echo "  Packing:          $PACK_SAMPLES"
 
 exec python3 -m torch.distributed.run "${DISTRIBUTED_ARGS[@]}" \

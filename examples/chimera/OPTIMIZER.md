@@ -1,9 +1,8 @@
 # Chimera Pretraining Optimizer Benchmark & Architecture Guide
 
-> **Current Chimera policy:** optimizer master weights, main gradients, and all
-> Adam/Muon/AdaMuon moment buffers stay in FP32 for training stability. The BF16
-> measurements below are retained as historical benchmark results, not as an
-> active launcher recommendation.
+> **Current Chimera policy:** Adam optimizer precision is configurable and
+> defaults to FP32. Muon/AdaMuon moment buffers stay in FP32. The BF16
+> measurements below remain historical benchmark results.
 
 This document presents the complete theoretical, empirical, and architectural analysis of pretraining optimizers for the **Chimera Mixture-of-Experts (MoE)** architecture across both **Clean** and **Noisy** FineWeb-Edu datasets (1,000 iterations, `micro-batch-size=2`, `global-batch-size=4`, `seq_len=4096`, `lr=1e-3`).
 
@@ -176,5 +175,4 @@ Storing 1st-moment momentum $M_t$ in **BF16 (`bfloat16`)** with hybrid FP32 upca
 - **💾 Max Peak VRAM Savings**: Reduces peak step VRAM by **`418.9 MB`** across both Muon and AdaMuon on Tiny Chimera (**`-20 GB`** at 10B/440B scale).
 - **⚡ Step Execution Speedup**: **`3.1% faster step execution`** (`448.2 ms/step` vs `462.7 ms/step`) due to 50% lower memory bandwidth read/write volume.
 - **🛡️ Noise Tolerance Integrity**: Achieves identical loss recovery under 10% corrupted data without rank collapse or numerical instability.
-
 

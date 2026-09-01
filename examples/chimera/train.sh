@@ -47,6 +47,7 @@ NUM_WORKERS="${NUM_WORKERS:-32}"
 MAIN_GRADS_DTYPE="${MAIN_GRADS_DTYPE:-fp32}"
 EXP_AVG_DTYPE="${EXP_AVG_DTYPE:-fp32}"
 EXP_AVG_SQ_DTYPE="${EXP_AVG_SQ_DTYPE:-fp32}"
+MAIN_PARAMS_DTYPE="${MAIN_PARAMS_DTYPE:-fp32}"
 
 [[ "$LR_DECAY_STYLE" == cosine || "$LR_DECAY_STYLE" == WSD ]] || {
     echo "Unsupported LR_DECAY_STYLE=$LR_DECAY_STYLE; expected cosine or WSD" >&2
@@ -58,13 +59,6 @@ chimera_resolve_schedule
     echo "Unsupported OPTIMIZER=$OPTIMIZER; expected adam or muon" >&2
     exit 1
 }
-for OPTIMIZER_DTYPE in "$MAIN_GRADS_DTYPE" "$EXP_AVG_DTYPE" "$EXP_AVG_SQ_DTYPE"; do
-    [[ "$OPTIMIZER_DTYPE" == fp32 ]] || {
-        echo "Chimera requires FP32 optimizer gradients and moments for stable training" >&2
-        exit 1
-    }
-done
-
 RUN_STAMP="${RUN_STAMP:-$(TZ='Asia/Kolkata' date +%Y%m%d_%H%M%S)}"
 RUN_DIR="${RUNS_ROOT}/${RUN_STAMP}"
 SAVE_PATH="${RUN_DIR}/checkpoints"
@@ -206,7 +200,7 @@ if [[ "$OPTIMIZER" == muon ]]; then
 else
     TRAINING_ARGS+=(
         --use-precision-aware-optimizer
-        --main-params-dtype fp32
+        --main-params-dtype "$MAIN_PARAMS_DTYPE"
         --main-grads-dtype "$MAIN_GRADS_DTYPE"
         --exp-avg-dtype "$EXP_AVG_DTYPE"
         --exp-avg-sq-dtype "$EXP_AVG_SQ_DTYPE"
@@ -303,6 +297,7 @@ WEIGHT_DECAY=${WEIGHT_DECAY}
 OPTIMIZER=${OPTIMIZER}
 MUON_NUM_NS_STEPS=${MUON_NUM_NS_STEPS}
 MAIN_GRADS_DTYPE=${MAIN_GRADS_DTYPE}
+MAIN_PARAMS_DTYPE=${MAIN_PARAMS_DTYPE}
 EXP_AVG_DTYPE=${EXP_AVG_DTYPE}
 EXP_AVG_SQ_DTYPE=${EXP_AVG_SQ_DTYPE}
 EOF
@@ -330,7 +325,7 @@ echo "  LR schedule:      $LR_DECAY_STYLE peak=$LR min=$MIN_LR warmup=$LR_WARMUP
 if [[ "$OPTIMIZER" == muon ]]; then
     echo "  Optimizer:        Muon ns_steps=$MUON_NUM_NS_STEPS state=fp32 scalar_optimizer=adam state=fp32 wd=$WEIGHT_DECAY"
 else
-    echo "  Optimizer:        AdamW beta1=0.9 beta2=0.95 eps=1e-8 wd=$WEIGHT_DECAY main_params=fp32 main_grads=$MAIN_GRADS_DTYPE exp_avg=$EXP_AVG_DTYPE exp_avg_sq=$EXP_AVG_SQ_DTYPE"
+    echo "  Optimizer:        AdamW beta1=0.9 beta2=0.95 eps=1e-8 wd=$WEIGHT_DECAY main_params=$MAIN_PARAMS_DTYPE main_grads=$MAIN_GRADS_DTYPE exp_avg=$EXP_AVG_DTYPE exp_avg_sq=$EXP_AVG_SQ_DTYPE"
 fi
 if [[ "$CHIMERA_CONTEXT_EXTENSION" == true ]]; then
     echo "  Extension budget: target_tokens=$TRAIN_TOKENS actual_tokens=$((TRAIN_ITERS * TOKENS_PER_ITER))"

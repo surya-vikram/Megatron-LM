@@ -61,8 +61,10 @@ cp examples/chimera/env/pretrain.env.example \
 
 The other templates are `context_extension.env.example`, `sft.env.example`, and
 `simpo.env.example` in the same directory. Each file contains the common cluster,
-mount, DP-only topology, and FP32 optimizer-state block first, followed by only
-the settings for that stage. Edit the selected env file; do not edit the launch
+mount, parallelism defaults, and optimizer-precision defaults first, followed by only
+the settings for that stage. The templates default to pure data parallelism, but
+TP, PP, EP, and CP may be changed when the resulting topology divides the world
+size. Edit the selected env file; do not edit the launch
 scripts. Then inspect and validate before launching:
 
 ```bash

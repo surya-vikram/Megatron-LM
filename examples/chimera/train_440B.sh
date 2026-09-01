@@ -12,6 +12,10 @@ LOAD_CHECKPOINT="${LOAD_CHECKPOINT:-}"
 TRAIN_ITERS="${TRAIN_ITERS:-26855}"
 OPTIMIZER="${OPTIMIZER:-adam}"
 MUON_NUM_NS_STEPS="${MUON_NUM_NS_STEPS:-6}"
+MAIN_PARAMS_DTYPE="${MAIN_PARAMS_DTYPE:-fp32}"
+MAIN_GRADS_DTYPE="${MAIN_GRADS_DTYPE:-fp32}"
+EXP_AVG_DTYPE="${EXP_AVG_DTYPE:-fp32}"
+EXP_AVG_SQ_DTYPE="${EXP_AVG_SQ_DTYPE:-fp32}"
 
 # Distributed launch settings.
 GPUS_PER_NODE="${GPUS_PER_NODE:-$(nvidia-smi -L | wc -l)}"
@@ -185,12 +189,12 @@ if [[ "$OPTIMIZER" == "muon" || "$OPTIMIZER" == "adaptive_muon" ]]; then
 else
     TRAINING_ARGS+=(
         --use-precision-aware-optimizer
-        --main-params-dtype fp32
-        --main-grads-dtype fp32
-        --exp-avg-dtype fp32
-        --exp-avg-sq-dtype fp32
+        --main-params-dtype "$MAIN_PARAMS_DTYPE"
+        --main-grads-dtype "$MAIN_GRADS_DTYPE"
+        --exp-avg-dtype "$EXP_AVG_DTYPE"
+        --exp-avg-sq-dtype "$EXP_AVG_SQ_DTYPE"
     )
-    OPTIMIZER_SUMMARY="$OPTIMIZER beta1=0.9 beta2=0.95 eps=1e-8 wd=0.1 states=fp32"
+    OPTIMIZER_SUMMARY="$OPTIMIZER beta1=0.9 beta2=0.95 eps=1e-8 wd=0.1 params=$MAIN_PARAMS_DTYPE grads=$MAIN_GRADS_DTYPE moments=$EXP_AVG_DTYPE,$EXP_AVG_SQ_DTYPE"
 fi
 
 PARALLEL_ARGS=(

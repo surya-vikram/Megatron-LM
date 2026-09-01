@@ -134,6 +134,10 @@ else
 fi
 
 OPTIMIZER="${OPTIMIZER:-adam}"
+MAIN_PARAMS_DTYPE="${MAIN_PARAMS_DTYPE:-fp32}"
+MAIN_GRADS_DTYPE="${MAIN_GRADS_DTYPE:-fp32}"
+EXP_AVG_DTYPE="${EXP_AVG_DTYPE:-fp32}"
+EXP_AVG_SQ_DTYPE="${EXP_AVG_SQ_DTYPE:-fp32}"
 
 TRAINING_ARGS=(
     --micro-batch-size "$MICRO_BATCH_SIZE"
@@ -176,10 +180,10 @@ fi
 if [[ "$OPTIMIZER" == "adam" ]]; then
     TRAINING_ARGS+=(
         --use-precision-aware-optimizer
-        --main-params-dtype fp32
-        --main-grads-dtype fp32
-        --exp-avg-dtype fp32
-        --exp-avg-sq-dtype fp32
+        --main-params-dtype "$MAIN_PARAMS_DTYPE"
+        --main-grads-dtype "$MAIN_GRADS_DTYPE"
+        --exp-avg-dtype "$EXP_AVG_DTYPE"
+        --exp-avg-sq-dtype "$EXP_AVG_SQ_DTYPE"
     )
 fi
 

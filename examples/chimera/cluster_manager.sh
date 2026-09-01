@@ -17,7 +17,7 @@ FORWARDED_ENV_VARS=(
     LR_WSD_DECAY_FRACTION LR_WSD_DECAY_STYLE LR_WSD_DECAY_ITERS
     SAVE_INTERVAL SAVE_INTERVAL_FRACTION EVAL_INTERVAL EVAL_INTERVAL_FRACTION
     EVAL_ITERS LOG_INTERVAL WEIGHT_DECAY NUM_WORKERS PREPARE_WORKERS
-    OPTIMIZER MUON_NUM_NS_STEPS MAIN_GRADS_DTYPE EXP_AVG_DTYPE EXP_AVG_SQ_DTYPE
+    OPTIMIZER MUON_NUM_NS_STEPS MAIN_PARAMS_DTYPE MAIN_GRADS_DTYPE EXP_AVG_DTYPE EXP_AVG_SQ_DTYPE
     PACK_SAMPLES PACK_METADATA_PATH VALID_PACK_METADATA_PATH SAVE_WEIGHTS_ONLY
     FUSED_LINEAR_CROSS_ENTROPY SIMPO_BETA SIMPO_GAMMA SIMPO_LOSS_TYPE
     SIMPO_SFT_WEIGHT
@@ -165,6 +165,7 @@ load_config() {
     PREPARE_WORKERS="${PREPARE_WORKERS:-32}"
     OPTIMIZER="${OPTIMIZER:-adam}"
     MUON_NUM_NS_STEPS="${MUON_NUM_NS_STEPS:-6}"
+    MAIN_PARAMS_DTYPE="${MAIN_PARAMS_DTYPE:-fp32}"
     MAIN_GRADS_DTYPE="${MAIN_GRADS_DTYPE:-fp32}"
     EXP_AVG_DTYPE="${EXP_AVG_DTYPE:-fp32}"
     EXP_AVG_SQ_DTYPE="${EXP_AVG_SQ_DTYPE:-fp32}"
@@ -294,17 +295,17 @@ validate_topology() {
     for value in TP_SIZE PP_SIZE EP_SIZE CP_SIZE MICRO_BATCH_SIZE; do
         [[ "${!value}" =~ ^[1-9][0-9]*$ ]] || die "$value must be a positive integer"
     done
-    for value in TP_SIZE PP_SIZE EP_SIZE CP_SIZE; do
-        [[ "${!value}" == 1 ]] || die "the cluster workflow is DP-only; $value must remain 1"
-    done
-
     if ! is_true "$ENABLE_GPU"; then
         return
     fi
 
     (( GPUS_PER_NODE > 0 )) || die "GPUS_PER_NODE must be positive when ENABLE_GPU=true"
+    local model_parallel=$((TP_SIZE * PP_SIZE * CP_SIZE))
+    (( WORLD_SIZE % model_parallel == 0 )) || die "WORLD_SIZE=$WORLD_SIZE must be divisible by TP*PP*CP=$model_parallel"
+    (( 32 % EP_SIZE == 0 )) || die "EP_SIZE=$EP_SIZE must divide Chimera's 32 experts"
+    (( WORLD_SIZE % (EP_SIZE * PP_SIZE) == 0 )) || die "WORLD_SIZE=$WORLD_SIZE must be divisible by EP*PP=$((EP_SIZE * PP_SIZE)) because expert TP is fixed at 1"
     [[ "$GLOBAL_BATCH_SIZE" =~ ^[1-9][0-9]*$ ]] || die "GLOBAL_BATCH_SIZE must be a positive integer"
-    local dp_size=$WORLD_SIZE
+    local dp_size=$((WORLD_SIZE / model_parallel))
     local batch_unit=$((MICRO_BATCH_SIZE * dp_size))
     (( GLOBAL_BATCH_SIZE >= batch_unit )) || die "GLOBAL_BATCH_SIZE=$GLOBAL_BATCH_SIZE is smaller than microbatch*DP=$batch_unit"
     (( GLOBAL_BATCH_SIZE % batch_unit == 0 )) || die "GLOBAL_BATCH_SIZE=$GLOBAL_BATCH_SIZE must be divisible by microbatch*DP=$batch_unit"
@@ -340,7 +341,7 @@ Duration:           tokens=${TRAIN_TOKENS:-unset} iters=${TRAIN_ITERS:-packing-d
 Validation:         ${VALID_DATA_PATH:-disabled}
 LR schedule:        style=$LR_DECAY_STYLE lr=$LR min=${MIN_LR:-ratio:$MIN_LR_RATIO} warmup=${LR_WARMUP_ITERS:-fraction:$LR_WARMUP_FRACTION}
 Intervals:          log=$LOG_INTERVAL save=${SAVE_INTERVAL:-fraction:$SAVE_INTERVAL_FRACTION} eval=${EVAL_INTERVAL:-fraction:$EVAL_INTERVAL_FRACTION}x$EVAL_ITERS
-Optimizer:          $OPTIMIZER (state/grads: $MAIN_GRADS_DTYPE/$EXP_AVG_DTYPE/$EXP_AVG_SQ_DTYPE)
+Optimizer:          $OPTIMIZER (params/grads/moments: $MAIN_PARAMS_DTYPE/$MAIN_GRADS_DTYPE/$EXP_AVG_DTYPE,$EXP_AVG_SQ_DTYPE)
 GPU enabled:        $ENABLE_GPU
 InfiniBand enabled: $ENABLE_IB
 ============================================================

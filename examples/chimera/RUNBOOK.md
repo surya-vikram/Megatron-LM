@@ -510,6 +510,26 @@ bash examples/chimera/export.sh \
   --bridge-path "$MEGATRON_BRIDGE" \
   --python "$PYTHON"
 
+# To export an exact iteration instead of the numerically highest iter_* directory,
+# pass its directory directly. Megatron iteration directories use seven digits.
+export EXPORT_ITER=5000
+printf -v EXPORT_ITER_DIR '%s/iter_%07d' "$PRETRAIN_CHECKPOINT" "$EXPORT_ITER"
+export HF_PRETRAIN_ITER=$DATA_ROOT/hf_pretrain_iter_$(printf '%07d' "$EXPORT_ITER")
+
+test -d "$EXPORT_ITER_DIR"
+test -f "$PRETRAIN_CHECKPOINT/run_config.yaml"
+
+bash examples/chimera/export.sh \
+  --hf-reference "$HF_REFERENCE" \
+  --mcore-path "$EXPORT_ITER_DIR" \
+  --hf-path "$HF_PRETRAIN_ITER" \
+  --bridge-path "$MEGATRON_BRIDGE" \
+  --python "$PYTHON"
+
+# Do not change latest_checkpointed_iteration.txt for an explicit export. Bridge loads
+# weights from EXPORT_ITER_DIR and falls back to the checkpoint-root run_config.yaml
+# when the iteration directory has no iteration-local run_config.yaml.
+
 # export.sh already performs the weighted HF contract validation. This explicit check
 # makes the expected phase visible in a manual workflow.
 $PYTHON examples/chimera/architecture_contract.py validate-hf "$HF_PRETRAIN" --weights

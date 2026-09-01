@@ -60,8 +60,8 @@ bash examples/chimera/cluster_manager.sh --help
 The shared host layout is:
 
 ```text
-/nvme_zone3/home/ekamai1/surya/chimera/repos
-/nvme_zone3/home/ekamai1/surya/chimera/data
+/nvme_zone3/home/ekamai1/chimera/repos
+/nvme_zone3/home/ekamai1/chimera/data
 ```
 
 The manager mounts those paths at `/workspace/repos` and `/datasets/megadata`.

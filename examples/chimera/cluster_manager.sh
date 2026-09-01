@@ -118,7 +118,7 @@ load_config() {
     MASTER_ADDR="${MASTER_ADDR:-}"
     MASTER_PORT="${MASTER_PORT:-29500}"
 
-    CHIMERA_ROOT="${CHIMERA_ROOT:-/nvme_zone3/home/ekamai1/surya/chimera}"
+    CHIMERA_ROOT="${CHIMERA_ROOT:-/nvme_zone3/home/ekamai1/chimera}"
     HOST_REPOS="${HOST_REPOS:-$CHIMERA_ROOT/repos}"
     HOST_DATA="${HOST_DATA:-$CHIMERA_ROOT/data}"
     CONTAINER_REPOS="${CONTAINER_REPOS:-/workspace/repos}"

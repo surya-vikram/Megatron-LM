@@ -15,7 +15,7 @@ suryavikram6/megatron-gemma:v2-fixed
 Prepare this shared host layout at the same path on every selected node:
 
 ```text
-/nvme_zone3/home/ekamai1/surya/chimera/
+/nvme_zone3/home/ekamai1/chimera/
 ├── repos/
 │   ├── Megatron-LM/
 │   ├── Megatron-Bridge/
@@ -43,7 +43,7 @@ Point Bridge at the mounted Megatron-LM checkout before launch:
 
 ```bash
 ln -sfn ../../Megatron-LM \
-  /nvme_zone3/home/ekamai1/surya/chimera/repos/Megatron-Bridge/3rdparty/Megatron-LM
+  /nvme_zone3/home/ekamai1/chimera/repos/Megatron-Bridge/3rdparty/Megatron-LM
 ```
 
 Show the complete command guide:
@@ -56,7 +56,7 @@ Choose the stage template and copy one configuration per run outside the Git che
 
 ```bash
 cp examples/chimera/env/pretrain.env.example \
-  /nvme_zone3/home/ekamai1/surya/chimera/data/pretrain-phase1.env
+  /nvme_zone3/home/ekamai1/chimera/data/pretrain-phase1.env
 ```
 
 The other templates are `context_extension.env.example`, `sft.env.example`, and
@@ -67,13 +67,13 @@ scripts. Then inspect and validate before launching:
 
 ```bash
 bash examples/chimera/cluster_manager.sh \
-  --config /nvme_zone3/home/ekamai1/surya/chimera/data/pretrain-phase1.env info
+  --config /nvme_zone3/home/ekamai1/chimera/data/pretrain-phase1.env info
 
 bash examples/chimera/cluster_manager.sh \
-  --config /nvme_zone3/home/ekamai1/surya/chimera/data/pretrain-phase1.env preflight
+  --config /nvme_zone3/home/ekamai1/chimera/data/pretrain-phase1.env preflight
 
 bash examples/chimera/cluster_manager.sh \
-  --config /nvme_zone3/home/ekamai1/surya/chimera/data/pretrain-phase1.env launch
+  --config /nvme_zone3/home/ekamai1/chimera/data/pretrain-phase1.env launch
 ```
 
 Monitor or stop the same run by reusing the same configuration:

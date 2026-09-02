@@ -16,8 +16,13 @@ FORWARDED_ENV_VARS=(
     LR_WARMUP_FRACTION LR_WARMUP_ITERS
     LR_WSD_DECAY_FRACTION LR_WSD_DECAY_STYLE LR_WSD_DECAY_ITERS
     SAVE_INTERVAL SAVE_INTERVAL_FRACTION EVAL_INTERVAL EVAL_INTERVAL_FRACTION
-    EVAL_ITERS LOG_INTERVAL WEIGHT_DECAY NUM_WORKERS PREPARE_WORKERS
-    OPTIMIZER MUON_NUM_NS_STEPS MAIN_PARAMS_DTYPE MAIN_GRADS_DTYPE EXP_AVG_DTYPE EXP_AVG_SQ_DTYPE
+    EVAL_ITERS LOG_INTERVAL WEIGHT_DECAY CLIP_GRAD NUM_WORKERS PREPARE_WORKERS
+    OPTIMIZER MUON_MOMENTUM MUON_NUM_NS_STEPS MUON_SCALE_MODE MUON_EXTRA_SCALE_FACTOR
+    MUON_SCALAR_OPTIMIZER MUON_SPLIT_QKV MUON_NESTEROV
+    ADAM_BETA1 ADAM_BETA2 ADAM_EPS
+    ATTENTION_BACKEND QK_LAYERNORM QK_CLIP QK_CLIP_THRESHOLD QK_CLIP_ALPHA
+    LOG_MAX_ATTENTION_LOGIT APPLY_ROPE_FUSION
+    MAIN_PARAMS_DTYPE MAIN_GRADS_DTYPE EXP_AVG_DTYPE EXP_AVG_SQ_DTYPE
     PACK_SAMPLES PACK_METADATA_PATH VALID_PACK_METADATA_PATH SAVE_WEIGHTS_ONLY
     FUSED_LINEAR_CROSS_ENTROPY SIMPO_BETA SIMPO_GAMMA SIMPO_LOSS_TYPE
     SIMPO_SFT_WEIGHT
@@ -162,10 +167,35 @@ load_config() {
     EVAL_ITERS="${EVAL_ITERS:-4}"
     LOG_INTERVAL="${LOG_INTERVAL:-1}"
     WEIGHT_DECAY="${WEIGHT_DECAY:-0.1}"
+    CLIP_GRAD="${CLIP_GRAD:-1.0}"
     NUM_WORKERS="${NUM_WORKERS:-32}"
     PREPARE_WORKERS="${PREPARE_WORKERS:-32}"
-    OPTIMIZER="${OPTIMIZER:-adam}"
-    MUON_NUM_NS_STEPS="${MUON_NUM_NS_STEPS:-6}"
+    if [[ "$STAGE" == pretrain ]]; then
+        OPTIMIZER="${OPTIMIZER:-muon}"
+        MUON_NUM_NS_STEPS="${MUON_NUM_NS_STEPS:-5}"
+        ATTENTION_BACKEND="${ATTENTION_BACKEND:-fused}"
+        QK_CLIP="${QK_CLIP:-true}"
+        LOG_MAX_ATTENTION_LOGIT="${LOG_MAX_ATTENTION_LOGIT:-true}"
+    else
+        OPTIMIZER="${OPTIMIZER:-adam}"
+        MUON_NUM_NS_STEPS="${MUON_NUM_NS_STEPS:-6}"
+        ATTENTION_BACKEND="${ATTENTION_BACKEND:-flash}"
+        QK_CLIP="${QK_CLIP:-false}"
+        LOG_MAX_ATTENTION_LOGIT="${LOG_MAX_ATTENTION_LOGIT:-false}"
+    fi
+    MUON_MOMENTUM="${MUON_MOMENTUM:-0.95}"
+    MUON_SCALE_MODE="${MUON_SCALE_MODE:-spectral}"
+    MUON_EXTRA_SCALE_FACTOR="${MUON_EXTRA_SCALE_FACTOR:-0.2}"
+    MUON_SCALAR_OPTIMIZER="${MUON_SCALAR_OPTIMIZER:-adam}"
+    MUON_SPLIT_QKV="${MUON_SPLIT_QKV:-true}"
+    MUON_NESTEROV="${MUON_NESTEROV:-false}"
+    ADAM_BETA1="${ADAM_BETA1:-0.9}"
+    ADAM_BETA2="${ADAM_BETA2:-0.95}"
+    ADAM_EPS="${ADAM_EPS:-1e-8}"
+    QK_LAYERNORM="${QK_LAYERNORM:-true}"
+    QK_CLIP_THRESHOLD="${QK_CLIP_THRESHOLD:-100.0}"
+    QK_CLIP_ALPHA="${QK_CLIP_ALPHA:-0.5}"
+    APPLY_ROPE_FUSION="${APPLY_ROPE_FUSION:-true}"
     MAIN_PARAMS_DTYPE="${MAIN_PARAMS_DTYPE:-fp32}"
     MAIN_GRADS_DTYPE="${MAIN_GRADS_DTYPE:-fp32}"
     EXP_AVG_DTYPE="${EXP_AVG_DTYPE:-fp32}"
@@ -206,7 +236,7 @@ load_config() {
     if [[ "$STAGE" == pretrain || "$STAGE" == context_extension ]]; then
         if [[ -z "$TRAIN_TOKENS" ]]; then
             if [[ "$STAGE" == pretrain ]]; then
-                TRAIN_TOKENS=440000000000
+                TRAIN_TOKENS=4000000000000
             else
                 TRAIN_TOKENS=10000000000
             fi
@@ -315,8 +345,14 @@ validate_topology() {
 print_info() {
     validate_topology
     local dp_size="disabled"
+    local optimizer_summary
     if is_true "$ENABLE_GPU"; then
         dp_size=$((WORLD_SIZE / (TP_SIZE * PP_SIZE * CP_SIZE)))
+    fi
+    if [[ "$OPTIMIZER" == muon ]]; then
+        optimizer_summary="muon momentum=$MUON_MOMENTUM ns_steps=$MUON_NUM_NS_STEPS scale=$MUON_SCALE_MODE extra_scale=$MUON_EXTRA_SCALE_FACTOR scalar=$MUON_SCALAR_OPTIMIZER"
+    else
+        optimizer_summary="adam params/grads/moments=$MAIN_PARAMS_DTYPE/$MAIN_GRADS_DTYPE/$EXP_AVG_DTYPE,$EXP_AVG_SQ_DTYPE"
     fi
 
     cat <<EOF
@@ -342,7 +378,10 @@ Duration:           tokens=${TRAIN_TOKENS:-unset} iters=${TRAIN_ITERS:-packing-d
 Validation:         ${VALID_DATA_PATH:-disabled}
 LR schedule:        style=$LR_DECAY_STYLE lr=$LR min=${MIN_LR:-ratio:$MIN_LR_RATIO} warmup=${LR_WARMUP_ITERS:-fraction:$LR_WARMUP_FRACTION}
 Intervals:          log=$LOG_INTERVAL save=${SAVE_INTERVAL:-fraction:$SAVE_INTERVAL_FRACTION} eval=${EVAL_INTERVAL:-fraction:$EVAL_INTERVAL_FRACTION}x$EVAL_ITERS
-Optimizer:          $OPTIMIZER (params/grads/moments: $MAIN_PARAMS_DTYPE/$MAIN_GRADS_DTYPE/$EXP_AVG_DTYPE,$EXP_AVG_SQ_DTYPE)
+Optimizer:          $optimizer_summary
+Adam coefficients:  beta1=$ADAM_BETA1 beta2=$ADAM_BETA2 eps=$ADAM_EPS
+Attention:          backend=$ATTENTION_BACKEND qk_norm=$QK_LAYERNORM qk_clip=$QK_CLIP threshold=$QK_CLIP_THRESHOLD alpha=$QK_CLIP_ALPHA log_max=$LOG_MAX_ATTENTION_LOGIT
+Fusions/clip:       rope=$APPLY_ROPE_FUSION linear_ce=$FUSED_LINEAR_CROSS_ENTROPY grad=$CLIP_GRAD
 GPU enabled:        $ENABLE_GPU
 InfiniBand enabled: $ENABLE_IB
 ============================================================

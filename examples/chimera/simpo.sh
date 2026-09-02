@@ -54,7 +54,24 @@ PACK_SAMPLES="${PACK_SAMPLES:-true}"
 PACK_METADATA_PATH="${PACK_METADATA_PATH:-${DATA_PATH}.chimera_simpo_packing}"
 VALID_PACK_METADATA_PATH="${VALID_PACK_METADATA_PATH:-${VALID_DATA_PATH:+${VALID_DATA_PATH}.chimera_simpo_packing}}"
 OPTIMIZER="${OPTIMIZER:-adam}"
-MUON_NUM_NS_STEPS="${MUON_NUM_NS_STEPS:-6}"
+MUON_MOMENTUM="${MUON_MOMENTUM:-0.95}"
+MUON_NUM_NS_STEPS="${MUON_NUM_NS_STEPS:-5}"
+MUON_SCALE_MODE="${MUON_SCALE_MODE:-spectral}"
+MUON_EXTRA_SCALE_FACTOR="${MUON_EXTRA_SCALE_FACTOR:-0.2}"
+MUON_SCALAR_OPTIMIZER="${MUON_SCALAR_OPTIMIZER:-adam}"
+MUON_SPLIT_QKV="${MUON_SPLIT_QKV:-true}"
+MUON_NESTEROV="${MUON_NESTEROV:-false}"
+ADAM_BETA1="${ADAM_BETA1:-0.9}"
+ADAM_BETA2="${ADAM_BETA2:-0.95}"
+ADAM_EPS="${ADAM_EPS:-1e-8}"
+ATTENTION_BACKEND="${ATTENTION_BACKEND:-fused}"
+QK_LAYERNORM="${QK_LAYERNORM:-true}"
+QK_CLIP="${QK_CLIP:-true}"
+QK_CLIP_THRESHOLD="${QK_CLIP_THRESHOLD:-100.0}"
+QK_CLIP_ALPHA="${QK_CLIP_ALPHA:-0.5}"
+LOG_MAX_ATTENTION_LOGIT="${LOG_MAX_ATTENTION_LOGIT:-true}"
+APPLY_ROPE_FUSION="${APPLY_ROPE_FUSION:-true}"
+CLIP_GRAD="${CLIP_GRAD:-1.0}"
 MAIN_PARAMS_DTYPE="${MAIN_PARAMS_DTYPE:-fp32}"
 MAIN_GRADS_DTYPE="${MAIN_GRADS_DTYPE:-fp32}"
 EXP_AVG_DTYPE="${EXP_AVG_DTYPE:-fp32}"
@@ -167,7 +184,6 @@ MODEL_ARGS=(
     --seq-length "$SEQ_LENGTH"
     --max-position-embeddings "$MAX_POSITION_EMBEDDINGS"
     --position-embedding-type "$POSITION_EMBEDDING_TYPE"
-    --apply-rope-fusion
     --rotary-base 10000000
     --rotary-percent 1.0
     --rotary-scaling-factor "$ROTARY_SCALING_FACTOR"
@@ -176,14 +192,13 @@ MODEL_ARGS=(
     --mscale-all-dim 0.0
     --normalization RMSNorm
     --norm-epsilon 1e-5
-    --qk-layernorm
     --swiglu
     --disable-bias-linear
     --untie-embeddings-and-output-weights
     --make-vocab-size-divisible-by 128
     --vocab-size 50176
     --bf16
-    --attention-backend flash
+    --attention-backend "$ATTENTION_BACKEND"
     --attention-dropout 0.0
     --hidden-dropout 0.0
     --no-masked-softmax-fusion
@@ -192,6 +207,12 @@ MODEL_ARGS=(
     --sft-tokenizer-prompt-format chimera
     --fused-residual-rmsnorm
 )
+if [[ "$APPLY_ROPE_FUSION" == true ]]; then
+    MODEL_ARGS+=(--apply-rope-fusion)
+fi
+if [[ "$QK_LAYERNORM" == true ]]; then
+    MODEL_ARGS+=(--qk-layernorm)
+fi
 
 MOE_ARGS=(
     --num-experts "$NUM_EXPERTS"
@@ -247,15 +268,26 @@ TRAINING_ARGS=(
     --lr-decay-style "$LR_DECAY_STYLE"
     --lr-warmup-iters "$LR_WARMUP_ITERS"
     --weight-decay "$WEIGHT_DECAY"
-    --clip-grad 1.0
-    --adam-beta1 0.9
-    --adam-beta2 0.95
+    --clip-grad "$CLIP_GRAD"
+    --adam-beta1 "$ADAM_BETA1"
+    --adam-beta2 "$ADAM_BETA2"
+    --adam-eps "$ADAM_EPS"
     --attention-softmax-in-fp32
     --manual-gc
     --manual-gc-interval 1000
     --use-distributed-optimizer
     --overlap-grad-reduce
 )
+if [[ "$QK_CLIP" == true ]]; then
+    TRAINING_ARGS+=(
+        --qk-clip
+        --qk-clip-threshold "$QK_CLIP_THRESHOLD"
+        --qk-clip-alpha "$QK_CLIP_ALPHA"
+    )
+fi
+if [[ "$LOG_MAX_ATTENTION_LOGIT" == true ]]; then
+    TRAINING_ARGS+=(--log-max-attention-logit)
+fi
 if [[ "$LR_DECAY_STYLE" == WSD ]]; then
     TRAINING_ARGS+=(--lr-wsd-decay-style "$LR_WSD_DECAY_STYLE" --lr-wsd-decay-iters "$LR_WSD_DECAY_ITERS")
 else
@@ -265,7 +297,19 @@ fi
 TRAINING_ARGS+=(--optimizer "$OPTIMIZER")
 
 if [[ "$OPTIMIZER" == muon ]]; then
-    TRAINING_ARGS+=(--muon-num-ns-steps "$MUON_NUM_NS_STEPS")
+    TRAINING_ARGS+=(
+        --muon-momentum "$MUON_MOMENTUM"
+        --muon-num-ns-steps "$MUON_NUM_NS_STEPS"
+        --muon-scale-mode "$MUON_SCALE_MODE"
+        --muon-extra-scale-factor "$MUON_EXTRA_SCALE_FACTOR"
+        --muon-scalar-optimizer "$MUON_SCALAR_OPTIMIZER"
+    )
+    if [[ "$MUON_SPLIT_QKV" != true ]]; then
+        TRAINING_ARGS+=(--muon-no-split-qkv)
+    fi
+    if [[ "$MUON_NESTEROV" == true ]]; then
+        TRAINING_ARGS+=(--muon-nesterov)
+    fi
 else
     TRAINING_ARGS+=(
         --use-precision-aware-optimizer
@@ -327,6 +371,26 @@ SCHEDULE_SAMPLES=${SCHEDULE_SAMPLES}
 PACK_SAMPLES=${PACK_SAMPLES}
 PACK_METADATA_PATH=${PACK_METADATA_PATH}
 VALID_PACK_METADATA_PATH=${VALID_PACK_METADATA_PATH}
+OPTIMIZER=${OPTIMIZER}
+MUON_MOMENTUM=${MUON_MOMENTUM}
+MUON_NUM_NS_STEPS=${MUON_NUM_NS_STEPS}
+MUON_SCALE_MODE=${MUON_SCALE_MODE}
+MUON_EXTRA_SCALE_FACTOR=${MUON_EXTRA_SCALE_FACTOR}
+MUON_SCALAR_OPTIMIZER=${MUON_SCALAR_OPTIMIZER}
+MUON_SPLIT_QKV=${MUON_SPLIT_QKV}
+MUON_NESTEROV=${MUON_NESTEROV}
+ADAM_BETA1=${ADAM_BETA1}
+ADAM_BETA2=${ADAM_BETA2}
+ADAM_EPS=${ADAM_EPS}
+ATTENTION_BACKEND=${ATTENTION_BACKEND}
+QK_LAYERNORM=${QK_LAYERNORM}
+QK_CLIP=${QK_CLIP}
+QK_CLIP_THRESHOLD=${QK_CLIP_THRESHOLD}
+QK_CLIP_ALPHA=${QK_CLIP_ALPHA}
+LOG_MAX_ATTENTION_LOGIT=${LOG_MAX_ATTENTION_LOGIT}
+APPLY_ROPE_FUSION=${APPLY_ROPE_FUSION}
+FUSED_LINEAR_CROSS_ENTROPY=${FUSED_LINEAR_CROSS_ENTROPY}
+CLIP_GRAD=${CLIP_GRAD}
 MAIN_PARAMS_DTYPE=${MAIN_PARAMS_DTYPE}
 MAIN_GRADS_DTYPE=${MAIN_GRADS_DTYPE}
 EXP_AVG_DTYPE=${EXP_AVG_DTYPE}
@@ -352,12 +416,18 @@ echo "  Data JSONL:       $DATA_PATH"
 echo "  Load checkpoint:  $MCORE_PATH"
 echo "  Tokenizer:        $TOKENIZER_MODEL"
 echo "  Parallelism:      TP=$TP_SIZE PP=$PP_SIZE EP=$EP_SIZE ETP=1 CP=$CP_SIZE"
-echo "  Architecture:     layers=25 moe_layer_freq=[0]*2+[1]*23 hidden=2048 ffn=8192 experts=32 topk=4 expert_ffn=2048 shared=0 qk_norm=true"
+echo "  Architecture:     layers=25 moe_layer_freq=[0]*2+[1]*23 hidden=2048 ffn=8192 experts=32 topk=4 expert_ffn=2048 shared=0 qk_norm=$QK_LAYERNORM"
 echo "  Router:           ${MOE_ROUTER_LOAD_BALANCING_TYPE:-none} bins=${MOE_QB_NUM_BINS:-1000} ema=${MOE_QB_EMA_DECAY:-0.0} aux=${MOE_AUX_LOSS_COEFF:-0.0} bias_rate=${MOE_ROUTER_BIAS_UPDATE_RATE:-0.0} scale=2.5 z_loss=0.001"
 echo "  Data schedule:    rows=$DATASET_SAMPLES samples=$SCHEDULE_SAMPLES epochs=$TRAIN_EPOCHS iters=$TRAIN_ITERS"
 echo "  Context/YaRN:     phase=$CONTEXT_PHASE max=$MAX_POSITION_EMBEDDINGS factor=$ROTARY_SCALING_FACTOR original=$YARN_ORIGINAL_MAX_POSITION_EMBEDDINGS"
 echo "  Seq/batch:        seq=$SEQ_LENGTH micro=$MICRO_BATCH_SIZE global=$GLOBAL_BATCH_SIZE"
-echo "  Optimizer:        type=$OPTIMIZER lr=$LR min_lr=$MIN_LR warmup=$LR_WARMUP_ITERS wd=$WEIGHT_DECAY params=$MAIN_PARAMS_DTYPE grads=$MAIN_GRADS_DTYPE moments=$EXP_AVG_DTYPE,$EXP_AVG_SQ_DTYPE"
+if [[ "$OPTIMIZER" == muon ]]; then
+    echo "  Optimizer:        Muon momentum=$MUON_MOMENTUM ns_steps=$MUON_NUM_NS_STEPS scale=$MUON_SCALE_MODE extra_scale=$MUON_EXTRA_SCALE_FACTOR split_qkv=$MUON_SPLIT_QKV nesterov=$MUON_NESTEROV scalar_optimizer=$MUON_SCALAR_OPTIMIZER lr=$LR min_lr=$MIN_LR warmup=$LR_WARMUP_ITERS wd=$WEIGHT_DECAY"
+else
+    echo "  Optimizer:        Adam beta1=$ADAM_BETA1 beta2=$ADAM_BETA2 eps=$ADAM_EPS lr=$LR min_lr=$MIN_LR warmup=$LR_WARMUP_ITERS wd=$WEIGHT_DECAY params=$MAIN_PARAMS_DTYPE grads=$MAIN_GRADS_DTYPE moments=$EXP_AVG_DTYPE,$EXP_AVG_SQ_DTYPE"
+fi
+echo "  Attention:        backend=$ATTENTION_BACKEND qk_clip=$QK_CLIP threshold=$QK_CLIP_THRESHOLD alpha=$QK_CLIP_ALPHA log_max=$LOG_MAX_ATTENTION_LOGIT"
+echo "  Fusions/clip:     rope=$APPLY_ROPE_FUSION linear_ce=$FUSED_LINEAR_CROSS_ENTROPY grad=$CLIP_GRAD"
 echo "  SimPO:            beta=$SIMPO_BETA gamma=$SIMPO_GAMMA loss=$SIMPO_LOSS_TYPE sft_weight=$SIMPO_SFT_WEIGHT"
 echo "  Packing:          $PACK_SAMPLES"
 echo "  Intra-doc mask:   false (chosen/rejected isolation uses packed-sequence boundaries)"

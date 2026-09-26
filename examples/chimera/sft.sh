@@ -50,6 +50,20 @@ NUM_WORKERS="${NUM_WORKERS:-32}"
 PREPARE_WORKERS="${PREPARE_WORKERS:-32}"
 SAVE_WEIGHTS_ONLY="${SAVE_WEIGHTS_ONLY:-false}"
 PACK_SAMPLES="${PACK_SAMPLES:-true}"
+TAIL_SFT="${TAIL_SFT:-false}"
+TAIL_SFT_REFERENCE_LOSSES="${TAIL_SFT_REFERENCE_LOSSES:-}"
+TAIL_SFT_FILTER_FRACTION="${TAIL_SFT_FILTER_FRACTION:-0.5}"
+TAIL_SFT_FILTER_SCHEDULE="${TAIL_SFT_FILTER_SCHEDULE:-ramp}"
+TAIL_SFT_SCORE_OUTPUT="${TAIL_SFT_SCORE_OUTPUT:-}"
+TAIL_SFT_SCORE_AUDIT_DIR="${TAIL_SFT_SCORE_AUDIT_DIR:-}"
+MOE_Z_LOSS_COEFF=0.001
+if [[ "$TAIL_SFT" == true ]]; then
+    # A configured zero fraction deliberately uses the existing SFT path.
+    if python3 -c 'import sys; sys.exit(not float(sys.argv[1]) > 0)' "$TAIL_SFT_FILTER_FRACTION"; then
+        [[ -n "$TAIL_SFT_REFERENCE_LOSSES" ]] || { echo "TAIL_SFT_REFERENCE_LOSSES is required" >&2; exit 1; }
+        MOE_Z_LOSS_COEFF=0.0
+    fi
+fi
 PACK_METADATA_PATH="${PACK_METADATA_PATH:-${DATA_PATH}.chimera_sft_packing}"
 VALID_PACK_METADATA_PATH="${VALID_PACK_METADATA_PATH:-${VALID_DATA_PATH:+${VALID_DATA_PATH}.chimera_sft_packing}}"
 OPTIMIZER="${OPTIMIZER:-adam}"
@@ -70,6 +84,10 @@ QK_CLIP_THRESHOLD="${QK_CLIP_THRESHOLD:-100.0}"
 QK_CLIP_ALPHA="${QK_CLIP_ALPHA:-0.5}"
 LOG_MAX_ATTENTION_LOGIT="${LOG_MAX_ATTENTION_LOGIT:-true}"
 APPLY_ROPE_FUSION="${APPLY_ROPE_FUSION:-true}"
+if [[ "$PACK_SAMPLES" == true && ( "$MOE_Z_LOSS_COEFF" == 0.0 || -n "$TAIL_SFT_SCORE_OUTPUT" ) ]]; then
+    # Packed TE RoPE does not apply YaRN's mscale; use the matching unfused path.
+    APPLY_ROPE_FUSION=false
+fi
 CLIP_GRAD="${CLIP_GRAD:-1.0}"
 MAIN_PARAMS_DTYPE="${MAIN_PARAMS_DTYPE:-fp32}"
 MAIN_GRADS_DTYPE="${MAIN_GRADS_DTYPE:-fp32}"
@@ -221,7 +239,7 @@ MOE_ARGS=(
     --moe-router-bias-update-rate "${MOE_ROUTER_BIAS_UPDATE_RATE:-0.0}"
     --moe-router-topk-scaling-factor 2.5
     --moe-router-dtype fp32
-    --moe-z-loss-coeff 0.001
+    --moe-z-loss-coeff "$MOE_Z_LOSS_COEFF"
     --moe-grouped-gemm
     --moe-token-dispatcher-type alltoall
     --moe-permute-fusion
@@ -239,6 +257,13 @@ DATA_ARGS=(
 )
 if [[ -n "$VALID_DATA_PATH" ]]; then
     DATA_ARGS+=(--valid-data-path "$VALID_DATA_PATH")
+fi
+if [[ "$TAIL_SFT" == true ]]; then
+    DATA_ARGS+=(--tail-sft --tail-sft-filter-fraction "$TAIL_SFT_FILTER_FRACTION"
+        --tail-sft-filter-schedule "$TAIL_SFT_FILTER_SCHEDULE")
+    if [[ -n "$TAIL_SFT_REFERENCE_LOSSES" ]]; then
+        DATA_ARGS+=(--tail-sft-reference-losses "$TAIL_SFT_REFERENCE_LOSSES")
+    fi
 fi
 if [[ "$PACK_SAMPLES" == true ]]; then
     DATA_ARGS+=(--pack-samples --pack-metadata-path "$PACK_METADATA_PATH")
@@ -358,6 +383,10 @@ CP_SIZE=${CP_SIZE}
 DATASET_SAMPLES=${DATASET_SAMPLES}
 SCHEDULE_SAMPLES=${SCHEDULE_SAMPLES}
 PACK_SAMPLES=${PACK_SAMPLES}
+TAIL_SFT=${TAIL_SFT}
+TAIL_SFT_REFERENCE_LOSSES=${TAIL_SFT_REFERENCE_LOSSES}
+TAIL_SFT_FILTER_FRACTION=${TAIL_SFT_FILTER_FRACTION}
+TAIL_SFT_FILTER_SCHEDULE=${TAIL_SFT_FILTER_SCHEDULE}
 PACK_METADATA_PATH=${PACK_METADATA_PATH}
 VALID_PACK_METADATA_PATH=${VALID_PACK_METADATA_PATH}
 OPTIMIZER=${OPTIMIZER}
@@ -406,7 +435,7 @@ echo "  Load checkpoint:  $MCORE_PATH"
 echo "  Tokenizer:        $TOKENIZER_MODEL"
 echo "  Parallelism:      TP=$TP_SIZE PP=$PP_SIZE EP=$EP_SIZE ETP=1 CP=$CP_SIZE"
 echo "  Architecture:     layers=25 moe_layer_freq=[0]*2+[1]*23 hidden=2048 ffn=8192 experts=32 topk=4 expert_ffn=2048 shared=0 qk_norm=$QK_LAYERNORM"
-echo "  Router:           ${MOE_ROUTER_LOAD_BALANCING_TYPE:-none} bins=${MOE_QB_NUM_BINS:-1000} ema=${MOE_QB_EMA_DECAY:-0.0} aux=${MOE_AUX_LOSS_COEFF:-0.0} bias_rate=${MOE_ROUTER_BIAS_UPDATE_RATE:-0.0} scale=2.5 z_loss=0.001"
+echo "  Router:           ${MOE_ROUTER_LOAD_BALANCING_TYPE:-none} bins=${MOE_QB_NUM_BINS:-1000} ema=${MOE_QB_EMA_DECAY:-0.0} aux=${MOE_AUX_LOSS_COEFF:-0.0} bias_rate=${MOE_ROUTER_BIAS_UPDATE_RATE:-0.0} scale=2.5 z_loss=$MOE_Z_LOSS_COEFF"
 echo "  Data schedule:    rows=$DATASET_SAMPLES samples=$SCHEDULE_SAMPLES epochs=$TRAIN_EPOCHS iters=$TRAIN_ITERS"
 echo "  Context/YaRN:     phase=$CONTEXT_PHASE max=$MAX_POSITION_EMBEDDINGS factor=$ROTARY_SCALING_FACTOR original=$YARN_ORIGINAL_MAX_POSITION_EMBEDDINGS"
 echo "  Seq/batch:        seq=$SEQ_LENGTH micro=$MICRO_BATCH_SIZE global=$GLOBAL_BATCH_SIZE"
@@ -420,8 +449,17 @@ echo "  Fusions/clip:     rope=$APPLY_ROPE_FUSION linear_ce=$FUSED_LINEAR_CROSS_
 echo "  Packing:          $PACK_SAMPLES"
 echo "  Intra-doc mask:   false (sample isolation uses packed-sequence boundaries)"
 
+SFT_ENTRYPOINT=examples/chimera/pretrain_chimera.py
+if [[ -n "$TAIL_SFT_SCORE_OUTPUT" ]]; then
+    [[ "$TAIL_SFT" == false ]] || { echo "Reference scoring requires TAIL_SFT=false" >&2; exit 1; }
+    SFT_ENTRYPOINT=examples/chimera/score_sft_initial_losses_megatron.py
+    DATA_ARGS+=(--tail-sft-score-output "$TAIL_SFT_SCORE_OUTPUT")
+    if [[ -n "$TAIL_SFT_SCORE_AUDIT_DIR" ]]; then
+        DATA_ARGS+=(--tail-sft-score-audit-dir "$TAIL_SFT_SCORE_AUDIT_DIR")
+    fi
+fi
 exec python3 -m torch.distributed.run "${DISTRIBUTED_ARGS[@]}" \
-    examples/chimera/pretrain_chimera.py \
+    "$SFT_ENTRYPOINT" \
     --chimera-expert-tp-size 1 \
     "${MODEL_ARGS[@]}" \
     "${MOE_ARGS[@]}" \

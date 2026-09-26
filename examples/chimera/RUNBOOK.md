@@ -567,6 +567,9 @@ example, `--do-sample --temperature 0.7 --top-p 0.9 --top-k 50
 
 ## 7. SFT
 
+For optional TailSFT with packed or unpacked data, reference scoring and fraction
+schedules, see [TAIL_SFT.md](TAIL_SFT.md). The default SFT settings are unchanged.
+
 SFT reads JSONL directly. Each checked fixture row contains exactly one
 conversation:
 

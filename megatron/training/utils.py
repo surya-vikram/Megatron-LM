@@ -5,15 +5,15 @@ import json
 import os
 import sys
 import warnings
+from collections import defaultdict
 from contextlib import contextmanager
 from datetime import datetime
-from collections import defaultdict
 
 import torch
 
-from megatron.core.msc_utils import MultiStorageClientFeature, open_file
 from megatron.core._rank_utils import safe_get_rank as _safe_get_rank
 from megatron.core.dist_checkpointing.strategies.nvrx import has_nvrx_async_support
+from megatron.core.msc_utils import MultiStorageClientFeature, open_file
 
 try:
     from transformer_engine.pytorch.optimizers import multi_tensor_applier, multi_tensor_l2norm
@@ -33,18 +33,17 @@ except ImportError:
             local_multi_tensor_applier as multi_tensor_applier,
         )
 
-from megatron.training import get_args, get_timers, get_adlr_autoresume
 from megatron.core import mpu
 from megatron.core.datasets.utils import get_blend_from_list
 from megatron.core.tensor_parallel import param_is_not_tensor_parallel_duplicate
+from megatron.core.transformer.module import param_is_not_shared
 from megatron.core.utils import (
     get_batch_on_this_cp_rank,
     get_data_parallel_group_if_dtensor,
     to_local_if_dtensor,
     unwrap_model,
 )
-
-from megatron.core.transformer.module import param_is_not_shared
+from megatron.training import get_adlr_autoresume, get_args, get_timers
 
 
 def calc_params_l2_norm(model, force_create_fp32_copy=False):
@@ -683,6 +682,8 @@ def get_batch_on_this_tp_rank(data_iterator, mtp_on_this_rank: bool = False):
             _broadcast(attention_mask)
             _broadcast(position_ids)
             cu_seqlens = _broadcast_cu_seqlens()
+            if getattr(args, 'tail_sft', False) and args.tail_sft_filter_fraction > 0 and cu_seqlens is None:
+                max_seqlen = None
             _broadcast(max_seqlen)
             _broadcast(local_cp_size)
 
@@ -694,6 +695,8 @@ def get_batch_on_this_tp_rank(data_iterator, mtp_on_this_rank: bool = False):
             _broadcast(attention_mask)
             _broadcast(position_ids)
             cu_seqlens = _broadcast_cu_seqlens()
+            if getattr(args, 'tail_sft', False) and args.tail_sft_filter_fraction > 0 and cu_seqlens is None:
+                max_seqlen = None
             _broadcast(max_seqlen)
 
         elif mpu.is_pipeline_last_stage():
@@ -719,6 +722,31 @@ def get_batch_on_this_tp_rank(data_iterator, mtp_on_this_rank: bool = False):
             'max_seqlen': max_seqlen,
             'local_cp_size': local_cp_size,
         }
+
+    # TailSFT adds metadata only on its opt-in path. Ordinary batch dictionaries
+    # and broadcasts retain their existing layout.
+    if getattr(args, 'tail_sft', False) and args.tail_sft_filter_fraction > 0:
+        def broadcast_tail_vector(value, dtype):
+            source = mpu.get_tensor_model_parallel_rank() == 0
+            device = torch.cuda.current_device()
+            size = torch.tensor([value.numel() if source and value is not None else 0],
+                                device=device, dtype=torch.long)
+            _broadcast(size)
+            if size.item() == 0:
+                return None
+            vector = value.reshape(-1).to(device=device, dtype=dtype) if source else torch.empty(
+                int(size.item()), device=device, dtype=dtype
+            )
+            _broadcast(vector)
+            return vector
+
+        if args.pipeline_model_parallel_size > 1 and not mpu.is_pipeline_first_stage() and not mtp_on_this_rank:
+            boundaries = broadcast_tail_vector(batch.get('cu_seqlens'), torch.int32)
+            batch['cu_seqlens'] = boundaries.unsqueeze(0) if boundaries is not None else None
+            batch['max_seqlen'] = broadcast_tail_vector(batch.get('max_seqlen'), torch.int32)
+        if args.pipeline_model_parallel_size == 1 or mpu.is_pipeline_last_stage():
+            initial = data.get('tail_sft_initial_losses') if mpu.get_tensor_model_parallel_rank() == 0 else None
+            batch['tail_sft_initial_losses'] = broadcast_tail_vector(initial, torch.float32)
 
     return batch
 

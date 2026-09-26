@@ -628,6 +628,10 @@ U<end_of_turn>
 
 ## SFT Smoke
 
+Optional TailSFT instructions are in `examples/chimera/TAIL_SFT.md`. It requires
+native Megatron scores from the exact initial checkpoint, supports packing and unpacked rows,
+and disables router auxiliary/z losses. Ordinary SFT retains its existing settings.
+
 SFT JSONL rows use `messages` and are read directly by `SFTTokenizer`. Do not
 run Megatron preprocessing for SFT. Canonical SFT runs from the final checkpoint
 with `CONTEXT_PHASE=128k`; mixed-length samples are packed by default while the

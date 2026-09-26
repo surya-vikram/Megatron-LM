@@ -17,6 +17,8 @@ from megatron.training.datasets.chat_packing import (
     load_pack_lengths,
     validate_metadata_source,
 )
+from megatron.training.tail_sft import ReferenceLosses
+from megatron.training.tail_sft import enabled as tail_sft_enabled
 
 IGNORE_INDEX = -100
 
@@ -61,7 +63,7 @@ class PackSamplesCollator:
         batched_cu_seqlens = torch.cat(cu_seqlens_list).unsqueeze(0)
         max_seqlen = torch.stack([torch.as_tensor(item['max_seqlen']) for item in batch]).max().unsqueeze(0)
         
-        return {
+        output = {
             'tokens': tokens,
             'labels': labels,
             'loss_mask': loss_mask,
@@ -69,6 +71,9 @@ class PackSamplesCollator:
             'cu_seqlens': batched_cu_seqlens,
             'max_seqlen': max_seqlen
         }
+        if 'tail_sft_initial_losses' in batch[0]:
+            output['tail_sft_initial_losses'] = torch.cat([item['tail_sft_initial_losses'] for item in batch])
+        return output
 
 
 class SFTLowLevelDataset:
@@ -139,6 +144,21 @@ class SFTDataset(MegatronDataset):
         }
 
         args = get_args()
+        self._tail_reference = None
+        if tail_sft_enabled(args) and index_split.name == "train":
+            if getattr(args, "data_path", None) or not args.train_data_path or len(args.train_data_path) != 1:
+                raise ValueError("TailSFT currently requires a single --train-data-path JSONL")
+            self._tail_reference = ReferenceLosses(
+                args.tail_sft_reference_losses, dataset_path, args.tokenizer_model,
+                args.sft_tokenizer_prompt_format,
+                packing=getattr(args, "pack_samples", False),
+                sequence_length=config.sequence_length, micro_batch_size=args.micro_batch_size,
+                apply_rope_fusion=args.apply_rope_fusion,
+            )
+            if len(self._tail_reference.losses) != len(self.dataset):
+                raise ValueError("TailSFT reference does not have one score for each JSONL row")
+            if getattr(args, "pack_samples", False) and not get_pack_metadata_path(args, dataset_path):
+                raise ValueError("Packed TailSFT requires indexed --pack-metadata-path")
         pack_samples = getattr(args, "pack_samples", False)
         metadata_path = get_pack_metadata_path(args, dataset_path)
         prompt_format = getattr(args, "sft_tokenizer_prompt_format", "default")
@@ -240,6 +260,8 @@ class SFTDataset(MegatronDataset):
         pack_positions = []
         cu_seqlens = [0]
 
+        reference_scores = []
+
         for row_index_value in row_indices:
             row_index = int(row_index_value)
             conversation = self.dataset[row_index]
@@ -252,6 +274,9 @@ class SFTDataset(MegatronDataset):
             tokens, targets = tokenizer.tokenize_conversation(
                 conversation, return_target=True, add_generation_prompt=False
             )
+            if getattr(self, "_tail_reference", None) is not None:
+                self._check_tail_target(row_index, targets[1:])
+                reference_scores.append(float(self._tail_reference.losses[row_index]))
             sequence_tokens = tokens[:-1].tolist()
             sequence_targets = targets[1:].tolist()
             expected_length = int(self._pack_lengths[row_index])
@@ -277,6 +302,8 @@ class SFTDataset(MegatronDataset):
             pack_targets.extend([pad] * padding_length)
             pack_positions.extend(range(padding_length))
             cu_seqlens.append(pack_length)
+            if getattr(self, "_tail_reference", None) is not None:
+                reference_scores.append(0.0)  # Padding is not an eligible conversation.
 
         input_ids = torch.tensor(pack_tokens, dtype=torch.int64)
         labels = torch.tensor(pack_targets, dtype=torch.int64)
@@ -287,13 +314,42 @@ class SFTDataset(MegatronDataset):
         cu_seqlens = torch.tensor(cu_seqlens, dtype=torch.int32)
         max_seqlen = (cu_seqlens[1:] - cu_seqlens[:-1]).max()
 
-        return {
+        result = {
             "tokens": input_ids,
             "labels": labels,
             "loss_mask": loss_mask,
             "position_ids": position_ids,
             "cu_seqlens": cu_seqlens,
             "max_seqlen": max_seqlen,
+        }
+        if getattr(self, "_tail_reference", None) is not None:
+            result["tail_sft_initial_losses"] = torch.tensor(reference_scores, dtype=torch.float32)
+        return result
+
+    def _check_tail_target(self, row_index, targets):
+        count = int(np.count_nonzero((targets != IGNORE_INDEX) & (targets != self.config.tokenizer.pad)))
+        if count != self._tail_reference.lengths[row_index]:
+            raise ValueError(f"TailSFT target mask changed for row {row_index}; regenerate reference scores")
+
+    def _get_tail_unpacked_item(self, idx):
+        # One physical row is one conversation; never silently substitute another row.
+        row = int(self.indices[idx % len(self.indices)])
+        tokens, targets = self.config.tokenizer.tokenize_conversation(
+            self.dataset[row], return_target=True, add_generation_prompt=False
+        )
+        self._check_tail_target(row, targets[1:])
+        length = len(tokens) - 1
+        if length > self.config.sequence_length:
+            raise ValueError(f"TailSFT row {row} exceeds sequence length; increase it or filter/rescore the dataset")
+        padding = self.config.sequence_length - length
+        pad = self.config.tokenizer.pad
+        labels = torch.tensor(np.pad(targets[1:], (0, padding), constant_values=pad), dtype=torch.long)
+        return {
+            "tokens": torch.tensor(np.pad(tokens, (0, padding), constant_values=pad)[:-1], dtype=torch.long),
+            "labels": labels,
+            "loss_mask": ((labels != pad) & (labels != IGNORE_INDEX)).float(),
+            "position_ids": torch.arange(self.config.sequence_length),
+            "tail_sft_initial_losses": torch.tensor(float(self._tail_reference.losses[row])),
         }
 
     def _split_conversations(self, merged_conversations):
@@ -315,6 +371,9 @@ class SFTDataset(MegatronDataset):
 
         if getattr(self, "_pack_samples", False):
             return self._get_packed_item(idx)
+
+        if getattr(self, "_tail_reference", None) is not None:
+            return self._get_tail_unpacked_item(idx)
 
         tokenizer = self.config.tokenizer
         pack_length = self.config.sequence_length

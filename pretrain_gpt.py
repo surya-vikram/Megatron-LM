@@ -4,6 +4,7 @@
 
 # Capture the true program start time BEFORE any heavy imports.
 import time
+
 _PROGRAM_START_TIME = time.time()
 
 import json
@@ -11,6 +12,7 @@ import json
 # Suppress warnings on all ranks but rank 0.
 import os
 import warnings
+
 rank = int(os.environ.get('RANK', 0))
 if rank != 0:
     warnings.filterwarnings("ignore", category=UserWarning)
@@ -26,11 +28,17 @@ from megatron.core import parallel_state
 from megatron.core.datasets.blended_megatron_dataset_builder import BlendedMegatronDatasetBuilder
 from megatron.core.datasets.gpt_dataset import GPTDataset, GPTDatasetConfig, MockGPTDataset
 from megatron.core.enums import ModelType
-from megatron.core.packed_seq_params import PackedSeqParams
 from megatron.core.models.gpt import GPTModel
+from megatron.core.packed_seq_params import PackedSeqParams
 from megatron.core.rerun_state_machine import get_rerun_state_machine
 from megatron.core.tokenizers.utils.build_tokenizer import build_tokenizer
-from megatron.core.utils import get_attr_wrapped_model, get_thd_batch_on_this_cp_rank, get_batch_on_this_hybrid_cp_rank, StragglerDetector
+from megatron.core.transformer.multi_token_prediction import get_mtp_ranks, mtp_on_this_rank
+from megatron.core.utils import (
+    StragglerDetector,
+    get_attr_wrapped_model,
+    get_batch_on_this_hybrid_cp_rank,
+    get_thd_batch_on_this_cp_rank,
+)
 from megatron.training import (
     get_args,
     get_timers,
@@ -39,12 +47,13 @@ from megatron.training import (
     print_rank_0,
     set_startup_timestamps,
 )
-from megatron.training.datasets.simpo_dataset import SimPODataset
-from megatron.training.datasets.sft_dataset import SFTDataset
-from megatron.core.transformer.multi_token_prediction import mtp_on_this_rank, get_mtp_ranks
-from megatron.training.arguments import core_transformer_config_from_args, parse_and_validate_args
 from megatron.training.argument_utils import pretrain_cfg_container_from_args
+from megatron.training.arguments import core_transformer_config_from_args, parse_and_validate_args
 from megatron.training.datasets.fim_dataset import GPTFIMDataset, GPTFIMDatasetConfig
+from megatron.training.datasets.sft_dataset import SFTDataset
+from megatron.training.datasets.simpo_dataset import SimPODataset
+from megatron.training.tail_sft import enabled as tail_sft_enabled
+from megatron.training.tail_sft import filter_fraction, filtered_loss
 from megatron.training.utils import (
     get_batch_on_this_cp_rank,
     get_batch_on_this_tp_rank,
@@ -64,7 +73,7 @@ except ImportError:
 stimer = StragglerDetector()
 
 
-def get_batch(data_iterator, vp_stage: Optional[int] = None):
+def get_batch(data_iterator, vp_stage: Optional[int] = None, return_tail_metadata: bool = False):
     """Generate a batch.
 
     Packed sequence support (SFT and SimPO):
@@ -128,6 +137,8 @@ def get_batch(data_iterator, vp_stage: Optional[int] = None):
         mtp_on_this_rank=mtp_on_this_rank(config, ignore_virtual=False, vp_stage=vp_stage)
         )
 
+    initial_losses = batch.pop('tail_sft_initial_losses', None)
+
     cu_seqlens = batch.pop('cu_seqlens', None)
     cu_seqlens_padded = batch.pop('cu_seqlens_padded', None)
     max_seqlen = batch.pop('max_seqlen', None)
@@ -143,7 +154,10 @@ def get_batch(data_iterator, vp_stage: Optional[int] = None):
         assert max_seqlen.dim() == 1
 
         # Flatten batch dimension if MBS > 1 for pack_samples
-        mbs = batch['tokens'].shape[0] if batch.get('tokens') is not None else 1
+        batch_tensor = batch.get('tokens')
+        if batch_tensor is None and tail_sft_enabled(args):
+            batch_tensor = batch.get('labels')
+        mbs = batch_tensor.shape[0] if batch_tensor is not None else 1
         if mbs > 1:
             for key in ['tokens', 'labels', 'loss_mask', 'position_ids']:
                 if batch.get(key) is not None:
@@ -152,6 +166,8 @@ def get_batch(data_iterator, vp_stage: Optional[int] = None):
     # For middle pipeline stages with packed sequences, only cu_seqlens and
     # max_seqlen are needed (for attention masking); skip the full batch.
     if not is_first_or_last_pipeline_stage(vp_stage) and is_packed_sequence:
+        if tail_sft_enabled(args) and cu_seqlens is None:
+            return None, None, None, None, None, None
         return None, None, None, None, None, PackedSeqParams(
             cu_seqlens_q=cu_seqlens,
             cu_seqlens_kv=cu_seqlens,
@@ -169,7 +185,10 @@ def get_batch(data_iterator, vp_stage: Optional[int] = None):
     else: # Hybrid CP format
         batch, packed_seq_params = get_batch_on_this_hybrid_cp_rank(batch, local_cp_size)
 
-    return (*batch.values(), packed_seq_params)
+    result = (*batch.values(), packed_seq_params)
+    if return_tail_metadata:
+        return (*result, (initial_losses, cu_seqlens))
+    return result
 
 
 # define spiky loss as a loss that's 10x the max loss observed
@@ -254,7 +273,14 @@ def forward_step(data_iterator, model: GPTModel, return_schedule_plan: bool = Fa
     global stimer
     with stimer(bdata=True):
         vp_stage = get_attr_wrapped_model(model, "vp_stage")
-        tokens, labels, loss_mask, attention_mask, position_ids, packed_seq_params = get_batch(data_iterator, vp_stage)
+        use_tail_sft = tail_sft_enabled(args) and model.training
+        tail_metadata = None
+        if use_tail_sft and is_first_or_last_pipeline_stage(vp_stage):
+            tokens, labels, loss_mask, attention_mask, position_ids, packed_seq_params, tail_metadata = get_batch(
+                data_iterator, vp_stage, return_tail_metadata=True
+            )
+        else:
+            tokens, labels, loss_mask, attention_mask, position_ids, packed_seq_params = get_batch(data_iterator, vp_stage)
     timers('batch-generator').stop()
 
     with stimer:
@@ -271,7 +297,27 @@ def forward_step(data_iterator, model: GPTModel, return_schedule_plan: bool = Fa
             )
 
     # [ModelOpt]: model is needed to access ModelOpt distillation losses
+    if use_tail_sft:
+        return output_tensor, partial(tail_sft_loss_func, loss_mask, tail_metadata)
     return output_tensor, partial(loss_func, loss_mask, model=model)
+
+
+def tail_sft_loss_func(loss_mask, metadata, output_tensor):
+    """Select whole conversations in the current DP microbatch, packed or unpacked."""
+    args = get_args()
+    initial_losses, boundaries = metadata
+    if initial_losses is None:
+        raise ValueError('TailSFT training batch is missing its initial-policy losses')
+    if boundaries is None:
+        boundaries = torch.arange(0, loss_mask.numel() + 1, loss_mask.shape[-1], device=loss_mask.device)
+    fraction = filter_fraction(
+        args.tail_sft_filter_fraction, args.tail_sft_filter_schedule,
+        getattr(args, 'curr_iteration', args.iteration), args.train_iters,
+    )
+    return filtered_loss(
+        output_tensor, loss_mask, boundaries, initial_losses, fraction,
+        parallel_state.get_data_parallel_group(),
+    )
 
 
 def is_dataset_built_on_rank(vp_stage=None, is_packed_sequence=False):

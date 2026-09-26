@@ -163,7 +163,9 @@ def validate_training_args(args: Any) -> str:
         "moe_router_topk_scaling_factor": 2.5,
         "moe_router_bias_update_rate": 0.0,
         "moe_aux_loss_coeff": 0.0,
-        "moe_z_loss_coeff": 0.001,
+        "moe_z_loss_coeff": (
+            0.0 if getattr(args, "tail_sft", False) and getattr(args, "tail_sft_filter_fraction", 0) > 0 else 0.001
+        ),
     }
     for key, expected in common.items():
         _require(getattr(args, key, None), expected, key, errors)
@@ -303,6 +305,15 @@ def write_runtime_run_config(args: Any, template: Path) -> Path | None:
         }
     )
 
+    if getattr(args, "tail_sft", False) and getattr(args, "tail_sft_filter_fraction", 0) > 0:
+        config["tail_sft"] = {
+            "enabled": True,
+            "reference_losses": args.tail_sft_reference_losses,
+            "filter_fraction": args.tail_sft_filter_fraction,
+            "filter_schedule": args.tail_sft_filter_schedule,
+        }
+    else:
+        config.pop("tail_sft", None)
     destination = Path(args.save) / "run_config.yaml"
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = destination.with_suffix(".yaml.tmp")
@@ -356,7 +367,12 @@ def validate_hf_config(
         "routed_scaling_factor": 2.5,
         "router_bias_update_rate": 0.0,
         "router_aux_loss_coef": 0.0,
-        "router_z_loss_coef": 0.001,
+        # TailSFT exports disable router-only penalties in posttraining.
+        "router_z_loss_coef": (
+            0.0
+            if config.get("router_load_balancing_type") == "none" and config.get("router_z_loss_coef") == 0.0
+            else 0.001
+        ),
         "moe_qb_num_bins": 1000,
         "moe_qb_ema_decay": 0.0,
         "tie_word_embeddings": False,
@@ -441,7 +457,7 @@ def validate_run_config(
         "moe_router_score_function": "sigmoid",
         "moe_router_topk_scaling_factor": 2.5,
         "moe_aux_loss_coeff": 0.0,
-        "moe_z_loss_coeff": 0.001,
+        "moe_z_loss_coeff": 0.0 if config.get("tail_sft", {}).get("enabled", False) else 0.001,
         "moe_qb_num_bins": 1000,
         "moe_qb_ema_decay": 0.0,
         "rotary_base": 10_000_000,

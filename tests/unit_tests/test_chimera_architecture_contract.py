@@ -206,3 +206,28 @@ def test_runtime_run_config_serializes_explicit_context_phase(tmp_path):
         model = yaml.safe_load(handle)["model"]
     assert model["chimera_context_phase"] == "64k"
     assert model["yarn_correction_range_round_to_int"] is False
+
+
+def test_tailsft_runtime_contract_roundtrip(tmp_path):
+    args = _training_args(
+        "8k", sft=True, moe_router_load_balancing_type="none", moe_z_loss_coeff=0.0,
+        tail_sft=True, tail_sft_filter_fraction=0.5, tail_sft_filter_schedule="ramp",
+        tail_sft_reference_losses="/data/reference", save=str(tmp_path),
+        yarn_rotary_scaling_factor=1.0, yarn_beta_fast=32.0, yarn_beta_slow=1.0,
+        yarn_mscale=1.0, yarn_mscale_all_dim=0.0, tensor_model_parallel_size=1,
+        pipeline_model_parallel_size=1, expert_model_parallel_size=1, expert_tensor_parallel_size=1,
+    )
+    assert validate_training_args(args) == "full"
+    output = write_runtime_run_config(args, CHIMERA_DIR / "run_config.yaml")
+    assert validate_run_config(output, "full", "8k") == "full"
+    config = yaml.safe_load(output.read_text())
+    assert config["tail_sft"]["reference_losses"] == "/data/reference"
+    assert config["model"]["moe_z_loss_coeff"] == 0.0
+
+
+def test_tailsft_hf_export_contract(tmp_path):
+    config = _hf_config("8k")
+    config.update(router_load_balancing_type="none", router_z_loss_coef=0.0)
+    output = tmp_path / "config.json"
+    output.write_text(json.dumps(config))
+    assert validate_hf_config(output, "full", "8k")[0] == "full"

@@ -1,6 +1,11 @@
 #!/bin/bash
 set -euo pipefail
 
+export PYTHONFAULTHANDLER=1
+# Megatron requires NCCL_GRAPH_REGISTER=0 when CUDA graphs run with expandable segments.
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+export NCCL_GRAPH_REGISTER=0
+
 # User inputs.
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 TRAIN_DATA_PATH="${TRAIN_DATA_PATH:-$SCRIPT_DIR/data/pretrain/overfit_text_document}"
@@ -70,6 +75,8 @@ APPLY_ROPE_FUSION="${APPLY_ROPE_FUSION:-true}"
 FUSED_LINEAR_CROSS_ENTROPY="${FUSED_LINEAR_CROSS_ENTROPY:-true}"
 LOG_INTERVAL="${LOG_INTERVAL:-1}"
 EVAL_ITERS="${EVAL_ITERS:-4}"
+# Must be divisible by the data-parallel size (eval micro-batch is 1); defaults to it.
+EVAL_GLOBAL_BATCH_SIZE="${EVAL_GLOBAL_BATCH_SIZE:-$((NNODES * GPUS_PER_NODE / (TP_SIZE * PP_SIZE * CP_SIZE)))}"
 NUM_WORKERS="${NUM_WORKERS:-32}"
 MAIN_GRADS_DTYPE="${MAIN_GRADS_DTYPE:-fp32}"
 EXP_AVG_DTYPE="${EXP_AVG_DTYPE:-fp32}"
@@ -282,7 +289,13 @@ LOGGING_ARGS=(
     --ckpt-format torch_dist
 )
 if [[ -n "$VALID_DATA_PATH" ]]; then
-    LOGGING_ARGS+=(--eval-iters "$EVAL_ITERS")
+    LOGGING_ARGS+=(
+        --full-validation
+        --multiple-validation-sets
+        --eval-micro-batch-size 1
+        --eval-global-batch-size "$EVAL_GLOBAL_BATCH_SIZE"
+        --eval-iters "$EVAL_ITERS"
+    )
 else
     LOGGING_ARGS+=(--eval-iters 0)
 fi

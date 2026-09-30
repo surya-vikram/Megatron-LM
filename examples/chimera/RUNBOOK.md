@@ -109,7 +109,10 @@ derived from their configured fractions.
 validation completely; for packed SFT/SimPO this also disables generation and
 loading of validation packing metadata. When a validation path is provided,
 Megatron logs validation metrics to the run log and TensorBoard at the configured
-`EVAL_INTERVAL` for `EVAL_ITERS` batches.
+`EVAL_INTERVAL`. Pretraining and context extension evaluate the full validation
+set in batches of `EVAL_GLOBAL_BATCH_SIZE` (blank means the data-parallel size;
+a set value must be divisible by it) and log it as `validation-0`. SFT and SimPO evaluate
+`EVAL_ITERS` batches.
 
 The manager does not clone, pull, or modify repositories. It does not source
 the image's malformed `/workspace/load_env.sh`; it explicitly selects

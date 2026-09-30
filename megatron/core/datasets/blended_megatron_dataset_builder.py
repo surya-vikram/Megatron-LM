@@ -469,7 +469,14 @@ class BlendedMegatronDatasetBuilder(object):
                 ):  # NOTE(asolergi-nv): Skip indexed_indices building if we are using --dataloader-fast-cache-load # pylint: disable=C0301
                     beg = int(round(split[i][0] * float(num_elements)))
                     end = int(round(split[i][1] * float(num_elements)))
-                    indexed_indices = numpy.arange(start=beg, stop=end, step=1, dtype=numpy.int32)
+                    # IDs address the original sequence-length array, not the split-local
+                    # array. Large corpora must not wrap IDs above signed int32.
+                    index_dtype = (
+                        numpy.int64
+                        if num_elements > numpy.iinfo(numpy.int32).max + 1
+                        else numpy.int32
+                    )
+                    indexed_indices = numpy.arange(start=beg, stop=end, step=1, dtype=index_dtype)
 
                 mid_level_datasets.append(
                     self.build_generic_dataset(

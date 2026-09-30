@@ -401,7 +401,7 @@ class GPTDataset(MegatronDataset):
         """
         if self.config.defer_npy_index_mmap:
             # NOTE(asolergi-nv): Direct path to lazy memmap the indexes
-            base = f"{self.unique_description_hash}-{type(self).__name__}-{self.index_split.name}"
+            base = f"{self.unique_description_hash}-{type(self).__name__}-{self.index_split.name}-docids64-v1"
             get_path_to = lambda affix: os.path.join(self.config.path_to_cache, f"{base}-{affix}")
             self.path_to_document_index = get_path_to("document_index.npy")
             self.path_to_sample_index = get_path_to("sample_index.npy")
@@ -415,7 +415,7 @@ class GPTDataset(MegatronDataset):
             )
 
         if path_to_cache:
-            base = f"{self.unique_description_hash}-{type(self).__name__}-{self.index_split.name}"
+            base = f"{self.unique_description_hash}-{type(self).__name__}-{self.index_split.name}-docids64-v1"
             get_path_to = lambda affix: os.path.join(path_to_cache, f"{base}-{affix}")
             path_to_description = get_path_to("description.txt")
             path_to_document_index = get_path_to("document_index.npy")
@@ -508,7 +508,7 @@ class GPTDataset(MegatronDataset):
             else:
                 drop_last_partial_sequence = True
 
-            assert document_index.dtype == numpy.int32
+            assert document_index.dtype in (numpy.dtype(numpy.int32), numpy.dtype(numpy.int64))
             assert self.dataset.sequence_lengths.dtype == numpy.int32
             if len(document_index) * 2 > len(self.dataset.sequence_lengths):
                 # If "access density" of sequence_lengths is high, force load the mmap-ed array
@@ -665,10 +665,11 @@ def _build_document_index(
     """
 
     if not separate_final_epoch or num_epochs == 1:
-        document_index = numpy.mgrid[0:num_epochs, 0 : len(documents)][1]
-        document_index[:] = documents
-        document_index = document_index.reshape(-1)
-        document_index = document_index.astype(numpy.int32)
+        # Preserve the ID dtype selected by the builder. tile produces the same
+        # epoch-major order without mgrid's two large temporary int64 grids.
+        if documents.dtype not in (numpy.dtype(numpy.int32), numpy.dtype(numpy.int64)):
+            raise TypeError("GPT document IDs must be signed int32 or int64")
+        document_index = numpy.tile(documents, num_epochs)
         numpy_random_state.shuffle(document_index)
         return document_index
 

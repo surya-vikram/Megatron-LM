@@ -7,6 +7,7 @@
 #include <iostream>
 #include <limits>
 #include <math.h>
+#include <memory>
 #include <set>
 #include <stdexcept>
 #include <pybind11/pybind11.h>
@@ -141,10 +142,10 @@ void build_blending_indices(py::array_t<int16_t> &dataset_index,
   }
 }
 
-template <typename T>
+template <typename T, typename DocumentId = int32_t>
 py::array_t<T> build_sample_idx(
   const py::array_t<int32_t> &sizes_,
-  const py::array_t<int32_t> &document_idx_,
+  const py::array_t<DocumentId> &document_idx_,
   const int32_t seq_length,
   const int32_t num_epochs,
   const int64_t tokens_per_epoch,
@@ -165,7 +166,7 @@ py::array_t<T> build_sample_idx(
 
   // Remove bound checks.
   auto sizes = sizes_.unchecked<1>();
-  auto document_idx = document_idx_.unchecked<1>();
+  auto document_idx = document_idx_.template unchecked<1>();
   
   // NOTE(asolergi-nv): This is the logic used to compute the number of samples in the GPTDataset when leveraging defer_npy_index_mmap
   // Build the sample idx as a contiguous 1-D array of type T.
@@ -176,7 +177,9 @@ py::array_t<T> build_sample_idx(
   else {
     num_samples = ceil(float(num_epochs * tokens_per_epoch - add_extra_token_to_sequence) / seq_length);
   }
-  T *sample_idx = new T[2 * (num_samples + 1)];
+  // Keep ownership until the numpy capsule is ready, including on exceptions.
+  std::unique_ptr<T[]> sample_idx_owner(new T[2 * (num_samples + 1)]);
+  T *sample_idx = sample_idx_owner.get();
 
   // Index into sample_idx.
   int64_t sample_idx_index = 0;
@@ -196,7 +199,17 @@ py::array_t<T> build_sample_idx(
     while (remaining_seq_length != 0)
     {
       // Get the document length.
+      if (document_idx_index < 0 || document_idx_index >= document_idx_.shape(0)) {
+        throw std::out_of_range("GPT sample index exceeded document-index length");
+      }
       auto document_index = document_idx[document_idx_index];
+      if (document_index < 0 || document_index >= sizes_.shape(0)) {
+        throw std::out_of_range(
+          "GPT document ID is outside sequence_lengths; check ID dtype and rebuild caches");
+      }
+      if (sizes[document_index] < 0 || doc_offset < 0 || doc_offset > sizes[document_index]) {
+        throw std::out_of_range("GPT document length or sample offset is invalid");
+      }
       auto document_length = sizes[document_index] - doc_offset;
       // And add it to the current sequence.
       remaining_seq_length -= document_length;
@@ -215,7 +228,9 @@ py::array_t<T> build_sample_idx(
         if (document_idx_index == (document_idx_.shape(0) - 1))
         {
           // If we have reached the end of the documents, break.
-          assert(sample_idx_index == num_samples);
+          if (sample_idx_index != num_samples) {
+            throw std::out_of_range("GPT documents exhausted before requested sample count");
+          }
           doc_offset = sizes[document_idx[document_idx_index]] - add_extra_token_to_sequence;
           break;
         }
@@ -237,6 +252,8 @@ py::array_t<T> build_sample_idx(
 	    delete[] mem;
     }
   );
+
+  sample_idx_owner.release();
 
   // Return the numpy array.
   const auto byte_size = sizeof(T);
@@ -844,6 +861,7 @@ PYBIND11_MODULE(helpers_cpp, m)
   m.def("build_blocks_mapping", &build_blocks_mapping);
   m.def("build_sample_idx_int32", &build_sample_idx<int32_t>);
   m.def("build_sample_idx_int64", &build_sample_idx<int64_t>);
+  m.def("build_sample_idx_document_ids_int64", &build_sample_idx<int64_t, int64_t>);
   m.def("build_blending_indices", &build_blending_indices);
   m.def("build_exhaustive_blending_indices", &build_exhaustive_blending_indices);
 }

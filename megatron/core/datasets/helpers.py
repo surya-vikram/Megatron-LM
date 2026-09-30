@@ -6,7 +6,11 @@
 import numpy
 
 from megatron.core.datasets.helpers_cpp import *
-from megatron.core.datasets.helpers_cpp import build_sample_idx_int32, build_sample_idx_int64
+from megatron.core.datasets.helpers_cpp import (
+    build_sample_idx_document_ids_int64,
+    build_sample_idx_int32,
+    build_sample_idx_int64,
+)
 
 
 def build_sample_idx(
@@ -40,6 +44,27 @@ def build_sample_idx(
     Returns:
         numpy.ndarray: The 2-D sample index
     """
+
+    if sizes.ndim != 1 or document_indices.ndim != 1:
+        raise ValueError("Sequence lengths and document IDs must be one-dimensional")
+    if sizes.size == 0 or document_indices.size == 0:
+        raise ValueError("Cannot build a sample index from an empty dataset")
+    if sizes.dtype != numpy.int32:
+        raise TypeError("Sequence lengths must remain int32 (individual document lengths)")
+    if document_indices.dtype == numpy.int64:
+        # The old build_sample_idx_int64 widens OUTPUT positions only; it still
+        # accepts int32 document IDs. This binding widens both input and output.
+        return build_sample_idx_document_ids_int64(
+            sizes,
+            document_indices,
+            sequence_length,
+            num_epochs,
+            tokens_per_epoch,
+            drop_last_partial_sequence,
+            1 if add_extra_token_to_sequence else 0,
+        )
+    if document_indices.dtype != numpy.int32:
+        raise TypeError("Document IDs must be signed int32 or int64")
 
     sample_idx_max = max(document_indices.shape[0], sizes.max())
     if sample_idx_max <= numpy.iinfo(numpy.int32).max:
